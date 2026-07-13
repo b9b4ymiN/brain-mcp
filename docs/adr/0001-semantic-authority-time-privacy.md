@@ -157,7 +157,7 @@ Cryptographic erasure is only claimed when key destruction makes recovery infeas
 
 ## Decision 8: authorization and identity matrix
 
-**DECISION: Keycloak** 26.6.x is the selected self-hosted Authorization Server candidate for Console and remote MCP because it provides OIDC discovery, authorization code, PKCE S256 enforcement, short-lived tokens, refresh-token/session revocation, client policies, and portable container deployment.
+**DECISION: Keycloak** 26.7.0 is the selected self-hosted Authorization Server candidate for Console and remote MCP because it provides OIDC discovery, authorization code, PKCE S256 enforcement, short-lived tokens, refresh-token/session revocation, client policies, and portable container deployment. Deployment must pin the tested image by immutable digest; `26.7.0` is the decision baseline, not permission to use a floating tag.
 
 There is a known standards gap: Keycloak's current official MCP guide marks MCP 2025-11-25 only partially supported because RFC 8707 Resource Indicators are not yet supported in the documented stable conformance path. A listed `resource-indicators:v1` feature is not accepted as proof by name alone.
 
@@ -232,4 +232,3 @@ Costs:
 - Keycloak administration guide: https://www.keycloak.org/docs/latest/server_admin/index.html
 - OAuth 2.1 draft history: https://datatracker.ietf.org/doc/draft-ietf-oauth-v2-1/history/
 - NIST SP 800-88 Rev. 2: https://csrc.nist.gov/pubs/sp/800/88/r2/final
-
