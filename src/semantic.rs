@@ -86,6 +86,7 @@ pub enum SemanticError {
     ActiveHandles,
     IdempotencyConflict,
     InvalidInterval,
+    InvalidClaim(String),
     MissingDependency(String),
     CorruptLedger(String),
     Io(String),
@@ -109,6 +110,7 @@ impl fmt::Display for SemanticError {
             Self::InvalidInterval => {
                 formatter.write_str("valid interval must be non-empty and ordered")
             }
+            Self::InvalidClaim(reason) => write!(formatter, "invalid claim: {reason}"),
             Self::MissingDependency(value) => {
                 write!(formatter, "required semantic input is missing: {value}")
             }
@@ -179,12 +181,25 @@ pub struct CaptureCommand {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClaimDraft {
     pub subject: String,
     pub predicate: String,
     pub value: Value,
+    pub claim_kind: String,
+    pub domain: String,
+    pub confidence_basis_points: u16,
+    pub privacy_label: PrivacyLabel,
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PrivacyLabel {
+    LocalOnly,
+    PrivateExternalAllowed,
+    Publishable,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -256,6 +271,11 @@ pub struct ClaimView {
     pub subject: String,
     pub predicate: String,
     pub value: Value,
+    pub claim_kind: String,
+    pub status: String,
+    pub domain: String,
+    pub confidence_basis_points: u16,
+    pub privacy_label: PrivacyLabel,
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     pub confirmed_event_seq: u64,
@@ -334,6 +354,7 @@ struct StoreMarker {
 #[derive(Debug)]
 struct RootCoordinator {
     maintenance: RwLock<()>,
+    writer: Mutex<()>,
     projection: Mutex<()>,
     active_handles: AtomicUsize,
     active_transactions: AtomicUsize,
@@ -343,6 +364,7 @@ impl RootCoordinator {
     fn new() -> Self {
         Self {
             maintenance: RwLock::new(()),
+            writer: Mutex::new(()),
             projection: Mutex::new(()),
             active_handles: AtomicUsize::new(0),
             active_transactions: AtomicUsize::new(0),
@@ -363,12 +385,20 @@ fn coordinator_for(root: &Path) -> Arc<RootCoordinator> {
     coordinator
 }
 
-#[derive(Debug)]
 pub struct SemanticStore {
     root: PathBuf,
     marker: StoreMarker,
     coordinator: Arc<RootCoordinator>,
     clock: Arc<dyn SemanticClock>,
+}
+
+impl Debug for SemanticStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SemanticStore")
+            .field("capability", &"<redacted>")
+            .finish()
+    }
 }
 
 impl Drop for SemanticStore {
@@ -379,13 +409,21 @@ impl Drop for SemanticStore {
     }
 }
 
-#[derive(Debug)]
 pub struct StoreAdmin {
     root: PathBuf,
     allowed_parent: PathBuf,
     store_uuid: Uuid,
     deletion_nonce: Uuid,
     coordinator: Arc<RootCoordinator>,
+}
+
+impl Debug for StoreAdmin {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StoreAdmin")
+            .field("capability", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -396,6 +434,23 @@ pub enum RollbackStatus {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ManualRecovery;
+
+#[cfg(feature = "semantic-test-failpoints")]
+#[derive(Debug)]
+pub struct SemanticTestTransaction {
+    connection: Connection,
+    coordinator: Arc<RootCoordinator>,
+}
+
+#[cfg(feature = "semantic-test-failpoints")]
+impl Drop for SemanticTestTransaction {
+    fn drop(&mut self) {
+        let _ = self.connection.execute_batch("ROLLBACK");
+        self.coordinator
+            .active_transactions
+            .fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 struct ActiveTransaction<'a> {
     coordinator: &'a RootCoordinator,
@@ -426,22 +481,60 @@ struct MutationMaterial {
     generated: GeneratedIds,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct EventIdentity {
+    event_id: Uuid,
+    event_seq: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Provenance {
+    Evidence {
+        source_id: Uuid,
+        rendition_id: Uuid,
+        evidence_id: Uuid,
+        object_id: String,
+        byte_start: u64,
+        byte_end: u64,
+        quote_hash: String,
+    },
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct ProposalObject {
     kind: String,
     proposal_id: Uuid,
     source_object_id: String,
-    source_id: Uuid,
-    rendition_id: Uuid,
-    evidence_id: Uuid,
+    provenance: Provenance,
     draft: ClaimDraft,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ConfirmationObject {
     kind: String,
+    claim: ClaimRecord,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ClaimRecord {
     claim_id: Uuid,
-    proposal: ProposalObject,
+    proposal_id: Uuid,
+    subject: String,
+    predicate: String,
+    value: Value,
+    claim_kind: String,
+    status: String,
+    domain: String,
+    confidence_basis_points: u16,
+    privacy_label: PrivacyLabel,
+    valid_from: Option<DateTime<Utc>>,
+    valid_to: Option<DateTime<Utc>>,
+    recorded_event_id: Uuid,
+    recorded_event_seq: u64,
+    provenance: Provenance,
+    supersedes: Vec<Uuid>,
+    retracts: Vec<Uuid>,
 }
 
 impl SemanticStore {
@@ -501,6 +594,9 @@ impl SemanticStore {
                 "root escaped allowed parent".to_owned(),
             ));
         }
+        let coordinator = coordinator_for(&canonical_root);
+        let _maintenance = coordinator.maintenance.read();
+        let _writer = coordinator.writer.lock();
         let marker = read_marker(&canonical_root)?;
         if marker.allowed_parent != allowed_parent.to_string_lossy() {
             return Err(SemanticError::MarkerMismatch);
@@ -509,8 +605,9 @@ impl SemanticStore {
         validate_database_identity(&connection, &marker)?;
         validate_ledger(&connection)?;
         drop(connection);
-        let coordinator = coordinator_for(&canonical_root);
         coordinator.active_handles.fetch_add(1, Ordering::SeqCst);
+        drop(_writer);
+        drop(_maintenance);
         Ok(Self {
             root: canonical_root,
             marker,
@@ -536,19 +633,24 @@ impl SemanticStore {
         let request_hash = request_hash("capture", &command)?;
         let media_type = command.media_type.clone();
         let bytes = command.bytes.clone();
-        self.mutate(context, &command.operation_id, &request_hash, move |_| {
-            Ok(MutationMaterial {
-                event_type: "source_captured",
-                object_bytes: bytes.clone(),
-                media_type: media_type.clone(),
-                generated: GeneratedIds {
-                    source_id: Some(Uuid::now_v7()),
-                    rendition_id: Some(Uuid::now_v7()),
-                    evidence_id: Some(Uuid::now_v7()),
-                    ..GeneratedIds::default()
-                },
-            })
-        })
+        self.mutate(
+            context,
+            &command.operation_id,
+            &request_hash,
+            move |_, _identity| {
+                Ok(MutationMaterial {
+                    event_type: "source_captured",
+                    object_bytes: bytes.clone(),
+                    media_type: media_type.clone(),
+                    generated: GeneratedIds {
+                        source_id: Some(Uuid::now_v7()),
+                        rendition_id: Some(Uuid::now_v7()),
+                        evidence_id: Some(Uuid::now_v7()),
+                        ..GeneratedIds::default()
+                    },
+                })
+            },
+        )
     }
 
     pub fn propose(
@@ -556,21 +658,27 @@ impl SemanticStore {
         context: &TrustedContext,
         command: ProposeCommand,
     ) -> Result<MutationOutcome> {
-        validate_interval(command.draft.valid_from, command.draft.valid_to)?;
+        validate_claim_draft(&command.draft)?;
         let request_hash = request_hash("propose", &command)?;
         let capture_operation = command.capture_operation_id.clone();
         let draft = command.draft.clone();
+        let root = self.root.clone();
         self.mutate(
             context,
             &command.operation_id,
             &request_hash,
-            move |transaction| {
+            move |transaction, _identity| {
                 let captured = stored_outcome(transaction, context, &capture_operation)?;
                 let proposal_id = Uuid::now_v7();
-                let proposal = ProposalObject {
-                    kind: "claim_proposal".to_owned(),
-                    proposal_id,
-                    source_object_id: captured.event.payload.object_id,
+                let source_object_id = captured.event.payload.object_id;
+                let source_bytes = read_object(&root, &source_object_id)?;
+                let quote_hash = source_object_id
+                    .strip_prefix("sha256:")
+                    .ok_or_else(|| {
+                        SemanticError::CorruptLedger("capture object has invalid ID".to_owned())
+                    })?
+                    .to_owned();
+                let provenance = Provenance::Evidence {
                     source_id: captured.generated.source_id.ok_or_else(|| {
                         SemanticError::MissingDependency(capture_operation.clone())
                     })?,
@@ -580,6 +688,18 @@ impl SemanticStore {
                     evidence_id: captured.generated.evidence_id.ok_or_else(|| {
                         SemanticError::MissingDependency(capture_operation.clone())
                     })?,
+                    object_id: source_object_id.clone(),
+                    byte_start: 0,
+                    byte_end: u64::try_from(source_bytes.len()).map_err(|_| {
+                        SemanticError::CorruptLedger("capture object is too large".to_owned())
+                    })?,
+                    quote_hash,
+                };
+                let proposal = ProposalObject {
+                    kind: "claim_proposal".to_owned(),
+                    proposal_id,
+                    source_object_id,
+                    provenance,
                     draft: draft.clone(),
                 };
                 Ok(MutationMaterial {
@@ -607,16 +727,44 @@ impl SemanticStore {
             context,
             &command.operation_id,
             &request_hash,
-            move |transaction| {
+            move |transaction, identity| {
                 let proposed = stored_outcome(transaction, context, &proposal_operation)?;
                 let bytes = read_object(&root, &proposed.event.payload.object_id)?;
                 let proposal: ProposalObject =
                     serde_json::from_slice(&bytes).map_err(serialization_error)?;
                 let claim_id = Uuid::now_v7();
+                let ClaimDraft {
+                    subject,
+                    predicate,
+                    value,
+                    claim_kind,
+                    domain,
+                    confidence_basis_points,
+                    privacy_label,
+                    valid_from,
+                    valid_to,
+                } = proposal.draft;
                 let confirmation = ConfirmationObject {
                     kind: "claim_confirmation".to_owned(),
-                    claim_id,
-                    proposal,
+                    claim: ClaimRecord {
+                        claim_id,
+                        proposal_id: proposal.proposal_id,
+                        subject,
+                        predicate,
+                        value,
+                        claim_kind,
+                        status: "confirmed".to_owned(),
+                        domain,
+                        confidence_basis_points,
+                        privacy_label,
+                        valid_from,
+                        valid_to,
+                        recorded_event_id: identity.event_id,
+                        recorded_event_seq: identity.event_seq,
+                        provenance: proposal.provenance,
+                        supersedes: Vec::new(),
+                        retracts: Vec::new(),
+                    },
                 };
                 Ok(MutationMaterial {
                     event_type: "claim_confirmed",
@@ -639,7 +787,7 @@ impl SemanticStore {
         build: F,
     ) -> Result<MutationOutcome>
     where
-        F: Fn(&Transaction<'_>) -> Result<MutationMaterial>,
+        F: Fn(&Transaction<'_>, EventIdentity) -> Result<MutationMaterial>,
     {
         validate_context(&self.marker, context)?;
         validate_operation_id(operation_id)?;
@@ -664,11 +812,15 @@ impl SemanticStore {
         build: &F,
     ) -> Result<MutationOutcome>
     where
-        F: Fn(&Transaction<'_>) -> Result<MutationMaterial>,
+        F: Fn(&Transaction<'_>, EventIdentity) -> Result<MutationMaterial>,
     {
         validate_context(&self.marker, context)?;
         validate_operation_id(operation_id)?;
         let _maintenance = self.coordinator.maintenance.read();
+        // SQLite WAL permits concurrent readers but still has one writer. Coordinate
+        // in-process handles before opening the write transaction so Windows does
+        // not exhaust SQLite's SQLITE_PROTOCOL retry budget under a write stampede.
+        let _writer = self.coordinator.writer.lock();
         let mut connection = open_connection(&self.root)?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -703,13 +855,17 @@ impl SemanticStore {
             .map_err(database_error)?;
         crash_at("after_idempotency_reservation");
 
-        let material = build(&transaction)?;
-        let object_id = publish_object(&self.root, &material.object_bytes)?;
         let event_seq = next_event_seq(&transaction, context.owner_id)?;
         let prior_event_hash = prior_event_hash(&transaction, context.owner_id, event_seq)?;
+        let identity = EventIdentity {
+            event_id: Uuid::now_v7(),
+            event_seq,
+        };
+        let material = build(&transaction, identity)?;
+        let object_id = publish_object(&self.root, &material.object_bytes)?;
         let mut event = EventEnvelope {
             schema_version: 1,
-            event_id: Uuid::now_v7(),
+            event_id: identity.event_id,
             owner_id: context.owner_id,
             event_seq,
             event_type: material.event_type.to_owned(),
@@ -797,18 +953,28 @@ impl SemanticStore {
             let object: ConfirmationObject =
                 serde_json::from_slice(&read_object(&self.root, &object_id)?)
                     .map_err(serialization_error)?;
-            let draft = object.proposal.draft;
-            let starts = draft.valid_from.is_none_or(|from| from <= world_time);
-            let ends = draft.valid_to.is_none_or(|to| world_time < to);
+            let claim = object.claim;
+            if claim.recorded_event_seq != event_seq || claim.status != "confirmed" {
+                return Err(SemanticError::CorruptLedger(
+                    "claim record does not match confirmation event".to_owned(),
+                ));
+            }
+            let starts = claim.valid_from.is_none_or(|from| from <= world_time);
+            let ends = claim.valid_to.is_none_or(|to| world_time < to);
             if starts && ends {
                 return Ok(Some(ClaimView {
-                    claim_id: object.claim_id,
-                    proposal_id: object.proposal.proposal_id,
-                    subject: draft.subject,
-                    predicate: draft.predicate,
-                    value: draft.value,
-                    valid_from: draft.valid_from,
-                    valid_to: draft.valid_to,
+                    claim_id: claim.claim_id,
+                    proposal_id: claim.proposal_id,
+                    subject: claim.subject,
+                    predicate: claim.predicate,
+                    value: claim.value,
+                    claim_kind: claim.claim_kind,
+                    status: claim.status,
+                    domain: claim.domain,
+                    confidence_basis_points: claim.confidence_basis_points,
+                    privacy_label: claim.privacy_label,
+                    valid_from: claim.valid_from,
+                    valid_to: claim.valid_to,
                     confirmed_event_seq: event_seq,
                 }));
             }
@@ -855,6 +1021,21 @@ impl SemanticStore {
         })
     }
 
+    #[cfg(feature = "semantic-test-failpoints")]
+    pub fn begin_test_transaction(&self) -> Result<SemanticTestTransaction> {
+        let connection = open_connection(&self.root)?;
+        connection
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(database_error)?;
+        self.coordinator
+            .active_transactions
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(SemanticTestTransaction {
+            connection,
+            coordinator: Arc::clone(&self.coordinator),
+        })
+    }
+
     pub fn projection_state(&self) -> Result<ProjectionState> {
         let bytes = fs::read(self.root.join(PROJECTION_FILE)).map_err(io_error)?;
         serde_json::from_slice(&bytes).map_err(serialization_error)
@@ -862,6 +1043,10 @@ impl SemanticStore {
 
     pub fn object_exists(&self, object_id: &str) -> bool {
         object_path(&self.root, object_id).is_ok_and(|path| path.is_file())
+    }
+
+    pub fn object_json(&self, object_id: &str) -> Result<Value> {
+        serde_json::from_slice(&read_object(&self.root, object_id)?).map_err(serialization_error)
     }
 }
 
@@ -917,6 +1102,7 @@ impl StoreAdmin {
             return Err(SemanticError::ActiveHandles);
         }
         validate_existing_root(&self.root, &self.allowed_parent)?;
+        reject_tree_links(&self.root)?;
         let marker = read_marker(&self.root)?;
         if marker.store_uuid != self.store_uuid || marker.deletion_nonce != self.deletion_nonce {
             return Err(SemanticError::MarkerMismatch);
@@ -992,6 +1178,11 @@ fn reject_hazardous_path(path: &Path) -> Result<()> {
             ));
         }
     }
+    if path.join(".git").is_dir() {
+        return Err(SemanticError::InvalidRoot(
+            "repository roots are forbidden".to_owned(),
+        ));
+    }
     Ok(())
 }
 
@@ -1002,20 +1193,40 @@ fn reject_link_or_reparse(path: &Path) -> Result<()> {
         let Ok(metadata) = fs::symlink_metadata(&current) else {
             continue;
         };
-        if metadata.file_type().is_symlink() {
+        if metadata_is_link_or_reparse(&metadata) {
             return Err(SemanticError::InvalidRoot(
-                "symbolic links are forbidden".to_owned(),
+                "symbolic links and reparse points are forbidden".to_owned(),
             ));
         }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-                return Err(SemanticError::InvalidRoot(
-                    "reparse points are forbidden".to_owned(),
-                ));
-            }
+    }
+    Ok(())
+}
+
+fn metadata_is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+fn reject_tree_links(root: &Path) -> Result<()> {
+    for entry in fs::read_dir(root).map_err(io_error)? {
+        let path = entry.map_err(io_error)?.path();
+        let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+        if metadata_is_link_or_reparse(&metadata) {
+            return Err(SemanticError::InvalidRoot(
+                "store interior contains a symbolic link or reparse point".to_owned(),
+            ));
+        }
+        if metadata.is_dir() {
+            reject_tree_links(&path)?;
         }
     }
     Ok(())
@@ -1042,14 +1253,14 @@ fn open_connection(root: &Path) -> Result<Connection> {
         .busy_timeout(Duration::from_secs(5))
         .map_err(database_error)?;
     connection
-        .execute_batch("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;")
+        .execute_batch("PRAGMA foreign_keys=ON;")
         .map_err(database_error)?;
     Ok(connection)
 }
 
 fn initialize_schema(connection: &Connection, marker: &StoreMarker) -> Result<()> {
     connection
-        .execute_batch("PRAGMA journal_mode=WAL;")
+        .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
         .map_err(database_error)?;
     connection
         .execute_batch(
@@ -1136,6 +1347,31 @@ fn validate_operation_id(value: &str) -> Result<()> {
 fn validate_interval(from: Option<DateTime<Utc>>, to: Option<DateTime<Utc>>) -> Result<()> {
     if from.zip(to).is_some_and(|(from, to)| from >= to) {
         return Err(SemanticError::InvalidInterval);
+    }
+    Ok(())
+}
+
+fn validate_claim_draft(draft: &ClaimDraft) -> Result<()> {
+    validate_interval(draft.valid_from, draft.valid_to)?;
+    if draft.subject.trim().is_empty()
+        || draft.predicate.trim().is_empty()
+        || draft.claim_kind.trim().is_empty()
+        || draft.domain.trim().is_empty()
+    {
+        return Err(SemanticError::InvalidClaim(
+            "subject, predicate, kind, and domain are required".to_owned(),
+        ));
+    }
+    if draft.confidence_basis_points > 10_000 {
+        return Err(SemanticError::InvalidClaim(
+            "confidence_basis_points must be between 0 and 10000".to_owned(),
+        ));
+    }
+    if draft.privacy_label != PrivacyLabel::LocalOnly {
+        return Err(SemanticError::InvalidClaim(
+            "privacy_label must remain local_only until a policy event authorizes release"
+                .to_owned(),
+        ));
     }
     Ok(())
 }

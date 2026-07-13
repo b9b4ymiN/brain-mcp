@@ -2,8 +2,8 @@
 
 Decision: **EXTEND**
 
-Date: 2026-07-14  
-Baseline: `9521f87e88fd57a2f1a254cd6474e883426814d5`  
+Date: 2026-07-14
+Baseline: `9521f87e88fd57a2f1a254cd6474e883426814d5`
 Branch: `vnext/phase-0`
 
 ## Decision
@@ -14,7 +14,7 @@ All common gates required by the neutral decision rule pass. The same-crate coup
 
 ## Executable coupling evidence
 
-- CodeGraph was refreshed after implementation: 140 files, 2,372 nodes, and 6,657 edges. The only callers of private `mutate` are `SemanticStore::capture`, `propose`, and `confirm` in `src/semantic.rs`.
+- CodeGraph was refreshed after the validator-feedback fixes: 140 files, 2,401 nodes, and 6,754 edges. The only callers of private `mutate` are `SemanticStore::capture`, `propose`, and `confirm` in `src/semantic.rs`.
 - CodeGraph flow is `SemanticApplicationCore -> SemanticStore::{capture,propose,confirm} -> mutate -> mutate_once`. No legacy runtime symbol appears in that flow.
 - The architecture integration test rejects imports/calls to `ops`, `markdown`, `git`, `index_manager`, `mcp`, `server`, Tantivy, and Petgraph from `src/semantic.rs`.
 - The same test scans existing top-level runtime files and proves none calls `semantic::`. `src/lib.rs` only exports the module.
@@ -38,7 +38,7 @@ All common gates required by the neutral decision rule pass. The same-crate coup
 
 No production or registered wiki data was read, migrated, or dual-written. Tests create caller-supplied temporary roots only. The disabled default returns before canonicalization or directory creation.
 
-Rollback validates the canonical allowed parent, store UUID, deletion nonce, marker, database identity, symlink/reparse and `.git` hazards. It takes non-blocking exclusive maintenance ownership, rejects live handles/transactions, takes a SQLite maintenance transaction, and then removes only the bound spike root. Tests prove the legacy fixture bytes remain unchanged and repeat cleanup is safe.
+Rollback validates the canonical allowed parent, store UUID, deletion nonce, marker, database identity, filesystem/repository/`.git` roots, and root/interior symlink or Windows reparse hazards. It takes non-blocking exclusive maintenance ownership, rejects live handles and independently tracked live transactions, takes a SQLite maintenance transaction, and then removes only the bound spike root. Tests prove a real Git fixture's full manifest and HEAD remain unchanged and repeat cleanup is safe.
 
 Repository rollback is limited to Task 0.3 permitted-path commits and returns the branch to `9521f87e...`.
 

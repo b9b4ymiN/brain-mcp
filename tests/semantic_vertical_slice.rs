@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -8,11 +9,12 @@ use std::thread;
 use chrono::{DateTime, TimeZone, Utc};
 use jsonschema::validator_for;
 use llm_wiki::semantic::{
-    CaptureCommand, ClaimDraft, ConfirmCommand, ManualRecovery, MutationOutcome, ProjectionState,
-    ProposeCommand, RollbackStatus, SemanticClock, SemanticConfig, SemanticError, SemanticStore,
-    StoreDiagnostics, TrustedContext, canonicalize_json, event_hash_from_value,
+    CaptureCommand, ClaimDraft, ConfirmCommand, ManualRecovery, MutationOutcome, PrivacyLabel,
+    ProjectionState, ProposeCommand, RollbackStatus, SemanticClock, SemanticConfig, SemanticError,
+    SemanticStore, StoreDiagnostics, TrustedContext, canonicalize_json, event_hash_from_value,
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use uuid::{Uuid, Version};
 
@@ -69,9 +71,74 @@ fn draft(valid_from: Option<DateTime<Utc>>, valid_to: Option<DateTime<Utc>>) -> 
         subject: "project:brain".to_owned(),
         predicate: "deployment".to_owned(),
         value: json!("sqlite-event-ledger"),
+        claim_kind: "project_decision".to_owned(),
+        domain: "projects".to_owned(),
+        confidence_basis_points: 9_000,
+        privacy_label: PrivacyLabel::LocalOnly,
         valid_from,
         valid_to,
     }
+}
+
+fn run_git(root: &Path, arguments: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(arguments)
+        .current_dir(root)
+        .output()
+        .expect("run git fixture command");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        arguments,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+fn file_manifest(root: &Path) -> BTreeMap<String, String> {
+    fn visit(root: &Path, current: &Path, output: &mut BTreeMap<String, String>) {
+        for entry in fs::read_dir(current).unwrap() {
+            let path = entry.unwrap().path();
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            if metadata.is_dir() {
+                visit(root, &path, output);
+            } else if metadata.is_file() {
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                output.insert(
+                    relative,
+                    hex::encode(Sha256::digest(fs::read(path).unwrap())),
+                );
+            }
+        }
+    }
+
+    let mut output = BTreeMap::new();
+    visit(root, root, &mut output);
+    output
+}
+
+fn object_path(root: &Path, object_id: &str) -> PathBuf {
+    let digest = object_id.strip_prefix("sha256:").unwrap();
+    root.join("objects").join(&digest[..2]).join(digest)
+}
+
+#[cfg(windows)]
+fn make_junction(link: &Path, target: &Path) {
+    let output = Command::new("cmd")
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("create Windows junction");
+    assert!(
+        output.status.success(),
+        "mklink failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn assert_uuid_v7(value: Uuid) {
@@ -155,8 +222,8 @@ fn capture_propose_confirm_is_schema_valid_trusted_and_bitemporal() {
         &store,
         &context,
         "journey",
-        Some(at("2026-07-13T01:00:00Z")),
-        Some(at("2026-07-14T01:00:00Z")),
+        Some(at("2026-07-13T03:00:00Z")),
+        Some(at("2026-07-14T03:00:00Z")),
     );
 
     assert_eq!(
@@ -193,6 +260,40 @@ fn capture_propose_confirm_is_schema_valid_trusted_and_bitemporal() {
         Some(proposed.event.event_hash.as_str())
     );
 
+    let proposal_object = store
+        .object_json(&proposed.event.payload.object_id)
+        .unwrap();
+    assert_eq!(proposal_object["provenance"]["kind"], "evidence");
+    assert_eq!(proposal_object["provenance"]["byte_start"], 0);
+    assert_eq!(proposal_object["provenance"]["byte_end"], 15);
+    assert_eq!(
+        proposal_object["provenance"]["object_id"],
+        captured.event.payload.object_id
+    );
+    assert_eq!(
+        proposal_object["provenance"]["quote_hash"],
+        captured
+            .event
+            .payload
+            .object_id
+            .trim_start_matches("sha256:")
+    );
+    let claim_object = store
+        .object_json(&confirmed.event.payload.object_id)
+        .unwrap();
+    assert_eq!(claim_object["claim"]["status"], "confirmed");
+    assert_eq!(claim_object["claim"]["claim_kind"], "project_decision");
+    assert_eq!(claim_object["claim"]["domain"], "projects");
+    assert_eq!(claim_object["claim"]["confidence_basis_points"], 9_000);
+    assert_eq!(claim_object["claim"]["privacy_label"], "local_only");
+    assert_eq!(claim_object["claim"]["supersedes"], json!([]));
+    assert_eq!(claim_object["claim"]["retracts"], json!([]));
+    assert_eq!(
+        claim_object["claim"]["recorded_event_id"],
+        confirmed.event.event_id.to_string()
+    );
+    assert_eq!(claim_object["claim"]["recorded_event_seq"], 3);
+
     assert!(
         store
             .claim_at(2, at("2026-07-13T02:00:00Z"))
@@ -201,18 +302,20 @@ fn capture_propose_confirm_is_schema_valid_trusted_and_bitemporal() {
     );
     assert!(
         store
-            .claim_at(3, at("2026-07-13T00:59:59Z"))
+            .claim_at(3, at("2026-07-13T02:59:59Z"))
             .unwrap()
             .is_none()
     );
     let current = store
-        .claim_at(3, at("2026-07-13T01:00:00Z"))
+        .claim_at(3, at("2026-07-13T03:00:00Z"))
         .unwrap()
         .unwrap();
     assert_eq!(current.claim_id, confirmed.generated.claim_id.unwrap());
+    assert_eq!(current.status, "confirmed");
+    assert_eq!(current.privacy_label, PrivacyLabel::LocalOnly);
     assert!(
         store
-            .claim_at(3, at("2026-07-14T01:00:00Z"))
+            .claim_at(3, at("2026-07-14T03:00:00Z"))
             .unwrap()
             .is_none()
     );
@@ -297,18 +400,143 @@ fn deserialized_commands_reject_all_identity_and_domain_id_injection() {
         "evidence_id",
         "proposal_id",
         "claim_id",
+        "status",
+        "provenance",
+        "supersedes",
+        "retracts",
     ] {
-        let mut command = json!({
+        let injected_value = json!("01890f7e-3c00-7000-8000-000000000099");
+        let mut capture_command = json!({
             "operation_id": "injection-test",
             "bytes": [115, 97, 102, 101],
             "media_type": "text/plain"
         });
-        command[injected] = json!("01890f7e-3c00-7000-8000-000000000099");
+        capture_command[injected] = injected_value.clone();
         assert!(
-            serde_json::from_value::<CaptureCommand>(command).is_err(),
-            "command accepted injected {injected}"
+            serde_json::from_value::<CaptureCommand>(capture_command).is_err(),
+            "capture command accepted injected {injected}"
+        );
+
+        let mut propose_command = json!({
+            "operation_id": "injection-propose",
+            "capture_operation_id": "capture",
+            "draft": {
+                "subject": "project:brain",
+                "predicate": "deployment",
+                "value": "sqlite",
+                "claim_kind": "project_decision",
+                "domain": "projects",
+                "confidence_basis_points": 9000,
+                "privacy_label": "local_only",
+                "valid_from": null,
+                "valid_to": null
+            }
+        });
+        propose_command[injected] = injected_value.clone();
+        assert!(
+            serde_json::from_value::<ProposeCommand>(propose_command).is_err(),
+            "propose command accepted top-level injected {injected}"
+        );
+        let mut nested_propose = json!({
+            "operation_id": "injection-propose",
+            "capture_operation_id": "capture",
+            "draft": {
+                "subject": "project:brain",
+                "predicate": "deployment",
+                "value": "sqlite",
+                "claim_kind": "project_decision",
+                "domain": "projects",
+                "confidence_basis_points": 9000,
+                "privacy_label": "local_only",
+                "valid_from": null,
+                "valid_to": null
+            }
+        });
+        nested_propose["draft"][injected] = injected_value.clone();
+        assert!(
+            serde_json::from_value::<ProposeCommand>(nested_propose).is_err(),
+            "claim draft accepted injected {injected}"
+        );
+
+        let mut confirm_command = json!({
+            "operation_id": "injection-confirm",
+            "proposal_operation_id": "proposal"
+        });
+        confirm_command[injected] = injected_value;
+        assert!(
+            serde_json::from_value::<ConfirmCommand>(confirm_command).is_err(),
+            "confirm command accepted injected {injected}"
         );
     }
+}
+
+#[test]
+fn invalid_claim_metadata_cannot_create_evidence_less_proposal() {
+    let (_parent, _root, store, context) = fixture();
+    store
+        .capture(&context, capture("invalid-capture", b"evidence"))
+        .unwrap();
+    let mut invalid = draft(None, None);
+    invalid.confidence_basis_points = 10_001;
+    let result = store.propose(
+        &context,
+        ProposeCommand {
+            operation_id: "invalid-proposal".to_owned(),
+            capture_operation_id: "invalid-capture".to_owned(),
+            draft: invalid,
+        },
+    );
+    assert!(matches!(result, Err(SemanticError::InvalidClaim(_))));
+    assert_eq!(store.diagnostics().unwrap().events, 1);
+
+    let mut publishable = draft(None, None);
+    publishable.privacy_label = PrivacyLabel::Publishable;
+    let result = store.propose(
+        &context,
+        ProposeCommand {
+            operation_id: "invalid-privacy-proposal".to_owned(),
+            capture_operation_id: "invalid-capture".to_owned(),
+            draft: publishable,
+        },
+    );
+    assert!(matches!(result, Err(SemanticError::InvalidClaim(_))));
+    assert_eq!(store.diagnostics().unwrap().events, 1);
+}
+
+#[test]
+fn confirmation_rejects_a_tampered_evidence_less_proposal_object() {
+    let (_parent, root, store, context) = fixture();
+    store
+        .capture(
+            &context,
+            capture("tampered-capture", b"evidence is required"),
+        )
+        .unwrap();
+    let proposal = store
+        .propose(
+            &context,
+            ProposeCommand {
+                operation_id: "tampered-proposal".to_owned(),
+                capture_operation_id: "tampered-capture".to_owned(),
+                draft: draft(None, None),
+            },
+        )
+        .unwrap();
+    fs::write(
+        object_path(&root, &proposal.event.payload.object_id),
+        br#"{"kind":"claim_proposal"}"#,
+    )
+    .unwrap();
+
+    let result = store.confirm(
+        &context,
+        ConfirmCommand {
+            operation_id: "tampered-confirm".to_owned(),
+            proposal_operation_id: "tampered-proposal".to_owned(),
+        },
+    );
+    assert!(matches!(result, Err(SemanticError::CorruptLedger(_))));
+    assert_eq!(store.diagnostics().unwrap().events, 2);
 }
 
 #[test]
@@ -359,15 +587,18 @@ fn independent_connections_serialize_unique_and_conflicting_operations() {
         let context = context.clone();
         let barrier = barrier.clone();
         joins.push(thread::spawn(move || {
-            let independent = SemanticStore::open(&root, enabled(&parent)).unwrap();
             barrier.wait();
-            independent.capture(
-                &context,
-                capture(
-                    &format!("unique-{index}"),
-                    format!("bytes-{index}").as_bytes(),
-                ),
-            )
+            let independent = SemanticStore::open(&root, enabled(&parent))
+                .map_err(|error| format!("open failed: {error:?}"))?;
+            independent
+                .capture(
+                    &context,
+                    capture(
+                        &format!("unique-{index}"),
+                        format!("bytes-{index}").as_bytes(),
+                    ),
+                )
+                .map_err(|error| format!("capture failed: {error:?}"))
         }));
     }
     barrier.wait();
@@ -546,9 +777,26 @@ fn rollback_capability_is_bound_rejects_live_handles_and_is_repeatable() {
     let legacy = parent.path().join("legacy-wiki");
     fs::create_dir(&legacy).unwrap();
     fs::write(legacy.join("README.md"), "legacy byte identity").unwrap();
-    let legacy_before = fs::read(legacy.join("README.md")).unwrap();
+    fs::create_dir(legacy.join("notes")).unwrap();
+    fs::write(legacy.join("notes/reference.md"), "existing knowledge").unwrap();
+    run_git(&legacy, &["init", "--quiet"]);
+    run_git(&legacy, &["config", "user.name", "Semantic Test"]);
+    run_git(
+        &legacy,
+        &["config", "user.email", "semantic@example.invalid"],
+    );
+    run_git(&legacy, &["add", "."]);
+    run_git(&legacy, &["commit", "--quiet", "-m", "fixture"]);
+    let legacy_head_before = run_git(&legacy, &["rev-parse", "HEAD"]);
+    let legacy_before = file_manifest(&legacy);
 
     let (store, admin) = SemanticStore::create(&root, enabled(parent.path())).unwrap();
+    let store_debug = format!("{store:?}");
+    let admin_debug = format!("{admin:?}");
+    assert_eq!(store_debug, "SemanticStore { capability: \"<redacted>\" }");
+    assert_eq!(admin_debug, "StoreAdmin { capability: \"<redacted>\" }");
+    assert!(!store_debug.contains(&root.to_string_lossy().to_string()));
+    assert!(!admin_debug.contains(&root.to_string_lossy().to_string()));
     let other = SemanticStore::open(&root, enabled(parent.path())).unwrap();
     assert!(matches!(
         admin.rollback(),
@@ -563,36 +811,67 @@ fn rollback_capability_is_bound_rejects_live_handles_and_is_repeatable() {
     assert_eq!(admin.rollback().unwrap(), RollbackStatus::Removed);
     assert_eq!(admin.rollback().unwrap(), RollbackStatus::AlreadyRemoved);
     assert!(!root.exists());
-    assert_eq!(fs::read(legacy.join("README.md")).unwrap(), legacy_before);
+    assert_eq!(run_git(&legacy, &["rev-parse", "HEAD"]), legacy_head_before);
+    assert_eq!(file_manifest(&legacy), legacy_before);
 
     let outside = tempfile::tempdir().unwrap();
     let error =
         SemanticStore::create(outside.path().join("store"), enabled(parent.path())).unwrap_err();
     assert!(matches!(error, SemanticError::InvalidRoot(_)));
-    let repo_error = SemanticStore::create(
-        Path::new(env!("CARGO_MANIFEST_DIR")),
-        enabled(parent.path()),
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_error = SemanticStore::create(repo, enabled(repo.parent().unwrap())).unwrap_err();
+    assert!(matches!(repo_error, SemanticError::InvalidRoot(_)));
+    let git_error = SemanticStore::create(repo.join(".git"), enabled(repo)).unwrap_err();
+    assert!(matches!(git_error, SemanticError::InvalidRoot(_)));
+
+    let filesystem_root = parent.path().ancestors().last().unwrap();
+    let filesystem_error = SemanticStore::create(
+        filesystem_root.join(format!("semantic-test-{}", Uuid::now_v7())),
+        enabled(filesystem_root),
     )
     .unwrap_err();
-    assert!(matches!(repo_error, SemanticError::InvalidRoot(_)));
-    let git_error =
-        SemanticStore::create(parent.path().join(".git"), enabled(parent.path())).unwrap_err();
-    assert!(matches!(git_error, SemanticError::InvalidRoot(_)));
+    assert!(matches!(filesystem_error, SemanticError::InvalidRoot(_)));
+}
+
+#[cfg(feature = "semantic-test-failpoints")]
+#[test]
+fn rollback_rejects_an_active_transaction_after_the_store_handle_is_dropped() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join("semantic-store");
+    let (store, admin) = SemanticStore::create(&root, enabled(parent.path())).unwrap();
+    let transaction = store.begin_test_transaction().unwrap();
+    drop(store);
+
+    assert!(matches!(
+        admin.rollback(),
+        Err(SemanticError::ActiveHandles)
+    ));
+    assert!(root.exists());
+    drop(transaction);
+    assert_eq!(admin.rollback().unwrap(), RollbackStatus::Removed);
 }
 
 #[test]
 fn rollback_rejects_missing_or_tampered_marker_without_deleting() {
-    for mode in ["missing", "tampered"] {
+    for mode in ["missing", "wrong_store_uuid", "wrong_deletion_nonce"] {
         let parent = tempfile::tempdir().unwrap();
         let root = parent.path().join("store");
         let (store, admin) = SemanticStore::create(&root, enabled(parent.path())).unwrap();
         drop(store);
         let marker = root.join("store.marker.json");
         let original = fs::read(&marker).unwrap();
-        if mode == "missing" {
-            fs::remove_file(&marker).unwrap();
-        } else {
-            fs::write(&marker, b"{\"store_uuid\":\"copied-or-wrong\"}").unwrap();
+        match mode {
+            "missing" => fs::remove_file(&marker).unwrap(),
+            "wrong_store_uuid" | "wrong_deletion_nonce" => {
+                let mut copied: Value = serde_json::from_slice(&original).unwrap();
+                copied[if mode == "wrong_store_uuid" {
+                    "store_uuid"
+                } else {
+                    "deletion_nonce"
+                }] = json!(Uuid::now_v7());
+                fs::write(&marker, serde_json::to_vec(&copied).unwrap()).unwrap();
+            }
+            _ => unreachable!(),
         }
         assert!(matches!(
             admin.rollback(),
@@ -617,6 +896,60 @@ fn symlink_root_is_rejected() {
         SemanticStore::create(&link, enabled(parent.path())),
         Err(SemanticError::InvalidRoot(_))
     ));
+
+    fs::remove_file(&link).unwrap();
+    let root = parent.path().join("semantic-store");
+    let (store, admin) = SemanticStore::create(&root, enabled(parent.path())).unwrap();
+    drop(store);
+    let outside = parent.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("sentinel"), "do not delete").unwrap();
+    let interior = root.join("escape");
+    symlink(&outside, &interior).unwrap();
+    assert!(matches!(
+        admin.rollback(),
+        Err(SemanticError::InvalidRoot(_))
+    ));
+    assert_eq!(
+        fs::read_to_string(outside.join("sentinel")).unwrap(),
+        "do not delete"
+    );
+    fs::remove_file(interior).unwrap();
+    assert_eq!(admin.rollback().unwrap(), RollbackStatus::Removed);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_root_and_interior_reparse_points_are_rejected() {
+    let parent = tempfile::tempdir().unwrap();
+    let target = parent.path().join("junction-target");
+    fs::create_dir(&target).unwrap();
+    let link = parent.path().join("store-link");
+    make_junction(&link, &target);
+    assert!(matches!(
+        SemanticStore::create(&link, enabled(parent.path())),
+        Err(SemanticError::InvalidRoot(_))
+    ));
+    fs::remove_dir(&link).unwrap();
+
+    let root = parent.path().join("semantic-store");
+    let (store, admin) = SemanticStore::create(&root, enabled(parent.path())).unwrap();
+    drop(store);
+    let outside = parent.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("sentinel"), "do not delete").unwrap();
+    let interior = root.join("escape");
+    make_junction(&interior, &outside);
+    assert!(matches!(
+        admin.rollback(),
+        Err(SemanticError::InvalidRoot(_))
+    ));
+    assert_eq!(
+        fs::read_to_string(outside.join("sentinel")).unwrap(),
+        "do not delete"
+    );
+    fs::remove_dir(interior).unwrap();
+    assert_eq!(admin.rollback().unwrap(), RollbackStatus::Removed);
 }
 
 #[test]
