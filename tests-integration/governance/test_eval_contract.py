@@ -1,5 +1,7 @@
 import hashlib
 import json
+import subprocess
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -11,6 +13,7 @@ EVAL_ROOT = REPO_ROOT / "evals/v1"
 MANIFEST = EVAL_ROOT / "manifest.json"
 EVENT_SCHEMA = EVAL_ROOT / "contracts/event-schema-v1.json"
 METRICS = EVAL_ROOT / "metrics.json"
+EVAL_RUNNER = EVAL_ROOT / "run.py"
 
 CORPORA = {
     "stocks": EVAL_ROOT / "cases/stocks.jsonl",
@@ -24,6 +27,7 @@ LOCKED_PATHS = {
     "docs/security/threat-model-v1.md",
     "evals/v1/contracts/event-schema-v1.json",
     "evals/v1/metrics.json",
+    "evals/v1/run.py",
     "evals/v1/cases/stocks.jsonl",
     "evals/v1/cases/projects.jsonl",
     "evals/v1/cases/knowledge.jsonl",
@@ -60,7 +64,17 @@ def test_required_governance_documents_are_decisive():
     ):
         assert required in adr
 
-    for required in ("Severity", "Owner", "Control", "Eval/Test IDs", "RUSTSEC-2026-0204"):
+    for required in (
+        "Severity",
+        "Owner",
+        "Control",
+        "Eval/Test IDs",
+        "RUSTSEC-2026-0204",
+        "adversarial-031",
+        "adversarial-032",
+        "adversarial-033",
+        "adversarial-034",
+    ):
         assert required in threat_model
 
 
@@ -155,3 +169,24 @@ def test_metric_contract_has_hard_invariants_and_regression_budget():
     assert metrics["formulas"]["recall_at_10"]
     assert metrics["formulas"]["ndcg_at_10"]
     assert metrics["critical_regression"]
+
+
+def test_reference_runner_executes_actual_vs_expected_and_metrics():
+    completed = subprocess.run(
+        [sys.executable, str(EVAL_RUNNER), "--manifest", str(MANIFEST)],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    report = json.loads(completed.stdout)
+    assert report["passed"] is True
+    assert report["case_count"] >= 124
+    assert report["actual_vs_expected_passed"] == report["case_count"]
+    assert report["metrics"]["hard_invariants_pass_rate"] == 1.0
+    assert report["metrics"]["recall_at_10"] >= 0.90
+    assert report["metrics"]["ndcg_at_10"] >= 0.80
+    assert report["metrics"]["evidence_span_exactness"] == 1.0
+    assert report["metrics"]["confirmed_unsupported_claims"] == 0
+    assert report["thresholds_passed"] is True
