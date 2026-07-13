@@ -1,6 +1,6 @@
 # Task 0.1 Baseline Report
 
-Status: **AWAITING INDEPENDENT REVALIDATION**
+Status: **PASS — INDEPENDENTLY VALIDATED**
 
 ## Outcome
 
@@ -54,7 +54,7 @@ No user data was read or migrated. Restore tests used generated temporary direct
 ## Execution accounting
 
 - Builder/orchestrator: Codex
-- Validator: independent read-only agent; first review returned one restore-shell compatibility finding, revalidation pending
+- Validator: independent read-only agent; first review returned one restore-shell compatibility finding; revalidation at `c56c3fb` returned `PASS`
 - Product files changed: 0
 - Eval/script files changed: 1
 - Evidence files changed: 7
