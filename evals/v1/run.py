@@ -19,6 +19,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,17 @@ class Decision:
     answer_mode: str
     details: dict[str, Any] = field(default_factory=dict)
     repair_attempts: int = 0
+
+
+DECISION_DETAIL_FIELDS = {
+    "active_claim_ids", "active_event_seq", "active_event_seqs", "active_user_decision_seq",
+    "active_user_event_seq", "actor_id", "brain_value", "claim_status", "content_claim_status",
+    "duplicates", "error", "event_count", "event_sequences", "excluded_claim_ids", "expected_slice",
+    "external_status", "flags", "historical_claim_ids", "historical_event_seqs", "ledger_event_count",
+    "lost", "must_explain", "must_include", "must_link", "must_not", "must_not_appear_in",
+    "must_request", "must_validate", "other_value", "projection_eventual_count", "recommended_reference",
+    "required_claim_ids", "required_status", "semantic_event_count", "slice", "stored_outcome_count", "value",
+}
 
 
 def parse_time(value: str) -> datetime:
@@ -641,7 +653,18 @@ def idempotency_holds(_case: dict[str, Any], decision: Decision) -> bool:
     } and decision.details.get("event_count") == 2
 
 
+def decision_matches_policy(case: dict[str, Any], decision: Decision) -> bool:
+    canonical = decide(case)
+    return (
+        decision.answer_mode == canonical.answer_mode
+        and decision.details == canonical.details
+        and decision_schema_valid(decision, maximum_repairs=2)
+    )
+
+
 def authorization_holds(case: dict[str, Any], decision: Decision) -> bool:
+    if not decision_matches_policy(case, decision):
+        return False
     data = case["input"]
     if case["category"] == "transport_bind":
         public_unauthenticated = data["network"] == "public" and data["bind"].startswith("0.0.0.0") and not data["auth_gate_passed"]
@@ -656,6 +679,8 @@ def authorization_holds(case: dict[str, Any], decision: Decision) -> bool:
 
 
 def purge_denial_holds(case: dict[str, Any], decision: Decision) -> bool:
+    if not decision_matches_policy(case, decision):
+        return False
     data = case["input"]
     if data.get("operation") == "restore":
         stale = data["backup_purge_epoch"] < data["registry_purge_epoch"]
@@ -668,15 +693,20 @@ def purge_denial_holds(case: dict[str, Any], decision: Decision) -> bool:
 
 
 def fail_closed_holds(case: dict[str, Any], decision: Decision) -> bool:
+    if not decision_matches_policy(case, decision):
+        return False
     data = case["input"]
     if case["category"] == "transport_bind":
         return decision.answer_mode == "refuse_public_startup" and not data["auth_gate_passed"]
     if data.get("operation") == "restore":
-        return data.get("registry_available") is True and decision.answer_mode.startswith("seal_until_epoch_")
+        stale_backup = data["backup_purge_epoch"] < data["registry_purge_epoch"]
+        return stale_backup and decision.answer_mode == f"seal_until_epoch_{data['registry_purge_epoch']}_applied"
     return (data.get("read_request") or data.get("read_target")) and decision.answer_mode.startswith("deny_read")
 
 
 def no_egress_holds(case: dict[str, Any], decision: Decision) -> bool:
+    if not decision_matches_policy(case, decision):
+        return False
     data = case["input"]
     blocked_modes = {
         "local_evidence_only", "treat_as_data", "deny_before_serialization", "redact_and_deny",
@@ -695,6 +725,8 @@ def no_egress_holds(case: dict[str, Any], decision: Decision) -> bool:
 
 
 def prompt_injection_holds(case: dict[str, Any], decision: Decision) -> bool:
+    if not decision_matches_policy(case, decision):
+        return False
     data = case["input"]
     text = next((value for key, value in data.items() if key.endswith("text")), data.get("source", {}).get("prompt_text", ""))
     injected = any(marker in text.lower() for marker in ("ignore", "system", "brain_", "unsupported=true", "retry queue"))
@@ -807,6 +839,8 @@ def decision_schema_valid(decision: Decision, maximum_repairs: int) -> bool:
         return False
     if not isinstance(decision.details, dict) or not all(isinstance(key, str) for key in decision.details):
         return False
+    if not set(decision.details).issubset(DECISION_DETAIL_FIELDS):
+        return False
     if not isinstance(decision.repair_attempts, int) or not 0 <= decision.repair_attempts <= maximum_repairs:
         return False
     try:
@@ -914,8 +948,8 @@ def evaluate_thresholds(measured: dict[str, float | int], contract: dict[str, An
 
     maximum_regression = contract["retrieval"]["maximum_absolute_regression"]
     for metric in ("recall_at_10", "ndcg_at_10"):
-        regression = baseline[metric] - measured[metric]
-        if regression > maximum_regression:
+        regression = Decimal(str(baseline[metric])) - Decimal(str(measured[metric]))
+        if regression > Decimal(str(maximum_regression)):
             failures.append(f"{metric} maximum_absolute_regression exceeded: {regression} > {maximum_regression}")
     return not failures, failures
 

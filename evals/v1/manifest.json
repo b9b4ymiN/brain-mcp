@@ -55,8 +55,8 @@
     },
     "adversarial": {
       "path": "evals/v1/cases/adversarial.jsonl",
-      "count": 34,
-      "sha256": "31c24b68fa1a87d6258a16a6a178a548cdab9676eeabbe93b5415b0e93e8edae",
+      "count": 36,
+      "sha256": "60093539f42d0b6f0b9c92cd58c474e91b35a8838cc2d64735766c7620442c8d",
       "minimum": 30,
       "minimum_per_required_category": 5
     }
@@ -80,13 +80,13 @@
   "promotion_policy": "A candidate is promotable only when every hard invariant passes, every threshold is met, no metric regresses by more than 0.02 absolute, artifacts match this byte lock, and the run emits failure samples and environment metadata.",
   "locked_artifacts": [
     {"path":"docs/adr/0001-semantic-authority-time-privacy.md","sha256":"f6135c610ae6c6aa4265af76654cfb2fe434de6c3b9fc564d079795b3998336f","bytes":18812},
-    {"path":"docs/security/threat-model-v1.md","sha256":"b93753adcb2b79c215c0d9cf468e881ce30c6ce0f07386dd81f7f4f77afc8a60","bytes":7440},
+    {"path":"docs/security/threat-model-v1.md","sha256":"bb3de7ce973982fa71f5d7b5fd0f8a53d6a8e85cbec0657035d592f317083125","bytes":7516},
     {"path":"evals/v1/contracts/event-schema-v1.json","sha256":"4c1c604bc0b8f08e5431b7e413b5d6f1c9775cf07af1bfb0339a97ea2da11fb9","bytes":3355},
     {"path":"evals/v1/metrics.json","sha256":"52cf853e13b1945a8f5fbe250b48b580d1a10dc3746c59a8853d2fae022a44e5","bytes":2995},
-    {"path":"evals/v1/run.py","sha256":"6250d58e6f3a6ceaf42dd0edc49b0794746a0a67f10e0edc5711de2bb1a5f7b1","bytes":54635},
+    {"path":"evals/v1/run.py","sha256":"7e366cc4be6792507a10da0f0f6cd850870ed1d018c2af5191ae7882e2e551df","bytes":56271},
     {"path":"evals/v1/cases/stocks.jsonl","sha256":"68be5e04fb8fec9627259f69781e9c685eb77d221000e3c532e07d156ff5eb77","bytes":10583},
     {"path":"evals/v1/cases/projects.jsonl","sha256":"7e5c9c98cfc623ded6f5f83497ab916e4b08982608eac9016aa3fb84461cb7bb","bytes":9174},
     {"path":"evals/v1/cases/knowledge.jsonl","sha256":"21902c69f02893789f4e63e834afea75c05699c6afb1544f3f94fbee1c1758b3","bytes":9335},
-    {"path":"evals/v1/cases/adversarial.jsonl","sha256":"31c24b68fa1a87d6258a16a6a178a548cdab9676eeabbe93b5415b0e93e8edae","bytes":9619}
+    {"path":"evals/v1/cases/adversarial.jsonl","sha256":"60093539f42d0b6f0b9c92cd58c474e91b35a8838cc2d64735766c7620442c8d","bytes":10210}
   ]
 }
