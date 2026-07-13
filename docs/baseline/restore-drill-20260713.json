@@ -1,7 +1,11 @@
 {
   "schema_version": 1,
   "passed": true,
-  "command": "powershell -File scripts/baseline_restore_drill.ps1",
+  "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/baseline_restore_drill.ps1",
+  "compatibility_commands": [
+    "powershell 5.1.26100.8737: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/baseline_restore_drill.ps1 (exit 0)",
+    "PowerShell 7.5.8: pwsh -NoProfile -File scripts/baseline_restore_drill.ps1 (exit 0)"
+  ],
   "fixture": "tests/fixtures/wikis/research",
   "file_count": 28,
   "source_composite_sha256": "98029B61601AB8A1B5B05514243AB1A78E3670148F19D97DE43B8CF3D75D4206",
@@ -17,6 +21,9 @@
     "red_commit": "ecca7d4",
     "red_result": "exit 1: raw JSON key ordering made search_parity false while Git, file hashes, and graph parity passed",
     "green_commit": "efed49b",
-    "green_result": "exit 0: recursively sorted object keys, preserved array order, and all parity checks passed"
+    "green_result": "exit 0: recursively sorted object keys, preserved array order, and all parity checks passed",
+    "validator_red_commit": "796b993",
+    "validator_red_result": "Windows PowerShell 5.1 raised NativeCommandError for successful git clone stderr progress and exposed use of newer .NET path/hash APIs",
+    "compatibility_green_result": "Invoke-Checked now defers native failure to the captured exit code; relative paths and SHA-256 use Windows PowerShell 5.1-compatible APIs; both PowerShell 5.1 and 7.5.8 exit 0"
   }
 }

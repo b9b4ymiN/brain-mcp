@@ -1,6 +1,6 @@
 # Task 0.1 Baseline Report
 
-Status: **AWAITING INDEPENDENT VALIDATION**
+Status: **AWAITING INDEPENDENT REVALIDATION**
 
 ## Outcome
 
@@ -19,7 +19,7 @@ The local immutable tag `vnext-upstream-baseline-20260713` and upstream tag `v0.
 | MCP integration | PASS | 76 passed |
 | ACP integration | PASS WITH KNOWN SKIPS | 26 passed, 2 persistent-session tests skipped |
 | Total Python integration | PASS WITH KNOWN SKIPS | 165 passed, 2 skipped |
-| Restore drill | PASS | Git HEAD, 28-file manifest/hash, semantic search, and graph parity |
+| Restore drill | PASS | Git HEAD, 28-file manifest/hash, semantic search, and graph parity under Windows PowerShell 5.1 and PowerShell 7.5.8 |
 | CodeGraph | PASS | 138 files, 2,197 nodes, 6,038 edges |
 | Linux upstream CI | PASS, HISTORICAL EXACT COMMIT | CI run 26642899431 and integration run 26642898659 on exact upstream SHA |
 | Current RustSec audit | FAIL, OPEN SECURITY RISK | 1 vulnerability plus 3 warnings; see `security-audit-20260713.json` |
@@ -37,6 +37,7 @@ Both runs completed successfully on Ubuntu for exact SHA `c49e7b30705f0055402dea
 2. The first explicit MSVC parallel test failed with Windows `os error 1455` (paging file too small). The rerun set `CARGO_INCREMENTAL=0`, used a repository-local target directory, and limited Cargo to one job; all 565 tests then passed.
 3. The first restore drill failed because JSON object key ordering differed after restore even though records, facets, scores, hashes, and graph output matched. RED checkpoint `ecca7d4` captures this. GREEN checkpoint `efed49b` recursively canonicalizes object keys while preserving array order; the drill then passed.
 4. `cargo audit` initially was unavailable. `cargo-audit 0.22.2` was installed with the pinned MSVC toolchain and one build job. The current audit then returned exit 1 with real findings; they are not reclassified as environment failures.
+5. Independent validation found that the documented restore command failed under Windows PowerShell 5.1: successful `git clone` progress on stderr became `NativeCommandError` under `ErrorActionPreference=Stop`, and the script used newer .NET path/hash helpers. The script now captures the native exit code before restoring the preference and uses compatible relative-path/SHA-256 APIs. Exact reruns passed on Windows PowerShell 5.1.26100.8737 and PowerShell 7.5.8.
 
 ## Risks and follow-up
 
@@ -44,6 +45,7 @@ Both runs completed successfully on Ubuntu for exact SHA `c49e7b30705f0055402dea
 - **Reproducibility:** `tests-integration/uv.lock` exists locally but is ignored and untracked. The integration environment is therefore not repository-reproducible yet.
 - **Test isolation:** the full Rust suite generated untracked JSON files in a tracked fixture directory. They were identified from the initially clean clone and removed. Future test runs need the same cleanup until the isolation defect is fixed in a permitted task.
 - **Windows resource sensitivity:** parallel clean builds can exceed the current pagefile. The reproducible Windows command uses MSVC, `CARGO_INCREMENTAL=0`, and `-j 1`.
+- **CI supply chain:** upstream workflows use mutable action tags (`actions/checkout@v6`, `Swatinem/rust-cache@v2`, and `astral-sh/setup-uv@v7`). Pin them to immutable commit SHAs in a task that permits CI changes.
 
 ## Rollback and data safety
 
@@ -52,9 +54,9 @@ No user data was read or migrated. Restore tests used generated temporary direct
 ## Execution accounting
 
 - Builder/orchestrator: Codex
-- Validator: independent read-only agent, pending
+- Validator: independent read-only agent; first review returned one restore-shell compatibility finding, revalidation pending
 - Product files changed: 0
 - Eval/script files changed: 1
 - Evidence files changed: 7
-- RED/GREEN retries: 1 restore-oracle retry; 2 Windows toolchain/resource retries; 1 security-tool availability retry
+- RED/GREEN retries: 1 restore-oracle retry; 1 validator restore-shell compatibility retry; 2 Windows toolchain/resource retries; 1 security-tool availability retry
 - Token telemetry: unavailable from the execution environment

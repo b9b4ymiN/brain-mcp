@@ -49,6 +49,14 @@
       "status": "OPEN_BASELINE_RISK"
     }
   ],
+  "supply_chain_risks": [
+    {
+      "kind": "mutable_github_action_tag",
+      "references": ["actions/checkout@v6", "Swatinem/rust-cache@v2", "astral-sh/setup-uv@v7"],
+      "status": "OPEN_BASELINE_RISK",
+      "decision": "Pin actions to immutable commit SHAs in a task that permits CI changes."
+    }
+  ],
   "decision": "Task 0.1 forbids dependency changes. Preserve these as honest baseline risks and resolve or formally accept them in the Phase 0 risk gate before semantic-core implementation.",
   "historical_ci_note": "The exact upstream commit passed cargo-audit in Linux CI on 2026-05-29, before the June/July 2026 advisories above were published. That historical success does not supersede this current failure."
 }

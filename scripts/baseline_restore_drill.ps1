@@ -11,21 +11,35 @@ $WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)
 
 function Invoke-Checked {
     param([string]$Command, [string[]]$Arguments)
-    $output = & $Command @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Command failed ($LASTEXITCODE): $Command $($Arguments -join ' ')`n$($output -join "`n")"
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 wraps native stderr as ErrorRecord. Git writes
+        # successful clone progress to stderr, so defer failure to the exit code.
+        $ErrorActionPreference = 'Continue'
+        $output = & $Command @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
+        throw "Command failed ($exitCode): $Command $($Arguments -join ' ')`n$($output -join "`n")"
     }
     return @($output)
 }
 
 function Get-FileManifest {
     param([string]$Root)
+    $rootPrefix = [System.IO.Path]::GetFullPath($Root)
+    if (-not $rootPrefix.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+        $rootPrefix += [System.IO.Path]::DirectorySeparatorChar
+    }
     return @(Get-ChildItem -LiteralPath $Root -Recurse -File |
         Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' } |
         Sort-Object FullName |
         ForEach-Object {
             [pscustomobject]@{
-                path = [System.IO.Path]::GetRelativePath($Root, $_.FullName).Replace('\', '/')
+                path = $_.FullName.Substring($rootPrefix.Length).Replace('\', '/')
                 bytes = $_.Length
                 sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
             }
@@ -36,7 +50,14 @@ function Get-CompositeHash {
     param([object[]]$Manifest)
     $canonical = ($Manifest | ForEach-Object { "$($_.path)`t$($_.bytes)`t$($_.sha256)" }) -join "`n"
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
-    return [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($bytes))
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha256.ComputeHash($bytes)
+    }
+    finally {
+        $sha256.Dispose()
+    }
+    return ([System.BitConverter]::ToString($hash)).Replace('-', '')
 }
 
 function ConvertTo-CanonicalObject {
