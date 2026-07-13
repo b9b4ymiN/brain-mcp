@@ -1,6 +1,6 @@
 # Task 0.2 Authority/Time/Privacy ADR Report
 
-Status: **AWAITING INDEPENDENT REVALIDATION**
+Status: **PASS** — independently validated at canonical HEAD `3708ec7ba0dd2f352d1134d2f8a9545310a5ce51`
 
 ## Outcome
 
@@ -88,7 +88,7 @@ The first independent review returned `FAIL` with four blocking findings. Each e
 3. Critical threat rows referenced future suites rather than executable IDs. TM-011, TM-012, TM-013, and TM-023 now map to concrete current IDs, including a real `0.0.0.0` unauthenticated-bind refusal case.
 4. `git diff --check` reported trailing blank lines. Both affected documents were normalized and the check now exits 0.
 
-Revalidation remains mandatory before Task 0.3 starts.
+Independent revalidation completed successfully; Task 0.3 may start after closure bookkeeping.
 
 The second independent review also returned `FAIL`, identifying semantic shortcuts rather than missing files. Those findings produced RED checkpoint `1ee2a9e` and the following stronger gates:
 
@@ -122,7 +122,7 @@ The fourth independent review found that the two new registry cases still shared
 - Complete auth matrix and AS choice: Decision 8.
 - Threat owner/severity/control/tests: threat model TM-001 through TM-024.
 - Versioned/hash-locked evals with formulas/thresholds: `evals/v1` manifest and metrics.
-- Independent Validator: four reviews failed with exact blockers; all feedback sets are implemented and a fifth validation is pending.
+- Independent Validator: four reviews failed with exact blockers; the fifth review returned `PASS` with no final blocker or new security regression.
 
 ## Rollback and data safety
 
@@ -131,7 +131,7 @@ Task 0.2 is documentation and synthetic test data only. Reverting its commits re
 ## Execution accounting
 
 - Builder/orchestrator: Codex
-- Validator: independent read-only agent; initial `FAIL`, revalidation pending
+- Validator: independent read-only agent; final `PASS` at `3708ec7ba0dd2f352d1134d2f8a9545310a5ce51`
 - Production code changed: 0 lines
 - Synthetic eval cases: 126
 - TDD retries: initial missing-artifact RED, first validator-feedback runner/critical-case RED, second validator-feedback complete-semantics RED, third validator-feedback forged-output/restore-boundary RED, fourth validator-feedback isolated-registry-cause RED, one stocks provenance oracle failure, one invariant-mode failure, and one aggregate-pytest collection limitation corrected from their exact messages
