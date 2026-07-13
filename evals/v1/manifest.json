@@ -56,7 +56,7 @@
     "adversarial": {
       "path": "evals/v1/cases/adversarial.jsonl",
       "count": 36,
-      "sha256": "60093539f42d0b6f0b9c92cd58c474e91b35a8838cc2d64735766c7620442c8d",
+      "sha256": "97d44b6dd000db24b403c6cdc4c4ff7ade3f9db2c03b224b2e3fffddfab00ae7",
       "minimum": 30,
       "minimum_per_required_category": 5
     }
@@ -83,10 +83,10 @@
     {"path":"docs/security/threat-model-v1.md","sha256":"bb3de7ce973982fa71f5d7b5fd0f8a53d6a8e85cbec0657035d592f317083125","bytes":7516},
     {"path":"evals/v1/contracts/event-schema-v1.json","sha256":"4c1c604bc0b8f08e5431b7e413b5d6f1c9775cf07af1bfb0339a97ea2da11fb9","bytes":3355},
     {"path":"evals/v1/metrics.json","sha256":"52cf853e13b1945a8f5fbe250b48b580d1a10dc3746c59a8853d2fae022a44e5","bytes":2995},
-    {"path":"evals/v1/run.py","sha256":"7e366cc4be6792507a10da0f0f6cd850870ed1d018c2af5191ae7882e2e551df","bytes":56271},
+    {"path":"evals/v1/run.py","sha256":"ae1049a9838bd8615943c330792d4d1813d8b6a57bf306e6bfa96c8b59311062","bytes":56905},
     {"path":"evals/v1/cases/stocks.jsonl","sha256":"68be5e04fb8fec9627259f69781e9c685eb77d221000e3c532e07d156ff5eb77","bytes":10583},
     {"path":"evals/v1/cases/projects.jsonl","sha256":"7e5c9c98cfc623ded6f5f83497ab916e4b08982608eac9016aa3fb84461cb7bb","bytes":9174},
     {"path":"evals/v1/cases/knowledge.jsonl","sha256":"21902c69f02893789f4e63e834afea75c05699c6afb1544f3f94fbee1c1758b3","bytes":9335},
-    {"path":"evals/v1/cases/adversarial.jsonl","sha256":"60093539f42d0b6f0b9c92cd58c474e91b35a8838cc2d64735766c7620442c8d","bytes":10210}
+    {"path":"evals/v1/cases/adversarial.jsonl","sha256":"97d44b6dd000db24b403c6cdc4c4ff7ade3f9db2c03b224b2e3fffddfab00ae7","bytes":10210}
   ]
 }

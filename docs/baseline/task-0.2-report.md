@@ -40,8 +40,8 @@ No Rust source, existing MCP contract, storage schema, dependency, lockfile, wor
 - Validator-feedback RED checkpoint: `9c4de17414ebc042601e83563bd3d5f455da2002`.
 - Validator-feedback RED result: exit 1; three tests failed because the executable runner, its byte lock, and concrete purge/restore/public-bind/key-revocation cases did not yet exist.
 - Final GREEN result: exit 0; 10 passed.
-- Governance coverage on isolated Python 3.14.4 with pytest 9.0.2 and coverage 7.13.1: 202 statements, 4 missed, 98%.
-- Eval-runner coverage on the locked Python 3.14.4 toolchain: 755 statements, 43 missed, 94%.
+- Governance coverage on isolated Python 3.14.4 with pytest 9.0.2 and coverage 7.13.1: 203 statements, 4 missed, 98%.
+- Eval-runner coverage on the locked Python 3.14.4 toolchain: 759 statements, 43 missed, 94%.
 - Event schema: `Draft202012Validator.check_schema`; exit 0.
 
 The locked reference command is:
@@ -75,7 +75,7 @@ The separate-suite command exited 0 in 164.6 seconds.
 | Stocks | 30 | `68be5e04fb8fec9627259f69781e9c685eb77d221000e3c532e07d156ff5eb77` |
 | Projects | 30 | `7e5c9c98cfc623ded6f5f83497ab916e4b08982608eac9016aa3fb84461cb7bb` |
 | Knowledge | 30 | `21902c69f02893789f4e63e834afea75c05699c6afb1544f3f94fbee1c1758b3` |
-| Adversarial | 36 | `60093539f42d0b6f0b9c92cd58c474e91b35a8838cc2d64735766c7620442c8d` |
+| Adversarial | 36 | `97d44b6dd000db24b403c6cdc4c4ff7ade3f9db2c03b224b2e3fffddfab00ae7` |
 
 The adversarial corpus retains the six original risk groups and adds concrete executable cases for purge-registry denial during cleanup, stale restore after a newer purge epoch, attempted public bind without authentication, revoked-key cleanup retry, restore while the registry is unavailable, and restore with an invalid registry checksum.
 
@@ -104,6 +104,8 @@ The third independent review returned `FAIL` with three adversarial edge cases, 
 2. `adversarial-035` and `adversarial-036` prove restore remains sealed when the Purge Registry is unavailable or checksum-invalid. This corrects the evaluator to match the ADR's fail-closed semantics.
 3. Retrieval regression comparison now uses decimal values. A drop exactly equal to `0.02` passes, while `0.021` fails, matching the contract's “greater than 0.02” boundary.
 
+The fourth independent review found that the two new registry cases still shared the stale-epoch condition and therefore did not isolate their intended causes. RED checkpoint `68a5327` now requires equal backup/registry epochs in both cases. The final oracle reads all three independent seal causes—stale epoch, unavailable registry, or invalid registry checksum—and 035/036 pass solely because of the latter two conditions.
+
 ## Security findings and gates
 
 - Current Keycloak documentation still calls MCP 2025-11-25 partially supported without Resource Indicators. The ADR therefore blocks remote exposure until exact conformance is proven and records AS replacement as the safe fallback.
@@ -120,7 +122,7 @@ The third independent review returned `FAIL` with three adversarial edge cases, 
 - Complete auth matrix and AS choice: Decision 8.
 - Threat owner/severity/control/tests: threat model TM-001 through TM-024.
 - Versioned/hash-locked evals with formulas/thresholds: `evals/v1` manifest and metrics.
-- Independent Validator: three reviews failed with exact blockers; all feedback sets are implemented and a fourth validation is pending.
+- Independent Validator: four reviews failed with exact blockers; all feedback sets are implemented and a fifth validation is pending.
 
 ## Rollback and data safety
 
@@ -132,7 +134,7 @@ Task 0.2 is documentation and synthetic test data only. Reverting its commits re
 - Validator: independent read-only agent; initial `FAIL`, revalidation pending
 - Production code changed: 0 lines
 - Synthetic eval cases: 126
-- TDD retries: initial missing-artifact RED, first validator-feedback runner/critical-case RED, second validator-feedback complete-semantics RED, third validator-feedback forged-output/restore-boundary RED, one stocks provenance oracle failure, one invariant-mode failure, and one aggregate-pytest collection limitation corrected from their exact messages
+- TDD retries: initial missing-artifact RED, first validator-feedback runner/critical-case RED, second validator-feedback complete-semantics RED, third validator-feedback forged-output/restore-boundary RED, fourth validator-feedback isolated-registry-cause RED, one stocks provenance oracle failure, one invariant-mode failure, and one aggregate-pytest collection limitation corrected from their exact messages
 - Governance coverage: 98%
 - Eval-runner coverage: 94%
 - Token telemetry: unavailable from the execution environment

@@ -306,7 +306,12 @@ def decide_adversarial(category: str, data: dict[str, Any]) -> Decision:
         return Decision("one_commit_replay_outcome" if same else "reject_conflict", {"event_count": 1})
     if category == "purge_crash":
         if data.get("operation") == "restore":
-            return Decision(f"seal_until_epoch_{data['registry_purge_epoch']}_applied")
+            must_seal = (
+                data["backup_purge_epoch"] < data["registry_purge_epoch"]
+                or data.get("registry_available") is False
+                or data.get("registry_checksum_valid") is False
+            )
+            return Decision(f"seal_until_epoch_{data['registry_purge_epoch']}_applied" if must_seal else "restore_allowed")
         return Decision("deny_read_cleanup_pending" if data["stage"] == "registry_denied" else "deny_read_retry_cleanup")
     if category == "transport_bind":
         public = data["bind"].startswith("0.0.0.0") and data["network"] == "public"
@@ -683,8 +688,12 @@ def purge_denial_holds(case: dict[str, Any], decision: Decision) -> bool:
         return False
     data = case["input"]
     if data.get("operation") == "restore":
-        stale = data["backup_purge_epoch"] < data["registry_purge_epoch"]
-        return not stale or decision.answer_mode == f"seal_until_epoch_{data['registry_purge_epoch']}_applied"
+        must_seal = (
+            data["backup_purge_epoch"] < data["registry_purge_epoch"]
+            or data.get("registry_available") is False
+            or data.get("registry_checksum_valid") is False
+        )
+        return must_seal and decision.answer_mode == f"seal_until_epoch_{data['registry_purge_epoch']}_applied"
     if data.get("read_request") or data.get("read_target"):
         return decision.answer_mode.startswith(("deny_read", "seal_until_epoch_"))
     if data.get("command") == "brain_purge":
@@ -700,7 +709,10 @@ def fail_closed_holds(case: dict[str, Any], decision: Decision) -> bool:
         return decision.answer_mode == "refuse_public_startup" and not data["auth_gate_passed"]
     if data.get("operation") == "restore":
         stale_backup = data["backup_purge_epoch"] < data["registry_purge_epoch"]
-        return stale_backup and decision.answer_mode == f"seal_until_epoch_{data['registry_purge_epoch']}_applied"
+        registry_unavailable = data.get("registry_available") is False
+        checksum_invalid = data.get("registry_checksum_valid") is False
+        must_seal = stale_backup or registry_unavailable or checksum_invalid
+        return must_seal and decision.answer_mode == f"seal_until_epoch_{data['registry_purge_epoch']}_applied"
     return (data.get("read_request") or data.get("read_target")) and decision.answer_mode.startswith("deny_read")
 
 
