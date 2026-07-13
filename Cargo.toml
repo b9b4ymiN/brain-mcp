@@ -18,6 +18,10 @@ exclude = [".github/", "tests/", "tests-integration/", "docs/"]
 name = "llm_wiki"
 path = "src/lib.rs"
 
+[features]
+default = []
+semantic-test-failpoints = []
+
 [[bin]]
 name = "llm-wiki"
 path = "src/main.rs"
