@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -10,13 +10,14 @@ use jsonschema::validator_for;
 use llm_wiki::semantic::{
     CaptureCommand, ClaimDraft, ConfirmCommand, ManualRecovery, MutationOutcome, ProjectionState,
     ProposeCommand, RollbackStatus, SemanticClock, SemanticConfig, SemanticError, SemanticStore,
-    StoreDiagnostics, TrustedContext, canonicalize_json,
+    StoreDiagnostics, TrustedContext, canonicalize_json, event_hash_from_value,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use uuid::{Uuid, Version};
 
 const EVENT_SCHEMA: &str = include_str!("../evals/v1/contracts/event-schema-v1.json");
+static CRASH_PROCESS_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug)]
 struct TestClock(AtomicI64);
@@ -229,12 +230,33 @@ fn capture_propose_confirm_is_schema_valid_trusted_and_bitemporal() {
 #[test]
 fn rfc8785_vector_hash_chain_and_byte_exact_idempotency() {
     let vector = json!({
-        "numbers": [333333333.33333329_f64, 1E30_f64, 4.50_f64, 2e-3_f64, 1e-27_f64],
+        "numbers": [333_333_333.333_333_3_f64, 1E30_f64, 4.50_f64, 2e-3_f64, 1e-27_f64],
         "string": "€$\u{000f}\nA'B\"\\\\\"/",
         "literals": [null, true, false]
     });
     let expected = "{\"literals\":[null,true,false],\"numbers\":[333333333.3333333,1e+30,4.5,0.002,1e-27],\"string\":\"€$\\u000f\\nA'B\\\"\\\\\\\\\\\"/\"}";
     assert_eq!(canonicalize_json(&vector).unwrap(), expected.as_bytes());
+
+    let fixed_event = json!({
+        "schema_version": 1,
+        "event_id": "01890f7e-3c00-7000-8000-000000000001",
+        "owner_id": "01890f7e-3c00-7000-8000-000000000002",
+        "event_seq": 2,
+        "event_type": "claim_confirmed",
+        "recorded_at": "2026-07-13T02:00:00Z",
+        "actor_id": "01890f7e-3c00-7000-8000-000000000003",
+        "client_id": "01890f7e-3c00-7000-8000-000000000004",
+        "operation_id": "fixed-chain-vector",
+        "request_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "payload": {"kind":"object_ref","object_id":format!("sha256:{}", "2".repeat(64)),"media_type":"application/vnd.brain.semantic+json"},
+        "prior_event_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+        "event_hash": "this field is deliberately omitted by the hash contract",
+        "purge_epoch": 0
+    });
+    assert_eq!(
+        event_hash_from_value(&fixed_event).unwrap(),
+        "47750a496d582f4c10c374ff0e35552250bc63b9b81ab2623e30ab96ea4ae584"
+    );
 
     let (_parent, _root, store, context) = fixture();
     let command = capture("same-operation", b"same bytes");
@@ -261,6 +283,68 @@ fn rfc8785_vector_hash_chain_and_byte_exact_idempotency() {
         Err(SemanticError::IdempotencyConflict)
     ));
     assert_eq!(store.diagnostics().unwrap().events, 1);
+}
+
+#[test]
+fn deserialized_commands_reject_all_identity_and_domain_id_injection() {
+    for injected in [
+        "owner_id",
+        "event_id",
+        "actor_id",
+        "client_id",
+        "source_id",
+        "rendition_id",
+        "evidence_id",
+        "proposal_id",
+        "claim_id",
+    ] {
+        let mut command = json!({
+            "operation_id": "injection-test",
+            "bytes": [115, 97, 102, 101],
+            "media_type": "text/plain"
+        });
+        command[injected] = json!("01890f7e-3c00-7000-8000-000000000099");
+        assert!(
+            serde_json::from_value::<CaptureCommand>(command).is_err(),
+            "command accepted injected {injected}"
+        );
+    }
+}
+
+#[test]
+fn sqlite_authority_pragmas_schema_and_ledger_tamper_guard_are_executable() {
+    let (_parent, root, store, context) = fixture();
+    let pragmas = store.storage_pragmas().unwrap();
+    assert_eq!(pragmas.journal_mode.to_ascii_lowercase(), "wal");
+    assert_eq!(pragmas.synchronous, 2);
+    assert_eq!(pragmas.foreign_keys, 1);
+    assert_eq!(pragmas.busy_timeout_ms, 5_000);
+
+    store
+        .capture(&context, capture("tamper-guard", b"ledger integrity"))
+        .unwrap();
+    let connection = rusqlite::Connection::open(root.join("semantic.sqlite3")).unwrap();
+    for table in ["events", "operations", "outbox"] {
+        let exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1, "missing authority table {table}");
+    }
+    connection
+        .execute(
+            "UPDATE events SET event_hash=?1 WHERE event_seq=1",
+            ["ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"],
+        )
+        .unwrap();
+    drop(connection);
+    assert!(matches!(
+        store.recover(ManualRecovery),
+        Err(SemanticError::CorruptLedger(_))
+    ));
 }
 
 #[test]
@@ -371,6 +455,7 @@ fn crash_worker() {
 
 #[test]
 fn abrupt_failpoint_matrix_has_atomic_recovery_and_effectively_once_projection() {
+    let _crash_process_guard = CRASH_PROCESS_LOCK.lock().unwrap();
     let pre_commit = [
         "after_idempotency_reservation",
         "after_object_temp_flush",
@@ -424,6 +509,7 @@ fn abrupt_failpoint_matrix_has_atomic_recovery_and_effectively_once_projection()
 
 #[test]
 fn recovery_preserves_shared_objects_and_is_checksum_idempotent() {
+    let _crash_process_guard = CRASH_PROCESS_LOCK.lock().unwrap();
     let (parent, root, store, context) = fixture();
     let first = store
         .capture(&context, capture("shared-first", b"deduplicated"))
@@ -481,7 +567,7 @@ fn rollback_capability_is_bound_rejects_live_handles_and_is_repeatable() {
 
     let outside = tempfile::tempdir().unwrap();
     let error =
-        SemanticStore::create(&outside.path().join("store"), enabled(parent.path())).unwrap_err();
+        SemanticStore::create(outside.path().join("store"), enabled(parent.path())).unwrap_err();
     assert!(matches!(error, SemanticError::InvalidRoot(_)));
     let repo_error = SemanticStore::create(
         Path::new(env!("CARGO_MANIFEST_DIR")),
@@ -489,6 +575,9 @@ fn rollback_capability_is_bound_rejects_live_handles_and_is_repeatable() {
     )
     .unwrap_err();
     assert!(matches!(repo_error, SemanticError::InvalidRoot(_)));
+    let git_error =
+        SemanticStore::create(parent.path().join(".git"), enabled(parent.path())).unwrap_err();
+    assert!(matches!(git_error, SemanticError::InvalidRoot(_)));
 }
 
 #[test]

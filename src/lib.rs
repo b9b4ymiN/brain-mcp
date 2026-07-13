@@ -34,6 +34,8 @@ pub mod mcp;
 pub mod ops;
 /// Full-text BM25 search and paginated list operations.
 pub mod search;
+/// Feature-flagged semantic event ledger and application-core boundary.
+pub mod semantic;
 /// HTTP and stdio server entry points.
 pub mod server;
 /// Slug validation, resolution, and URI parsing.

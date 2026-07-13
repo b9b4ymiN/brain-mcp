@@ -42,6 +42,7 @@ serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 toml       = "1.1"
+serde_jcs  = "=0.2.0"
 
 # JSON Schema validation
 jsonschema = "0.46"
@@ -80,7 +81,10 @@ axum       = "0.8"
 parking_lot = "0.12"
 
 # UUID generation
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+
+# Isolated semantic authority spike (Task 0.3)
+rusqlite = { version = "=0.40.1", features = ["bundled"] }
 
 # ACP server
 agent-client-protocol = "0.12"
@@ -89,6 +93,9 @@ notify = "8"
 
 [dev-dependencies]
 tempfile   = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
 
 [profile.release]
 opt-level      = 3
