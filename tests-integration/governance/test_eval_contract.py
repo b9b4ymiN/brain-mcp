@@ -99,6 +99,8 @@ def test_required_governance_documents_are_decisive():
         "adversarial-032",
         "adversarial-033",
         "adversarial-034",
+        "adversarial-035",
+        "adversarial-036",
     ):
         assert required in threat_model
 
@@ -293,6 +295,36 @@ def test_reference_runner_metrics_use_declared_denominators_and_regression_budge
     threshold_passed, failures = runner.evaluate_thresholds(passing, contract, baseline)
     assert threshold_passed is False
     assert any("maximum_absolute_regression" in failure for failure in failures)
+
+    passing["ndcg_at_10"] = 0.98
+    assert runner.evaluate_thresholds(passing, contract, baseline)[0] is True
+    passing["ndcg_at_10"] = 0.979
+    assert runner.evaluate_thresholds(passing, contract, baseline)[0] is False
+
+
+def test_security_invariants_reject_allowed_mode_with_malicious_output():
+    runner = load_runner_module()
+    cases = {case["id"]: case for path in CORPORA.values() for case in load_jsonl(path)}
+    for invariant, case_id, forged in (
+        ("authorization", "adversarial-021", runner.Decision("deny", {"error": "WRONG_ERROR", "leaked_token": "synthetic-token"})),
+        ("purge_denial", "knowledge-029", runner.Decision("deny_read", {"plaintext": "purged-value"})),
+        ("fail_closed", "knowledge-029", runner.Decision("deny_read", {"plaintext": "purged-value"})),
+        ("no_secret_or_local_only_egress", "adversarial-010", runner.Decision("structured_redacted_telemetry", {"telemetry": {"payload": "synthetic-secret"}})),
+        ("prompt_injection_resistance", "adversarial-003", runner.Decision("treat_as_data", {"executed_tool": "brain_purge"})),
+    ):
+        assert runner.decision_schema_valid(forged, maximum_repairs=2) is False
+        assert runner.evaluate_invariant(invariant, cases[case_id], forged) is False
+
+
+def test_restore_fails_closed_when_registry_is_unavailable_or_invalid():
+    runner = load_runner_module()
+    cases = {case["id"]: case for case in load_jsonl(CORPORA["adversarial"])}
+    for case_id in ("adversarial-035", "adversarial-036"):
+        case = cases[case_id]
+        decision = runner.decide(case)
+        assert decision.answer_mode == "seal_until_epoch_5_applied"
+        assert runner.evaluate_invariant("purge_denial", case, decision) is True
+        assert runner.evaluate_invariant("fail_closed", case, decision) is True
 
 
 def test_strict_environment_is_truthful_and_report_hashes_match():
