@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "source_commit": "c49e7b30705f0055402dea2b2ec3b1471c1e29b3",
+  "canonical_layers": [
+    "Markdown wiki content",
+    "Git history"
+  ],
+  "rebuildable_layers": [
+    "Tantivy search index",
+    "Petgraph graph projection"
+  ],
+  "event_ledger": null,
+  "event_ledger_note": "N/A: upstream v0.4.15 has no semantic event ledger.",
+  "schema_count": 14,
+  "schemas": [
+    {"path":"schemas/base.json","sha256":"6E3BBA7AEAFB0B2D25DD55DF2BD05D869BC3D042C17E9553DCAFB781BD7F3030"},
+    {"path":"schemas/concept.json","sha256":"7F9645E04213EFF764C49CAC3C715C987AE6BF6197D438E4C7401683DBA306BF"},
+    {"path":"schemas/concept.md","sha256":"35765D57A9EE6F2BD91545330211B6F3489F5FCF4B78A8146EAC77B586953C79"},
+    {"path":"schemas/doc.json","sha256":"6B748D7578CE92CF8D506031CEB81D588A6FBDF4248BFC14871C6176ACF722CC"},
+    {"path":"schemas/doc.md","sha256":"DF581E81AA0C31FBC3058EE6759B6D86ACFA1C23DF20FEEDABF77C2725303C8B"},
+    {"path":"schemas/paper.json","sha256":"D5F55223A706A6E0306D45957DDDA9AA75BC41A6B10FF4F3E91DA098B357CE4B"},
+    {"path":"schemas/paper.md","sha256":"8A3F1DFFE4868194ED51C5F75E0517DCA06B7512CB8E3C65CAAE9ED19AC93E1B"},
+    {"path":"schemas/procedure.json","sha256":"B63F7D50C1EDE2E5E4519FAB316E4447A60AEA9273E49107BA5493507C65F658"},
+    {"path":"schemas/profile.json","sha256":"13886DF42C6D56C27D8A697645E9FE043A7958DF9D134847CE1DB0C3E3B85572"},
+    {"path":"schemas/query-result.md","sha256":"A5211D7E15FE5CBEAC400B31664610E24CA9C108926B343810997D6FFC73B086"},
+    {"path":"schemas/section.json","sha256":"47CA833A168B8842E165328CFAC80A4A1BFD1CF24C3B44437F2A39373435639F"},
+    {"path":"schemas/section.md","sha256":"504304E47323AEF6F7214D05B622AADB5ADD00C6FBA8F4E7C114DFF929A4B833"},
+    {"path":"schemas/semantic.json","sha256":"788BFC32681CEBF57045D31B7B14407189ECCDB6B36667FA420CC911987AE322"},
+    {"path":"schemas/skill.json","sha256":"4E4A4E8472AB8924C16DC7883D217DCD0CA93BCD1E34CE013D6969C8B5C6B557"}
+  ]
+}

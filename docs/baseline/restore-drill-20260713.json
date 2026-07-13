@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "passed": true,
+  "command": "powershell -File scripts/baseline_restore_drill.ps1",
+  "fixture": "tests/fixtures/wikis/research",
+  "file_count": 28,
+  "source_composite_sha256": "98029B61601AB8A1B5B05514243AB1A78E3670148F19D97DE43B8CF3D75D4206",
+  "restore_composite_sha256": "98029B61601AB8A1B5B05514243AB1A78E3670148F19D97DE43B8CF3D75D4206",
+  "git_head_parity": true,
+  "search_parity": true,
+  "graph_parity": true,
+  "source_rebuild": {"pages_indexed":8,"skipped":0,"duration_ms":76},
+  "restore_rebuild": {"pages_indexed":8,"skipped":0,"duration_ms":77},
+  "ledger_event_sequence": "N/A: upstream baseline has no event ledger",
+  "isolation": "All source, backup, restore, configs, and indexes were created under a generated OS temporary directory; no user data was read or written.",
+  "tdd_checkpoints": {
+    "red_commit": "ecca7d4",
+    "red_result": "exit 1: raw JSON key ordering made search_parity false while Git, file hashes, and graph parity passed",
+    "green_commit": "efed49b",
+    "green_result": "exit 0: recursively sorted object keys, preserved array order, and all parity checks passed"
+  }
+}

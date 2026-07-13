@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-13",
+  "command": "cargo +1.95-x86_64-pc-windows-msvc audit --json",
+  "exit_code": 1,
+  "cargo_audit_version": "0.22.2",
+  "rustsec_database": {
+    "advisory_count": 1160,
+    "last_commit": "6e3286f4efa8c142fb33e5ea4342c8db6693cf34",
+    "last_updated": "2026-07-12T09:10:54+02:00"
+  },
+  "dependency_count": 444,
+  "vulnerabilities": [
+    {
+      "id": "RUSTSEC-2026-0204",
+      "package": "crossbeam-epoch",
+      "installed": "0.9.18",
+      "patched": ">=0.9.20",
+      "path": "llm-wiki-engine -> tantivy -> rayon -> rayon-core -> crossbeam-deque -> crossbeam-epoch",
+      "risk": "Invalid pointer dereference in fmt::Pointer for invalid Atomic/Shared pointers.",
+      "status": "OPEN_BASELINE_RISK"
+    }
+  ],
+  "warnings": [
+    {
+      "id": "RUSTSEC-2026-0190",
+      "kind": "unsound",
+      "package": "anyhow",
+      "installed": "1.0.102",
+      "patched": ">=1.0.103",
+      "affected_function": "anyhow::Error::downcast_mut",
+      "status": "OPEN_BASELINE_RISK"
+    },
+    {
+      "id": "RUSTSEC-2026-0186",
+      "kind": "unsound",
+      "package": "memmap2",
+      "installed": "0.9.10",
+      "patched": ">=0.9.11",
+      "path": "llm-wiki-engine -> tantivy -> memmap2",
+      "status": "OPEN_BASELINE_RISK"
+    },
+    {
+      "id": "RUSTSEC-2025-0141",
+      "kind": "unmaintained",
+      "package": "bincode",
+      "installed": "2.0.1",
+      "path": "llm-wiki-engine -> petgraph-live -> bincode",
+      "status": "OPEN_BASELINE_RISK"
+    }
+  ],
+  "decision": "Task 0.1 forbids dependency changes. Preserve these as honest baseline risks and resolve or formally accept them in the Phase 0 risk gate before semantic-core implementation.",
+  "historical_ci_note": "The exact upstream commit passed cargo-audit in Linux CI on 2026-05-29, before the June/July 2026 advisories above were published. That historical success does not supersede this current failure."
+}

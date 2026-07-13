@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-13",
+  "commit": "c49e7b30705f0055402dea2b2ec3b1471c1e29b3",
+  "binary": "target/debug/llm-wiki.exe",
+  "protocol": "one process per invocation; one warm-up followed by five measured runs; milliseconds; p95 is the maximum of five samples",
+  "fixture": "tests/fixtures/wikis/research",
+  "results": {
+    "search": {
+      "query": "mixture experts",
+      "samples_ms": [59.2, 56.817, 56.312, 57.85, 57.87],
+      "median_ms": 57.85,
+      "p95_ms": 59.2
+    },
+    "graph": {
+      "samples_ms": [55.426, 55.053, 54.976, 56.001, 54.95],
+      "median_ms": 55.053,
+      "p95_ms": 56.001
+    },
+    "index_status": {
+      "samples_ms": [64.402, 62.219, 64.204, 68.147, 66.971],
+      "median_ms": 64.402,
+      "p95_ms": 68.147
+    }
+  }
+}

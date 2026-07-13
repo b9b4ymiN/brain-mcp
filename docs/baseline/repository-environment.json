@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-07-13",
+  "canonical_path": "C:\\Programing\\AI2.0\\jarvis\\brain-mcp-vnext",
+  "upstream_url": "https://github.com/hataichanokpan-dev/brain-mcp.git",
+  "upstream_commit": "c49e7b30705f0055402dea2b2ec3b1471c1e29b3",
+  "upstream_version_tag": "v0.4.15",
+  "local_baseline_tag": "vnext-upstream-baseline-20260713",
+  "branch": "vnext/phase-0",
+  "submodules": [],
+  "cargo_lock_sha256": "C1471957D001E825E249AD82AB07A11DA488B6259398694AD9123449254E1B7F",
+  "toolchain": {
+    "rustc": "1.95.0 (59807616e 2026-04-14)",
+    "cargo": "1.95.0 (f2d3ce0bd 2026-03-21)",
+    "host": "x86_64-pc-windows-msvc",
+    "llvm": "22.1.2",
+    "uv": "0.11.7 (9d177269e 2026-04-15 x86_64-pc-windows-msvc)",
+    "integration_python": "3.14.4",
+    "cargo_audit": "0.22.2"
+  },
+  "environment": {
+    "os": "Microsoft Windows 11 Home Single Language",
+    "os_version": "10.0.26200",
+    "cpu": "AMD Ryzen 7 5800X 8-Core Processor",
+    "logical_cpu": 16,
+    "ram_gib": 15.92
+  },
+  "codegraph": {
+    "healthy": true,
+    "files": 138,
+    "nodes": 2197,
+    "edges": 6038,
+    "languages": {
+      "rust": 91,
+      "python": 41,
+      "yaml": 6
+    }
+  },
+  "python_lock": {
+    "path": "tests-integration/uv.lock",
+    "exists_locally": true,
+    "tracked": false,
+    "ignored": true,
+    "sha256": "D79D6E1BDED667F2F5C915B6A9791DA4AED67849FB2831FF51E7C50E9B35271D",
+    "risk": "The integration environment is not reproducible from a repository-tracked uv lockfile. Resolve in Task 0.3 before declaring the Phase 0 gate."
+  }
+}
