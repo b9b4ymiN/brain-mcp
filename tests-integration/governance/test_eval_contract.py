@@ -321,6 +321,7 @@ def test_restore_fails_closed_when_registry_is_unavailable_or_invalid():
     cases = {case["id"]: case for case in load_jsonl(CORPORA["adversarial"])}
     for case_id in ("adversarial-035", "adversarial-036"):
         case = cases[case_id]
+        assert case["input"]["backup_purge_epoch"] == case["input"]["registry_purge_epoch"]
         decision = runner.decide(case)
         assert decision.answer_mode == "seal_until_epoch_5_applied"
         assert runner.evaluate_invariant("purge_denial", case, decision) is True
