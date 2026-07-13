@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "hard_invariants_pass_rate": 1.0,
+  "hard_invariants": [
+    "temporal_correctness",
+    "provenance_valid",
+    "idempotency",
+    "authorization",
+    "purge_denial",
+    "no_secret_or_local_only_egress",
+    "no_confirmed_unsupported_claim"
+  ],
+  "retrieval": {
+    "recall_at_10": {"minimum": 0.9},
+    "ndcg_at_10": {"minimum": 0.8},
+    "maximum_absolute_regression": 0.02
+  },
+  "extraction": {
+    "schema_valid_after_bounded_repair": {"minimum": 0.99, "maximum_repairs": 2},
+    "evidence_span_exactness": {"minimum": 1.0},
+    "supported_claim_precision": {"minimum": 0.95},
+    "confirmed_unsupported_claims": {"maximum": 0}
+  },
+  "formulas": {
+    "hard_invariants_pass_rate": "hard_invariant_cases_passed / hard_invariant_cases_total",
+    "recall_at_10": "sum_q(|relevant_q intersect top10_q| / |relevant_q|) / query_count",
+    "ndcg_at_10": "sum_q(DCG@10_q / IDCG@10_q) / query_count, DCG@10=sum_i((2^rel_i-1)/log2(i+1))",
+    "schema_valid_after_bounded_repair": "schema_valid_outputs_after_at_most_2_repairs / extraction_outputs_total",
+    "evidence_span_exactness": "spans_where_sha256(rendition[start_byte:end_byte])_equals_quote_sha256 / annotated_spans_total",
+    "supported_claim_precision": "supported_correct_claims / all_supported_claims_emitted",
+    "confirmed_unsupported_claims": "count(status=confirmed and provenance.inference.unsupported=true)"
+  },
+  "critical_regression": "Any hard-invariant failure; confirmed unsupported claim; unauthorized mutation/read; purged-data read/decrypt/resurrection; secret/local_only egress; silent overwrite; lost/duplicate event; evidence hash mismatch; or retrieval metric drop greater than 0.02 absolute from promoted baseline.",
+  "empty_denominator_policy": "A required metric with zero eligible cases is a failed/incomplete run, never a perfect score."
+}

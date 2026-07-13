@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://brain.local/evals/v1/contracts/event-schema-v1.json",
+  "title": "Brain Semantic Event Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "owner_id",
+    "event_seq",
+    "event_type",
+    "recorded_at",
+    "actor_id",
+    "client_id",
+    "operation_id",
+    "request_hash",
+    "payload",
+    "prior_event_hash",
+    "event_hash",
+    "purge_epoch"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "event_id": {"$ref": "#/$defs/uuidv7"},
+    "owner_id": {"$ref": "#/$defs/uuidv7"},
+    "event_seq": {"type": "integer", "minimum": 1},
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "source_captured",
+        "claim_proposed",
+        "claim_confirmed",
+        "claim_rejected",
+        "claim_superseded",
+        "claim_retracted",
+        "entity_merged",
+        "entity_split",
+        "purge_requested",
+        "purge_registry_denied",
+        "purge_key_revoked",
+        "purge_live_deleted",
+        "purge_projections_rebuilt",
+        "purge_retention_pending",
+        "purge_completed"
+      ]
+    },
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "actor_id": {"$ref": "#/$defs/uuidv7"},
+    "client_id": {"$ref": "#/$defs/uuidv7"},
+    "operation_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "request_hash": {"$ref": "#/$defs/sha256"},
+    "payload": {
+      "oneOf": [
+        {"$ref": "#/$defs/payload_ref"},
+        {"$ref": "#/$defs/encrypted_envelope"},
+        {"$ref": "#/$defs/non_content_payload"}
+      ]
+    },
+    "prior_event_hash": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/sha256"}
+      ]
+    },
+    "event_hash": {"$ref": "#/$defs/sha256"},
+    "purge_epoch": {"type": "integer", "minimum": 0}
+  },
+  "$defs": {
+    "uuidv7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "payload_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "object_id"],
+      "properties": {
+        "kind": {"const": "object_ref"},
+        "object_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "media_type": {"type": "string", "maxLength": 255}
+      }
+    },
+    "encrypted_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "cipher", "key_epoch", "wrapped_dek_ref", "ciphertext_ref"],
+      "properties": {
+        "kind": {"const": "encrypted_envelope"},
+        "cipher": {"enum": ["xchacha20-poly1305", "aes-256-gcm"]},
+        "key_epoch": {"type": "integer", "minimum": 1},
+        "wrapped_dek_ref": {"$ref": "#/$defs/uuidv7"},
+        "ciphertext_ref": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "non_content_payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "receipt_code", "target_checksum"],
+      "properties": {
+        "kind": {"const": "non_content_receipt"},
+        "receipt_code": {"type": "string", "minLength": 1, "maxLength": 64},
+        "target_checksum": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}
