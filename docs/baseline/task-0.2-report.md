@@ -39,9 +39,9 @@ No Rust source, existing MCP contract, storage schema, dependency, lockfile, wor
 - Initial GREEN result: exit 0; 4 passed.
 - Validator-feedback RED checkpoint: `9c4de17414ebc042601e83563bd3d5f455da2002`.
 - Validator-feedback RED result: exit 1; three tests failed because the executable runner, its byte lock, and concrete purge/restore/public-bind/key-revocation cases did not yet exist.
-- Final GREEN result: exit 0; 5 passed.
-- Governance coverage: `coverage run --source=governance -m pytest governance/test_eval_contract.py -q` then `coverage report --fail-under=80`; exit 0, 102/102 statements, 100%.
-- Eval-runner coverage on the locked Python 3.14.4 toolchain: 402 statements, 17 missed, 96%.
+- Final GREEN result: exit 0; 8 passed.
+- Governance coverage on isolated Python 3.14.4 with pytest 9.0.2 and coverage 7.13.1: 183 statements, 4 missed, 98%.
+- Eval-runner coverage on the locked Python 3.14.4 toolchain: 698 statements, 36 missed, 95%.
 - Event schema: `Draft202012Validator.check_schema`; exit 0.
 
 The locked reference command is:
@@ -50,7 +50,9 @@ The locked reference command is:
 uv run --no-project --python 3.14.4 python evals/v1/run.py --manifest evals/v1/manifest.json --strict-environment
 ```
 
-It exits 0 with 124/124 actual-versus-expected cases, all byte and environment locks valid, hard-invariant pass rate `1.0`, Recall@10 `1.0`, nDCG@10 `0.9197207891481876`, schema-valid rate `1.0`, evidence-span exactness `1.0`, supported-claim precision `1.0`, and zero confirmed unsupported claims. It has no project dependency or ignored lockfile dependency.
+It exits 0 with 124/124 cases passing every expected-field comparison and every named invariant evaluator. All byte and environment checks are valid. Metric denominators are 124 hard-invariant cases, 124 extraction outputs, 3 retrieval queries, 2 annotated spans, and 28 emitted supported claims. Results are hard-invariant pass rate `1.0`, Recall@10 `1.0`, nDCG@10 `0.9732402630493958`, schema-valid rate `1.0`, evidence-span exactness `1.0`, supported-claim precision `1.0`, and zero confirmed unsupported claims. It has no project dependency or ignored lockfile dependency.
+
+The strict environment result truthfully records the host as Windows SE Asia time (`+07:00`) with `cp1252` preferred/stdout encoding. The contract no longer claims the host is UTC/C UTF-8: time arithmetic is host-independent and requires offset-aware ISO-8601 input, files use explicit UTF-8, stdout is ASCII-escaped JSON, exact CPython and uv versions are checked, and a Python audit hook proves network syscalls are denied after runner startup. The manifest explicitly notes that uv provisioning happens before the guarded process and may use its cache or configured network.
 
 ## Regression verification
 
@@ -58,11 +60,11 @@ Running all Python directories in one pytest invocation produced 13 collection e
 
 | Suite | Result |
 |---|---:|
-| Governance | 5 passed |
+| Governance | 8 passed |
 | Engine | 63 passed |
 | MCP | 76 passed |
 | ACP | 26 passed, 2 known skips |
-| Total | 170 passed, 2 skipped |
+| Total | 173 passed, 2 skipped |
 
 The separate-suite command exited 0 in 164.6 seconds.
 
@@ -73,7 +75,7 @@ The separate-suite command exited 0 in 164.6 seconds.
 | Stocks | 30 | `68be5e04fb8fec9627259f69781e9c685eb77d221000e3c532e07d156ff5eb77` |
 | Projects | 30 | `7e5c9c98cfc623ded6f5f83497ab916e4b08982608eac9016aa3fb84461cb7bb` |
 | Knowledge | 30 | `21902c69f02893789f4e63e834afea75c05699c6afb1544f3f94fbee1c1758b3` |
-| Adversarial | 34 | `31c24b687e122f57fb97b6e9901a1383592914ad13a96cb5e2443405170aedae` |
+| Adversarial | 34 | `31c24b68fa1a87d6258a16a6a178a548cdab9676eeabbe93b5415b0e93e8edae` |
 
 The adversarial corpus retains the six original risk groups and adds concrete executable cases for purge-registry denial during cleanup, stale restore after a newer purge epoch, attempted public bind without authentication, and revoked-key cleanup retry.
 
@@ -87,6 +89,14 @@ The first independent review returned `FAIL` with four blocking findings. Each e
 4. `git diff --check` reported trailing blank lines. Both affected documents were normalized and the check now exits 0.
 
 Revalidation remains mandatory before Task 0.3 starts.
+
+The second independent review also returned `FAIL`, identifying semantic shortcuts rather than missing files. Those findings produced RED checkpoint `1ee2a9e` and the following stronger gates:
+
+1. The governance mutation test changes every expected field, one at a time, across all 124 cases and requires the corresponding comparison to fail. The runner now derives and compares all expected keys, including errors, historical/excluded IDs, event counts, status constraints, and deny/must-not outputs.
+2. All 49 invariant names in the corpus are enumerated in the locked metrics contract and dispatched through named evaluators. Hard-invariant rate is now `hard-invariant cases passed / hard-invariant cases total`; a case cannot pass because its answer mode alone matched.
+3. Schema validity now validates every structured decision output and its bounded repair count; supported-claim precision uses each emitted claim as the denominator; retrieval evaluates three query fixtures; and promoted-baseline Recall/nDCG are enforced against the `0.02` maximum absolute regression budget. A synthetic metric test proves a `0.03` nDCG drop fails.
+4. Strict environment verification now checks exact Python and uv versions, host-independent time/locale policies, and the live network audit guard while reporting the observed host timezone and encodings.
+5. Corpus hashes in this report are asserted against the manifest by governance test, preventing another transcribed SHA mismatch.
 
 ## Security findings and gates
 
@@ -104,7 +114,7 @@ Revalidation remains mandatory before Task 0.3 starts.
 - Complete auth matrix and AS choice: Decision 8.
 - Threat owner/severity/control/tests: threat model TM-001 through TM-024.
 - Versioned/hash-locked evals with formulas/thresholds: `evals/v1` manifest and metrics.
-- Independent Validator: first review failed with four blockers; fixes are complete and revalidation is pending.
+- Independent Validator: two reviews failed with exact blockers; both feedback sets are implemented and a third validation is pending.
 
 ## Rollback and data safety
 
@@ -116,7 +126,7 @@ Task 0.2 is documentation and synthetic test data only. Reverting its commits re
 - Validator: independent read-only agent; initial `FAIL`, revalidation pending
 - Production code changed: 0 lines
 - Synthetic eval cases: 124
-- TDD retries: initial missing-artifact RED, validator-feedback runner/critical-case RED, one stocks provenance oracle failure corrected from its exact message, and one aggregate-pytest collection limitation corrected by using upstream separate-suite commands
-- Governance coverage: 100%
-- Eval-runner coverage: 96%
+- TDD retries: initial missing-artifact RED, first validator-feedback runner/critical-case RED, second validator-feedback complete-semantics RED, one stocks provenance oracle failure, one invariant-mode failure, and one aggregate-pytest collection limitation corrected from their exact messages
+- Governance coverage: 98%
+- Eval-runner coverage: 95%
 - Token telemetry: unavailable from the execution environment

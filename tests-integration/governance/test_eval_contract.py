@@ -223,6 +223,7 @@ def test_reference_runner_checks_every_expected_field_and_named_invariant():
     runner = load_runner_module()
     cases = [case for path in CORPORA.values() for case in load_jsonl(path)]
     invariant_names = set()
+    invariant_examples = {}
 
     for case in cases:
         report = runner.evaluate_case(case)
@@ -232,6 +233,8 @@ def test_reference_runner_checks_every_expected_field_and_named_invariant():
         assert set(report["invariant_checks"]) == set(case["expected"]["invariants"])
         assert all(report["invariant_checks"].values())
         invariant_names.update(case["expected"]["invariants"])
+        for invariant in case["expected"]["invariants"]:
+            invariant_examples.setdefault(invariant, case)
 
         for key in expected_checks:
             changed = copy.deepcopy(case)
@@ -243,6 +246,8 @@ def test_reference_runner_checks_every_expected_field_and_named_invariant():
     assert invariant_names == set(load_json(METRICS)["hard_invariants"])
     for invariant in invariant_names:
         assert invariant in runner.INVARIANT_EVALUATORS
+        unsafe = runner.Decision("unsafe_side_effect", {"event_count": 99})
+        assert runner.evaluate_invariant(invariant, invariant_examples[invariant], unsafe) is False
 
 
 def test_reference_runner_metrics_use_declared_denominators_and_regression_budget():
