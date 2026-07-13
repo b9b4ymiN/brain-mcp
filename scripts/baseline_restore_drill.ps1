@@ -39,6 +39,31 @@ function Get-CompositeHash {
     return [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($bytes))
 }
 
+function ConvertTo-CanonicalObject {
+    param([object]$Value)
+    if ($null -eq $Value -or $Value -is [string] -or $Value -is [ValueType]) {
+        return $Value
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $ordered = [ordered]@{}
+        foreach ($key in @($Value.Keys | Sort-Object)) {
+            $ordered[$key] = ConvertTo-CanonicalObject $Value[$key]
+        }
+        return $ordered
+    }
+    if ($Value -is [pscustomobject]) {
+        $ordered = [ordered]@{}
+        foreach ($property in @($Value.PSObject.Properties | Sort-Object Name)) {
+            $ordered[$property.Name] = ConvertTo-CanonicalObject $property.Value
+        }
+        return $ordered
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        return @($Value | ForEach-Object { ConvertTo-CanonicalObject $_ })
+    }
+    return $Value
+}
+
 if (-not (Test-Path -LiteralPath $Binary -PathType Leaf)) {
     throw "Binary not found: $Binary"
 }
@@ -79,7 +104,10 @@ $sourceManifest = Get-FileManifest $source
 $restoreManifest = Get-FileManifest $restored
 $sourceHash = Get-CompositeHash $sourceManifest
 $restoreHash = Get-CompositeHash $restoreManifest
-$searchParity = (($sourceSearch -join "`n") -eq ($restoreSearch -join "`n"))
+$sourceSearchCanonical = ConvertTo-CanonicalObject (($sourceSearch -join "`n") | ConvertFrom-Json)
+$restoreSearchCanonical = ConvertTo-CanonicalObject (($restoreSearch -join "`n") | ConvertFrom-Json)
+$searchParity = (($sourceSearchCanonical | ConvertTo-Json -Depth 20 -Compress) -eq
+    ($restoreSearchCanonical | ConvertTo-Json -Depth 20 -Compress))
 $graphParity = (($sourceGraph -join "`n") -eq ($restoreGraph -join "`n"))
 $passed = $sourceHead -eq $restoreHead -and
     $sourceManifest.Count -eq $restoreManifest.Count -and
