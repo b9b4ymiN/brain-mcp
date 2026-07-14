@@ -86,6 +86,9 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 # Isolated semantic authority spike (Task 0.3)
 rusqlite = { version = "=0.40.1", features = ["bundled"] }
 
+# Object-at-rest encryption for crypto-shred purge (Task 1.2b)
+aes-gcm = "0.10"
+
 # ACP server
 agent-client-protocol = "0.12"
 tokio-util = { version = "0.7", features = ["compat"] }
