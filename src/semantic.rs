@@ -2516,12 +2516,29 @@ fn publish_object(root: &Path, transaction: &Transaction<'_>, bytes: &[u8]) -> R
     let object_id = format!("sha256:{digest}");
     let destination = object_path(root, &object_id)?;
 
+    // Dedup is keyed on having a *live* wrapped key, not merely on the file
+    // existing: if this exact content's key was previously destroyed
+    // (crypto-shred purge), the on-disk ciphertext is permanently
+    // undecryptable garbage even though a file still sits at this path.
+    // Treating that case as "already stored" would silently wrap a fresh
+    // DEK around a file encrypted under the destroyed one, corrupting the
+    // object forever with no error at write time.
+    let has_live_key: bool = transaction
+        .query_row(
+            "SELECT 1 FROM wrapped_keys WHERE object_id=?1",
+            [&object_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(database_error)?
+        .is_some();
+
     // Encryption and the crash_at points below run unconditionally, even
-    // when the destination already exists (content-addressed dedup) and the
-    // resulting ciphertext will just be discarded below: Task 0.3's crash
-    // recovery tests deliberately re-capture identical content to exercise
-    // "crash mid-dedup", and an early return here would make those
-    // failpoints unreachable and silently defeat that coverage.
+    // when the destination already exists as a true dedup (content-addressed,
+    // live key) and the resulting ciphertext will just be discarded below:
+    // Task 0.3's crash recovery tests deliberately re-capture identical
+    // content to exercise "crash mid-dedup", and an early return here would
+    // make those failpoints unreachable and silently defeat that coverage.
     let epoch: i64 = transaction
         .query_row("SELECT MAX(epoch) FROM epoch_keys", [], |row| row.get(0))
         .map_err(database_error)?;
@@ -2547,19 +2564,27 @@ fn publish_object(root: &Path, transaction: &Transaction<'_>, bytes: &[u8]) -> R
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent).map_err(io_error)?;
     }
-    if destination.exists() {
+    if destination.exists() && has_live_key {
         fs::remove_file(&temporary).map_err(io_error)?;
     } else {
+        // Fresh object, or the prior ciphertext's key was destroyed: replace
+        // whatever is at this path so the file on disk matches the wrapped
+        // key we are about to (re)write.
+        if destination.exists() {
+            fs::remove_file(&destination).map_err(io_error)?;
+        }
         fs::rename(&temporary, &destination).map_err(io_error)?;
     }
     crash_at("after_object_rename");
 
-    transaction
-        .execute(
-            "INSERT OR IGNORE INTO wrapped_keys(object_id,epoch,wrapped_dek,dek_nonce) VALUES (?1,?2,?3,?4)",
-            params![object_id, epoch, wrapped_dek, wrap_nonce.as_slice()],
-        )
-        .map_err(database_error)?;
+    if !has_live_key {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO wrapped_keys(object_id,epoch,wrapped_dek,dek_nonce) VALUES (?1,?2,?3,?4)",
+                params![object_id, epoch, wrapped_dek, wrap_nonce.as_slice()],
+            )
+            .map_err(database_error)?;
+    }
     crash_at("after_wrapped_key_insert");
     Ok(object_id)
 }

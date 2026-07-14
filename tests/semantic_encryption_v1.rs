@@ -221,6 +221,60 @@ fn destroying_a_wrapped_key_makes_only_that_object_unreadable() {
 }
 
 #[test]
+fn recapturing_identical_content_after_key_destruction_gets_a_fresh_usable_key() {
+    let (_parent, _root, store, context) = fixture();
+    let payload: &[u8] = b"content that gets purged then reasserted";
+    store
+        .capture(&context, capture("cap-first", payload))
+        .unwrap();
+    let first = store
+        .propose(
+            &context,
+            ProposeCommand {
+                operation_id: "prop-first".to_owned(),
+                capture_operation_id: "cap-first".to_owned(),
+                draft: draft(),
+            },
+        )
+        .unwrap();
+    let source_object_id =
+        store.object_json(&first.event.payload.object_id).unwrap()["source_object_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+    store.destroy_wrapped_key(&source_object_id).unwrap();
+    assert!(matches!(
+        store.propose(
+            &context,
+            ProposeCommand {
+                operation_id: "prop-after-destroy".to_owned(),
+                capture_operation_id: "cap-first".to_owned(),
+                draft: draft(),
+            },
+        ),
+        Err(SemanticError::ObjectUnavailable(_))
+    ));
+
+    // A later, independent capture of byte-identical content must not
+    // silently inherit the destroyed key: it gets a fresh wrapped key and
+    // is fully readable, not permanently corrupted.
+    store
+        .capture(&context, capture("cap-second", payload))
+        .unwrap();
+    store
+        .propose(
+            &context,
+            ProposeCommand {
+                operation_id: "prop-second".to_owned(),
+                capture_operation_id: "cap-second".to_owned(),
+                draft: draft(),
+            },
+        )
+        .unwrap();
+}
+
+#[test]
 fn rotate_epoch_and_rewrap_keeps_existing_objects_readable() {
     let (_parent, _root, store, context) = fixture();
     store
