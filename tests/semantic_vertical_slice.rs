@@ -2,23 +2,28 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+#[cfg(feature = "semantic-test-failpoints")]
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Barrier};
 use std::thread;
 
 use chrono::{DateTime, TimeZone, Utc};
 use jsonschema::validator_for;
 use llm_wiki::semantic::{
     CaptureCommand, ClaimDraft, ConfirmCommand, ManualRecovery, MutationOutcome, PrivacyLabel,
-    ProjectionState, ProposeCommand, RollbackStatus, SemanticClock, SemanticConfig, SemanticError,
-    SemanticStore, StoreDiagnostics, TrustedContext, canonicalize_json, event_hash_from_value,
+    ProposeCommand, RollbackStatus, SemanticClock, SemanticConfig, SemanticError, SemanticStore,
+    TrustedContext, canonicalize_json, event_hash_from_value,
 };
+#[cfg(feature = "semantic-test-failpoints")]
+use llm_wiki::semantic::{ProjectionState, StoreDiagnostics};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use uuid::{Uuid, Version};
 
 const EVENT_SCHEMA: &str = include_str!("../evals/v1/contracts/event-schema-v1.json");
+#[cfg(feature = "semantic-test-failpoints")]
 static CRASH_PROCESS_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug)]
@@ -769,6 +774,7 @@ fn recovery_queued_during_committed_mutation_does_not_deadlock() {
     assert_eq!(diagnostics.ledger_checksum, diagnostics.projection_checksum);
 }
 
+#[cfg(feature = "semantic-test-failpoints")]
 fn run_crash_child(parent: &Path, root: &Path, failpoint: &str, operation: &str, bytes: &str) {
     let status = Command::new(std::env::current_exe().unwrap())
         .arg("--exact")
@@ -807,6 +813,7 @@ fn crash_worker() {
     panic!("configured failpoint did not abort the process");
 }
 
+#[cfg(feature = "semantic-test-failpoints")]
 #[test]
 fn abrupt_failpoint_matrix_has_atomic_recovery_and_effectively_once_projection() {
     let _crash_process_guard = CRASH_PROCESS_LOCK.lock().unwrap();
@@ -861,6 +868,7 @@ fn abrupt_failpoint_matrix_has_atomic_recovery_and_effectively_once_projection()
     }
 }
 
+#[cfg(feature = "semantic-test-failpoints")]
 #[test]
 fn recovery_preserves_shared_objects_and_is_checksum_idempotent() {
     let _crash_process_guard = CRASH_PROCESS_LOCK.lock().unwrap();
