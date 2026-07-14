@@ -63,6 +63,7 @@ pub struct SemanticConfig {
     allowed_parent: Option<PathBuf>,
     clock: Arc<dyn SemanticClock>,
     max_object_bytes: u64,
+    purge_registry_targets: Vec<PathBuf>,
 }
 
 impl Default for SemanticConfig {
@@ -72,6 +73,7 @@ impl Default for SemanticConfig {
             allowed_parent: None,
             clock: Arc::new(SystemClock),
             max_object_bytes: DEFAULT_MAX_OBJECT_BYTES,
+            purge_registry_targets: Vec::new(),
         }
     }
 }
@@ -84,6 +86,7 @@ impl SemanticConfig {
             allowed_parent: Some(allowed_parent.as_ref().to_path_buf()),
             clock: Arc::new(SystemClock),
             max_object_bytes: DEFAULT_MAX_OBJECT_BYTES,
+            purge_registry_targets: Vec::new(),
         }
     }
 
@@ -96,6 +99,16 @@ impl SemanticConfig {
     /// Overrides the capture size limit; zero is rejected at create/open.
     pub fn with_max_object_bytes(mut self, limit: u64) -> Self {
         self.max_object_bytes = limit;
+        self
+    }
+
+    /// Sets the independent purge-registry replication targets (ADR Decision
+    /// 7: "replicate to at least two independent targets and require quorum
+    /// acknowledgement"). `append_registry_denial` requires at least 2;
+    /// `open` seals the store if a reachable quorum of these disagrees with
+    /// (is ahead of) the local copy.
+    pub fn with_purge_registry_targets(mut self, targets: Vec<PathBuf>) -> Self {
+        self.purge_registry_targets = targets;
         self
     }
 }
@@ -121,6 +134,9 @@ pub enum SemanticError {
     Database(String),
     DatabaseContention(String),
     Serialization(String),
+    Denied(String),
+    RegistrySealed(String),
+    RegistryQuorumFailed(String),
 }
 
 impl fmt::Display for SemanticError {
@@ -162,6 +178,15 @@ impl fmt::Display for SemanticError {
             }
             Self::Serialization(value) => {
                 write!(formatter, "semantic serialization error: {value}")
+            }
+            Self::Denied(id) => {
+                write!(formatter, "{id} is denied by the purge registry")
+            }
+            Self::RegistrySealed(reason) => {
+                write!(formatter, "purge registry is sealed: {reason}")
+            }
+            Self::RegistryQuorumFailed(reason) => {
+                write!(formatter, "purge registry replication quorum failed: {reason}")
             }
         }
     }
@@ -479,6 +504,7 @@ pub struct SemanticStore {
     coordinator: Arc<RootCoordinator>,
     clock: Arc<dyn SemanticClock>,
     max_object_bytes: u64,
+    purge_registry_targets: Vec<PathBuf>,
     #[cfg(feature = "semantic-test-failpoints")]
     pause_after_commit: Arc<PauseState>,
 }
@@ -759,6 +785,7 @@ impl SemanticStore {
             coordinator,
             clock: config.clock,
             max_object_bytes: config.max_object_bytes,
+            purge_registry_targets: config.purge_registry_targets,
             #[cfg(feature = "semantic-test-failpoints")]
             pause_after_commit: Arc::default(),
         };
@@ -785,6 +812,14 @@ impl SemanticStore {
         let connection = open_connection(&canonical_root)?;
         validate_database_identity(&connection, &marker)?;
         validate_ledger(&connection)?;
+        // Restore/open-time fail-closed check (ADR Decision 7): a stale,
+        // unavailable, or fork-diverged purge registry must seal the store
+        // before any plaintext is exposed, even though this connection's own
+        // read of purge_denied_ids is already consistent -- the risk here is
+        // a DIFFERENT store replica having denied IDs this copy never heard
+        // about (e.g. this root is a backup restore), not a same-process race.
+        let sealed = evaluate_registry_seal(&connection, &config.purge_registry_targets)?;
+        set_registry_sealed(&connection, sealed)?;
         drop(connection);
         coordinator.active_handles.fetch_add(1, Ordering::SeqCst);
         drop(_writer);
@@ -795,6 +830,7 @@ impl SemanticStore {
             coordinator,
             clock: config.clock,
             max_object_bytes: config.max_object_bytes,
+            purge_registry_targets: config.purge_registry_targets,
             #[cfg(feature = "semantic-test-failpoints")]
             pause_after_commit: Arc::default(),
         })
@@ -1521,7 +1557,14 @@ impl SemanticStore {
         ledger_head: u64,
         world_time: DateTime<Utc>,
     ) -> Result<Option<ClaimView>> {
-        let connection = open_connection(&self.root)?;
+        // One explicit read transaction covers scope resolution AND
+        // plaintext materialization, so a concurrent registry_denied commit
+        // cannot land in between (see decrypt_object / read_object).
+        let mut raw_connection = open_connection(&self.root)?;
+        let transaction = raw_connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(database_error)?;
+        let connection = &transaction;
         let mut statement = connection
             .prepare("SELECT event_seq,object_id FROM events WHERE owner_id=?1 AND event_type='claim_confirmed' AND event_seq<=?2 ORDER BY event_seq DESC")
             .map_err(database_error)?;
@@ -1536,7 +1579,7 @@ impl SemanticStore {
             let event_seq = u64::try_from(event_seq)
                 .map_err(|_| SemanticError::CorruptLedger("negative event sequence".to_owned()))?;
             let object: ConfirmationObject =
-                serde_json::from_slice(&read_object(&self.root, &object_id)?)
+                serde_json::from_slice(&decrypt_object(connection, &self.root, &object_id)?)
                     .map_err(serialization_error)?;
             let claim = object.claim;
             if claim.recorded_event_seq != event_seq || claim.status != "confirmed" {
@@ -1581,7 +1624,13 @@ impl SemanticStore {
         subject: &str,
         predicate: &str,
     ) -> Result<CurrentClaims> {
-        let connection = open_connection(&self.root)?;
+        // See claim_at: one explicit read transaction for both scope
+        // resolution and plaintext materialization (TOCTOU-safe deny check).
+        let mut raw_connection = open_connection(&self.root)?;
+        let transaction = raw_connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(database_error)?;
+        let connection = &transaction;
         let mut statement = connection
             .prepare(
                 "SELECT claim_id, confirmed_event_seq, superseded_by_event_seq, retracted_at_event_seq
@@ -1624,7 +1673,7 @@ impl SemanticStore {
                 )
                 .map_err(database_error)?;
             let object: ConfirmationObject =
-                serde_json::from_slice(&read_object(&self.root, &object_id)?)
+                serde_json::from_slice(&decrypt_object(connection, &self.root, &object_id)?)
                     .map_err(serialization_error)?;
             let claim = object.claim;
             if claim.claim_id.to_string() != claim_id {
@@ -1868,6 +1917,182 @@ impl SemanticStore {
 
     pub fn object_json(&self, object_id: &str) -> Result<Value> {
         serde_json::from_slice(&read_object(&self.root, object_id)?).map_err(serialization_error)
+    }
+
+    /// Current local purge-registry epoch; 0 means no denial has ever been
+    /// appended (or applied via sync) to this copy.
+    pub fn registry_epoch(&self) -> Result<u64> {
+        let connection = open_connection(&self.root)?;
+        Ok(local_registry_head(&connection)?
+            .map(|entry| entry.epoch)
+            .unwrap_or(0))
+    }
+
+    /// True if `id` (an object ID or claim ID) is currently denied.
+    pub fn is_denied(&self, id: &str) -> Result<bool> {
+        let connection = open_connection(&self.root)?;
+        let denied: Option<i64> = connection
+            .query_row(
+                "SELECT 1 FROM purge_denied_ids WHERE denied_id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(database_error)?;
+        Ok(denied.is_some())
+    }
+
+    /// True if the store is currently sealed: every plaintext-returning read
+    /// (`decrypt_object`/`read_object` and everything built on them) fails
+    /// closed with `SemanticError::RegistrySealed` until `sync_purge_registry`
+    /// succeeds.
+    pub fn is_registry_sealed(&self) -> Result<bool> {
+        let connection = open_connection(&self.root)?;
+        let value: String = connection
+            .query_row(
+                "SELECT value FROM meta WHERE key='registry_sealed'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(database_error)?;
+        Ok(value == "true")
+    }
+
+    /// Appends one purge-registry denial entry for `ids`, replicates it to
+    /// the configured targets, and returns the new epoch. Raw primitive: not
+    /// capability-gated, not idempotent-by-operation-id, and not nonce-bound
+    /// -- the hard-purge saga wires those guarantees around this call.
+    /// Requires at least 2 configured replication targets. The local
+    /// commit -- which alone already protects this store's own reads via
+    /// `decrypt_object`'s deny check -- is never rolled back by a
+    /// replication shortfall: deny-first means a crash or unreachable
+    /// target after the local commit must not un-deny anything. On quorum
+    /// shortfall this returns `RegistryQuorumFailed` so a caller (the saga)
+    /// can retry replication alone without re-denying.
+    pub fn append_registry_denial(&self, ids: &[String]) -> Result<u64> {
+        if ids.is_empty() {
+            return Err(SemanticError::InvalidClaim(
+                "purge registry denial requires at least one ID".to_owned(),
+            ));
+        }
+        if self.purge_registry_targets.len() < 2 {
+            return Err(SemanticError::InvalidRoot(
+                "purge registry requires at least 2 configured replication targets".to_owned(),
+            ));
+        }
+        let _maintenance = self.coordinator.maintenance.read();
+        let _writer = self.coordinator.writer.lock();
+        let mut connection = open_connection(&self.root)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(database_error)?;
+        let head = local_registry_head(&transaction)?;
+        let next_epoch = head.as_ref().map_or(1, |entry| entry.epoch + 1);
+        let prior_hash = head.map(|entry| entry.entry_hash);
+        let mut denied_ids: Vec<String> = ids.to_vec();
+        denied_ids.sort();
+        denied_ids.dedup();
+        let entry_hash = registry_entry_hash(next_epoch, &denied_ids, &prior_hash)?;
+        let entry = RegistryEntryFile {
+            epoch: next_epoch,
+            denied_ids,
+            entry_hash,
+            prior_entry_hash: prior_hash,
+        };
+        insert_registry_entry(&transaction, &entry)?;
+        transaction.commit().map_err(database_error)?;
+
+        let quorum = quorum_needed(self.purge_registry_targets.len());
+        let mut acknowledged = 0usize;
+        for target in &self.purge_registry_targets {
+            if fs::create_dir_all(target).is_ok()
+                && write_registry_target_entry(target, &entry).is_ok()
+            {
+                acknowledged += 1;
+            }
+        }
+        if acknowledged < quorum {
+            return Err(SemanticError::RegistryQuorumFailed(format!(
+                "only {acknowledged} of {quorum} required replication targets acknowledged epoch {next_epoch}"
+            )));
+        }
+        Ok(next_epoch)
+    }
+
+    /// Re-checks the configured replication targets and, if a reachable
+    /// quorum reports epochs this copy is missing, applies them (verifying
+    /// hash-chain continuity) before unsealing. Fails closed (returns an
+    /// error, store remains sealed) if quorum cannot be reached or a
+    /// fetched entry does not chain from the current local head.
+    pub fn sync_purge_registry(&self) -> Result<()> {
+        let _maintenance = self.coordinator.maintenance.read();
+        let _writer = self.coordinator.writer.lock();
+        let mut connection = open_connection(&self.root)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(database_error)?;
+
+        if !self.purge_registry_targets.is_empty() {
+            let quorum = quorum_needed(self.purge_registry_targets.len());
+            let target_heads: Vec<RegistryEntryFile> = self
+                .purge_registry_targets
+                .iter()
+                .filter_map(|target| registry_target_head(target))
+                .collect();
+            if target_heads.len() < quorum {
+                set_registry_sealed(&transaction, true)?;
+                transaction.commit().map_err(database_error)?;
+                return Err(SemanticError::RegistryQuorumFailed(format!(
+                    "only {} of {quorum} required targets reachable",
+                    target_heads.len()
+                )));
+            }
+            let target_max = target_heads
+                .iter()
+                .map(|entry| entry.epoch)
+                .max()
+                .unwrap_or(0);
+            let mut local_head = local_registry_head(&transaction)?;
+            let mut next_epoch = local_head.as_ref().map_or(1, |entry| entry.epoch + 1);
+            while next_epoch <= target_max {
+                let Some(entry) = self
+                    .purge_registry_targets
+                    .iter()
+                    .find_map(|target| read_registry_target_entry(target, next_epoch))
+                else {
+                    set_registry_sealed(&transaction, true)?;
+                    transaction.commit().map_err(database_error)?;
+                    return Err(SemanticError::RegistryQuorumFailed(format!(
+                        "no reachable target has purge epoch {next_epoch}"
+                    )));
+                };
+                let prior_hash = local_head
+                    .as_ref()
+                    .map(|current| current.entry_hash.clone());
+                let expected_hash =
+                    registry_entry_hash(entry.epoch, &entry.denied_ids, &prior_hash)?;
+                if entry.entry_hash != expected_hash || entry.prior_entry_hash != prior_hash {
+                    set_registry_sealed(&transaction, true)?;
+                    transaction.commit().map_err(database_error)?;
+                    return Err(SemanticError::CorruptLedger(format!(
+                        "purge registry hash chain broken at epoch {next_epoch}"
+                    )));
+                }
+                insert_registry_entry(&transaction, &entry)?;
+                local_head = Some(entry.clone());
+                next_epoch += 1;
+            }
+            if evaluate_registry_seal(&transaction, &self.purge_registry_targets)? {
+                set_registry_sealed(&transaction, true)?;
+                transaction.commit().map_err(database_error)?;
+                return Err(SemanticError::RegistryQuorumFailed(
+                    "registry still disagrees with a quorum of targets after sync".to_owned(),
+                ));
+            }
+        }
+        set_registry_sealed(&transaction, false)?;
+        transaction.commit().map_err(database_error)?;
+        Ok(())
     }
 }
 
@@ -2165,6 +2390,21 @@ fn initialize_schema(
                wrapped_dek BLOB NOT NULL,
                dek_nonce BLOB NOT NULL
              );
+             -- Append-only, hash-chained purge-registry journal. Each row
+             -- is one denial batch; purge_denied_ids is the fast-lookup
+             -- projection of every ID denied at or before its purge_epoch,
+             -- rebuildable from purge_registry_entries alone.
+             CREATE TABLE purge_registry_entries(
+               purge_epoch INTEGER PRIMARY KEY,
+               denied_ids_json TEXT NOT NULL,
+               entry_hash TEXT NOT NULL,
+               prior_entry_hash TEXT,
+               recorded_at TEXT NOT NULL
+             );
+             CREATE TABLE purge_denied_ids(
+               denied_id TEXT PRIMARY KEY,
+               purge_epoch INTEGER NOT NULL
+             );
              COMMIT;",
         )
         .map_err(database_error)?;
@@ -2172,6 +2412,7 @@ fn initialize_schema(
         ("store_uuid", marker.store_uuid.to_string()),
         ("owner_id", marker.owner_id.to_string()),
         ("schema_version", marker.schema_version.to_string()),
+        ("registry_sealed", "false".to_owned()),
     ] {
         connection
             .execute(
@@ -2703,6 +2944,34 @@ fn object_path(root: &Path, object_id: &str) -> Result<PathBuf> {
 /// directly (opening a second connection would block on SQLite's single
 /// writer); callers with no open transaction should use `read_object`.
 fn decrypt_object(connection: &Connection, root: &Path, object_id: &str) -> Result<Vec<u8>> {
+    // Sealed check and deny check run against the SAME connection/transaction
+    // as the plaintext resolution below, so a concurrent registry_denied
+    // commit can never land between "not denied" and "here is the plaintext"
+    // (ADR Decision 7: fail closed for denied IDs after registry_denied).
+    let sealed: String = connection
+        .query_row(
+            "SELECT value FROM meta WHERE key='registry_sealed'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(database_error)?;
+    if sealed == "true" {
+        return Err(SemanticError::RegistrySealed(
+            "purge registry is not synced with a quorum of replication targets".to_owned(),
+        ));
+    }
+    let denied: Option<i64> = connection
+        .query_row(
+            "SELECT 1 FROM purge_denied_ids WHERE denied_id=?1",
+            [object_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(database_error)?;
+    if denied.is_some() {
+        return Err(SemanticError::Denied(object_id.to_owned()));
+    }
+
     let envelope = fs::read(object_path(root, object_id)?).map_err(io_error)?;
     if envelope.len() < AES_GCM_NONCE_LEN {
         return Err(SemanticError::ObjectUnavailable(object_id.to_owned()));
@@ -2740,8 +3009,200 @@ fn decrypt_object(connection: &Connection, root: &Path, object_id: &str) -> Resu
 }
 
 fn read_object(root: &Path, object_id: &str) -> Result<Vec<u8>> {
-    let connection = open_connection(root)?;
-    decrypt_object(&connection, root, object_id)
+    // Wrapped in one explicit read transaction (not autocommit) so the
+    // sealed/deny checks inside decrypt_object and the plaintext
+    // materialization observe the same snapshot -- otherwise a bare
+    // Connection's separate implicit-autocommit statements could let a
+    // concurrent registry_denied commit land in between (TOCTOU).
+    let mut connection = open_connection(root)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(database_error)?;
+    let bytes = decrypt_object(&transaction, root, object_id)?;
+    transaction.commit().map_err(database_error)?;
+    Ok(bytes)
+}
+
+/// One hash-chained purge-registry entry, both as stored locally
+/// (`purge_registry_entries`) and as replicated verbatim to each
+/// independent target directory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RegistryEntryFile {
+    epoch: u64,
+    denied_ids: Vec<String>,
+    entry_hash: String,
+    prior_entry_hash: Option<String>,
+}
+
+fn registry_entry_hash(
+    epoch: u64,
+    denied_ids: &[String],
+    prior_entry_hash: &Option<String>,
+) -> Result<String> {
+    #[derive(Serialize)]
+    struct Canon<'a> {
+        epoch: u64,
+        denied_ids: &'a [String],
+        prior_entry_hash: &'a Option<String>,
+    }
+    Ok(sha256(&canonical_bytes(&Canon {
+        epoch,
+        denied_ids,
+        prior_entry_hash,
+    })?))
+}
+
+/// Strict majority of `target_count` independent replication targets.
+fn quorum_needed(target_count: usize) -> usize {
+    target_count / 2 + 1
+}
+
+fn registry_target_path(target: &Path, epoch: u64) -> PathBuf {
+    target.join(format!("epoch-{epoch:020}.json"))
+}
+
+fn write_registry_target_entry(target: &Path, entry: &RegistryEntryFile) -> Result<()> {
+    let bytes = canonical_bytes(entry)?;
+    let temporary = target.join(format!(".tmp-{}", Uuid::now_v7()));
+    write_new_file(&temporary, &bytes)?;
+    atomic_replace(&temporary, &registry_target_path(target, entry.epoch))
+}
+
+fn read_registry_target_entry(target: &Path, epoch: u64) -> Option<RegistryEntryFile> {
+    let bytes = fs::read(registry_target_path(target, epoch)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// The highest-epoch entry present in `target`, or `None` if the target is
+/// unreachable/empty/unreadable. Directory scan rather than a separate
+/// "latest" pointer file, so a partial/torn pointer write can never disagree
+/// with the entry files themselves.
+fn registry_target_head(target: &Path) -> Option<RegistryEntryFile> {
+    let entries = fs::read_dir(target).ok()?;
+    let mut best: Option<RegistryEntryFile> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("epoch-") || !name.ends_with(".json") {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&path) else {
+            continue;
+        };
+        let Ok(parsed) = serde_json::from_slice::<RegistryEntryFile>(&bytes) else {
+            continue;
+        };
+        if best
+            .as_ref()
+            .is_none_or(|current| parsed.epoch > current.epoch)
+        {
+            best = Some(parsed);
+        }
+    }
+    best
+}
+
+fn local_registry_head(connection: &Connection) -> Result<Option<RegistryEntryFile>> {
+    let row: Option<(i64, String, String, Option<String>)> = connection
+        .query_row(
+            "SELECT purge_epoch, denied_ids_json, entry_hash, prior_entry_hash \
+             FROM purge_registry_entries ORDER BY purge_epoch DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()
+        .map_err(database_error)?;
+    row.map(|(epoch, denied_ids_json, entry_hash, prior_entry_hash)| {
+        let denied_ids: Vec<String> =
+            serde_json::from_str(&denied_ids_json).map_err(serialization_error)?;
+        Ok(RegistryEntryFile {
+            epoch: u64::try_from(epoch)
+                .map_err(|_| SemanticError::CorruptLedger("negative purge epoch".to_owned()))?,
+            denied_ids,
+            entry_hash,
+            prior_entry_hash,
+        })
+    })
+    .transpose()
+}
+
+fn insert_registry_entry(transaction: &Transaction<'_>, entry: &RegistryEntryFile) -> Result<()> {
+    let denied_ids_json = serde_json::to_string(&entry.denied_ids).map_err(serialization_error)?;
+    transaction
+        .execute(
+            "INSERT INTO purge_registry_entries(purge_epoch,denied_ids_json,entry_hash,prior_entry_hash,recorded_at) VALUES (?1,?2,?3,?4,?5)",
+            params![
+                entry.epoch as i64,
+                denied_ids_json,
+                entry.entry_hash,
+                entry.prior_entry_hash,
+                Utc::now().to_rfc3339()
+            ],
+        )
+        .map_err(database_error)?;
+    for id in &entry.denied_ids {
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO purge_denied_ids(denied_id,purge_epoch) VALUES (?1,?2)",
+                params![id, entry.epoch as i64],
+            )
+            .map_err(database_error)?;
+    }
+    Ok(())
+}
+
+fn set_registry_sealed(connection: &Connection, sealed: bool) -> Result<()> {
+    connection
+        .execute(
+            "UPDATE meta SET value=?1 WHERE key='registry_sealed'",
+            [if sealed { "true" } else { "false" }],
+        )
+        .map_err(database_error)?;
+    Ok(())
+}
+
+/// Fail-closed evaluation used both at `open()` and by `sync_purge_registry`:
+/// no targets configured means nothing to seal over; otherwise a reachable
+/// quorum must both exist and agree with (or lag behind, harmlessly) the
+/// local head -- any reachable target strictly ahead of local, any
+/// same-epoch hash mismatch (fork/corruption), or an unreachable quorum
+/// seals the store.
+fn evaluate_registry_seal(connection: &Connection, targets: &[PathBuf]) -> Result<bool> {
+    if targets.is_empty() {
+        return Ok(false);
+    }
+    let local_head = local_registry_head(connection)?;
+    let local_epoch = local_head.as_ref().map_or(0, |entry| entry.epoch);
+    let quorum = quorum_needed(targets.len());
+    let target_heads: Vec<RegistryEntryFile> = targets
+        .iter()
+        .filter_map(|target| registry_target_head(target))
+        .collect();
+    if target_heads.len() < quorum {
+        return Ok(true);
+    }
+    let max_target_epoch = target_heads
+        .iter()
+        .map(|entry| entry.epoch)
+        .max()
+        .unwrap_or(0);
+    if max_target_epoch > local_epoch {
+        return Ok(true);
+    }
+    if max_target_epoch == local_epoch && local_epoch > 0 {
+        let local_hash = local_head.as_ref().map(|entry| entry.entry_hash.clone());
+        for entry in &target_heads {
+            if entry.epoch == local_epoch && Some(entry.entry_hash.clone()) != local_hash {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn validate_ledger(connection: &Connection) -> Result<()> {
