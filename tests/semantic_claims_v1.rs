@@ -186,7 +186,13 @@ fn retract_marks_a_confirmed_claim_as_no_longer_current() {
         .unwrap();
 
     let before = store
-        .claims_current(store.ledger_head().unwrap(), Utc::now(), "stocks", "GULF", "target_price")
+        .claims_current(
+            store.ledger_head().unwrap(),
+            Utc::now(),
+            "stocks",
+            "GULF",
+            "target_price",
+        )
         .unwrap();
     assert_eq!(before.active.len(), 1);
 
@@ -201,7 +207,13 @@ fn retract_marks_a_confirmed_claim_as_no_longer_current() {
         .unwrap();
 
     let after = store
-        .claims_current(store.ledger_head().unwrap(), Utc::now(), "stocks", "GULF", "target_price")
+        .claims_current(
+            store.ledger_head().unwrap(),
+            Utc::now(),
+            "stocks",
+            "GULF",
+            "target_price",
+        )
         .unwrap();
     assert_eq!(after.active.len(), 0);
     assert_eq!(after.past.len(), 1);
@@ -211,6 +223,10 @@ fn retract_marks_a_confirmed_claim_as_no_longer_current() {
 #[test]
 fn retract_of_unknown_or_already_retracted_claim_is_rejected() {
     let (_parent, _root, store, context) = fixture();
+    // An operation_id that was never used at all is a missing dependency,
+    // consistent with how the store already reports unknown capture/proposal
+    // operations elsewhere. "Already retracted" (below) is the invalid
+    // transition case: the operation existed and resolved to a real claim.
     assert!(matches!(
         store.retract(
             &context,
@@ -219,7 +235,7 @@ fn retract_of_unknown_or_already_retracted_claim_is_rejected() {
                 claim_operation_id: "never-confirmed".to_owned(),
             },
         ),
-        Err(SemanticError::InvalidTransition(_))
+        Err(SemanticError::MissingDependency(_))
     ));
 
     store
@@ -384,7 +400,9 @@ fn supersede_across_mismatched_scope_is_rejected() {
         ),
         Err(SemanticError::InvalidTransition(_))
     ));
-    assert_eq!(store.diagnostics().unwrap().events, 4);
+    // cap-a, prop-a, confirm-a, cap-b, prop-b: the rejected supersede
+    // attempt must not add a sixth event.
+    assert_eq!(store.diagnostics().unwrap().events, 5);
 }
 
 #[test]
@@ -475,7 +493,11 @@ fn disputed_external_facts_coexist_without_superseding() {
         )
         .unwrap();
     assert_eq!(current.active.len(), 2);
-    let values: Vec<_> = current.active.iter().map(|claim| claim.value.clone()).collect();
+    let values: Vec<_> = current
+        .active
+        .iter()
+        .map(|claim| claim.value.clone())
+        .collect();
     assert!(values.contains(&json!(48)));
     assert!(values.contains(&json!(55)));
 }
@@ -492,12 +514,7 @@ fn future_valid_claim_is_known_but_not_current_until_valid_from() {
             ProposeCommand {
                 operation_id: "prop".to_owned(),
                 capture_operation_id: "cap".to_owned(),
-                draft: stock_draft(
-                    "GULF",
-                    70,
-                    Some(at("2027-01-01T00:00:00Z")),
-                    None,
-                ),
+                draft: stock_draft("GULF", 70, Some(at("2027-01-01T00:00:00Z")), None),
             },
         )
         .unwrap();
@@ -569,7 +586,10 @@ fn propose_inference_without_evidence_is_unsupported_and_cannot_be_confirmed() {
 
     // User acceptance is a brand-new event, not a mutation of the unsupported one.
     store
-        .capture(&context, capture("cap-accept", b"user confirmed deployment"))
+        .capture(
+            &context,
+            capture("cap-accept", b"user confirmed deployment"),
+        )
         .unwrap();
     store
         .propose(
@@ -622,10 +642,11 @@ fn propose_inference_with_evidence_is_supported_and_confirmable() {
             },
         )
         .unwrap();
-    let claim_object = store
-        .object_json(&outcome.event.payload.object_id)
-        .unwrap();
+    let claim_object = store.object_json(&outcome.event.payload.object_id).unwrap();
     assert_eq!(claim_object["claim"]["provenance"]["kind"], "inference");
     assert_eq!(claim_object["claim"]["provenance"]["unsupported"], false);
-    assert_eq!(claim_object["claim"]["provenance"]["method"], "llm-synthesis");
+    assert_eq!(
+        claim_object["claim"]["provenance"]["method"],
+        "llm-synthesis"
+    );
 }

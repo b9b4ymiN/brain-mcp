@@ -101,6 +101,8 @@ pub enum SemanticError {
     InvalidInterval,
     InvalidCapture(String),
     InvalidClaim(String),
+    InvalidTransition(String),
+    UnsupportedInference,
     MissingDependency(String),
     CorruptLedger(String),
     Io(String),
@@ -126,6 +128,10 @@ impl fmt::Display for SemanticError {
             }
             Self::InvalidCapture(reason) => write!(formatter, "invalid capture: {reason}"),
             Self::InvalidClaim(reason) => write!(formatter, "invalid claim: {reason}"),
+            Self::InvalidTransition(reason) => write!(formatter, "invalid transition: {reason}"),
+            Self::UnsupportedInference => formatter.write_str(
+                "cannot confirm an inference proposal with no evidence; accept it by creating a new user_assertion or decision claim instead",
+            ),
             Self::MissingDependency(value) => {
                 write!(formatter, "required semantic input is missing: {value}")
             }
@@ -232,6 +238,39 @@ pub struct ConfirmCommand {
     pub proposal_operation_id: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProposeInferenceCommand {
+    pub operation_id: String,
+    pub evidence_capture_operation_ids: Vec<String>,
+    pub method: String,
+    pub model: Option<String>,
+    pub prompt_version: Option<String>,
+    pub draft: ClaimDraft,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RejectCommand {
+    pub operation_id: String,
+    pub proposal_operation_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetractCommand {
+    pub operation_id: String,
+    pub claim_operation_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupersedeCommand {
+    pub operation_id: String,
+    pub proposal_operation_id: String,
+    pub superseded_claim_operation_ids: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObjectPayload {
     pub kind: String,
@@ -294,6 +333,19 @@ pub struct ClaimView {
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     pub confirmed_event_seq: u64,
+}
+
+/// Result of a scoped, time-aware claim query. `active` claims are current
+/// at `world_time` as of the requested `ledger_head`; `future` claims are
+/// confirmed and not superseded/retracted but not yet valid (`valid_from` is
+/// ahead of `world_time`); `past` claims are superseded, retracted, or
+/// expired (`valid_to` at/before `world_time`) as of that same ledger head.
+/// More than one `active` claim means the scope is currently disputed.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+pub struct CurrentClaims {
+    pub active: Vec<ClaimView>,
+    pub future: Vec<ClaimView>,
+    pub past: Vec<ClaimView>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -576,6 +628,24 @@ enum Provenance {
         byte_end: u64,
         quote_hash: String,
     },
+    Inference {
+        method: String,
+        model: Option<String>,
+        prompt_version: Option<String>,
+        evidence: Vec<InferenceEvidenceSpan>,
+        unsupported: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InferenceEvidenceSpan {
+    source_id: Uuid,
+    rendition_id: Uuid,
+    evidence_id: Uuid,
+    object_id: String,
+    byte_start: u64,
+    byte_end: u64,
+    quote_hash: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -591,6 +661,18 @@ struct ProposalObject {
 struct ConfirmationObject {
     kind: String,
     claim: ClaimRecord,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RejectionObject {
+    kind: String,
+    proposal_id: Uuid,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RetractionObject {
+    kind: String,
+    claim_id: Uuid,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -928,6 +1010,86 @@ impl SemanticStore {
                     provenance,
                     draft: draft.clone(),
                 };
+                insert_proposal_status(transaction, proposal_id)?;
+                Ok(MutationMaterial {
+                    event_type: "claim_proposed",
+                    object_bytes: canonical_bytes(&proposal)?,
+                    media_type: OBJECT_MEDIA_TYPE.to_owned(),
+                    generated: GeneratedIds {
+                        proposal_id: Some(proposal_id),
+                        ..GeneratedIds::default()
+                    },
+                })
+            },
+        )
+    }
+
+    /// Proposes a claim derived by inference rather than direct evidence. An
+    /// inference with no evidence captures is stored as `unsupported=true`
+    /// and can be proposed/rejected but never confirmed (ADR Decision 6).
+    pub fn propose_inference(
+        &self,
+        context: &TrustedContext,
+        command: ProposeInferenceCommand,
+    ) -> Result<MutationOutcome> {
+        validate_claim_draft(&command.draft)?;
+        let request_hash = request_hash("propose_inference", &command)?;
+        let evidence_captures = command.evidence_capture_operation_ids.clone();
+        let method = command.method.clone();
+        let model = command.model.clone();
+        let prompt_version = command.prompt_version.clone();
+        let draft = command.draft.clone();
+        let root = self.root.clone();
+        self.mutate(
+            context,
+            &command.operation_id,
+            &request_hash,
+            move |transaction, _identity| {
+                let proposal_id = Uuid::now_v7();
+                let mut evidence = Vec::with_capacity(evidence_captures.len());
+                for capture_operation in &evidence_captures {
+                    let captured = stored_outcome(transaction, context, capture_operation)?;
+                    let source_object_id = captured.event.payload.object_id;
+                    let source_bytes = read_object(&root, &source_object_id)?;
+                    let quote_hash = source_object_id
+                        .strip_prefix("sha256:")
+                        .ok_or_else(|| {
+                            SemanticError::CorruptLedger("capture object has invalid ID".to_owned())
+                        })?
+                        .to_owned();
+                    evidence.push(InferenceEvidenceSpan {
+                        source_id: captured.generated.source_id.ok_or_else(|| {
+                            SemanticError::MissingDependency(capture_operation.clone())
+                        })?,
+                        rendition_id: captured.generated.rendition_id.ok_or_else(|| {
+                            SemanticError::MissingDependency(capture_operation.clone())
+                        })?,
+                        evidence_id: captured.generated.evidence_id.ok_or_else(|| {
+                            SemanticError::MissingDependency(capture_operation.clone())
+                        })?,
+                        object_id: source_object_id,
+                        byte_start: 0,
+                        byte_end: u64::try_from(source_bytes.len()).map_err(|_| {
+                            SemanticError::CorruptLedger("capture object is too large".to_owned())
+                        })?,
+                        quote_hash,
+                    });
+                }
+                let unsupported = evidence.is_empty();
+                let proposal = ProposalObject {
+                    kind: "claim_proposal".to_owned(),
+                    proposal_id,
+                    source_object_id: String::new(),
+                    provenance: Provenance::Inference {
+                        method: method.clone(),
+                        model: model.clone(),
+                        prompt_version: prompt_version.clone(),
+                        evidence,
+                        unsupported,
+                    },
+                    draft: draft.clone(),
+                };
+                insert_proposal_status(transaction, proposal_id)?;
                 Ok(MutationMaterial {
                     event_type: "claim_proposed",
                     object_bytes: canonical_bytes(&proposal)?,
@@ -954,52 +1116,156 @@ impl SemanticStore {
             &command.operation_id,
             &request_hash,
             move |transaction, identity| {
+                finish_confirmation(
+                    transaction,
+                    context,
+                    &root,
+                    &proposal_operation,
+                    identity,
+                    &[],
+                )
+            },
+        )
+    }
+
+    /// Confirms a proposal as a claim that supersedes one or more
+    /// previously confirmed claims in the same `(domain, subject, predicate)`
+    /// scope. The superseded claims' history is kept; they simply stop being
+    /// current as of this event (ADR Decision 6, "no silent overwrite").
+    pub fn supersede(
+        &self,
+        context: &TrustedContext,
+        command: SupersedeCommand,
+    ) -> Result<MutationOutcome> {
+        if command.superseded_claim_operation_ids.is_empty() {
+            return Err(SemanticError::InvalidClaim(
+                "supersede requires at least one prior claim operation_id".to_owned(),
+            ));
+        }
+        let request_hash = request_hash("supersede", &command)?;
+        let proposal_operation = command.proposal_operation_id.clone();
+        let superseded_operations = command.superseded_claim_operation_ids.clone();
+        let root = self.root.clone();
+        self.mutate(
+            context,
+            &command.operation_id,
+            &request_hash,
+            move |transaction, identity| {
+                finish_confirmation(
+                    transaction,
+                    context,
+                    &root,
+                    &proposal_operation,
+                    identity,
+                    &superseded_operations,
+                )
+            },
+        )
+    }
+
+    /// Rejects a proposal without ever creating a claim from it.
+    pub fn reject(
+        &self,
+        context: &TrustedContext,
+        command: RejectCommand,
+    ) -> Result<MutationOutcome> {
+        let request_hash = request_hash("reject", &command)?;
+        let proposal_operation = command.proposal_operation_id.clone();
+        self.mutate(
+            context,
+            &command.operation_id,
+            &request_hash,
+            move |transaction, _identity| {
                 let proposed = stored_outcome(transaction, context, &proposal_operation)?;
-                let bytes = read_object(&root, &proposed.event.payload.object_id)?;
-                let proposal: ProposalObject =
-                    serde_json::from_slice(&bytes).map_err(serialization_error)?;
-                let claim_id = Uuid::now_v7();
-                let ClaimDraft {
-                    subject,
-                    predicate,
-                    value,
-                    claim_kind,
-                    domain,
-                    confidence_basis_points,
-                    privacy_label,
-                    valid_from,
-                    valid_to,
-                } = proposal.draft;
-                let confirmation = ConfirmationObject {
-                    kind: "claim_confirmation".to_owned(),
-                    claim: ClaimRecord {
-                        claim_id,
-                        proposal_id: proposal.proposal_id,
-                        subject,
-                        predicate,
-                        value,
-                        claim_kind,
-                        status: "confirmed".to_owned(),
-                        domain,
-                        confidence_basis_points,
-                        privacy_label,
-                        valid_from,
-                        valid_to,
-                        recorded_event_id: identity.event_id,
-                        recorded_event_seq: identity.event_seq,
-                        provenance: proposal.provenance,
-                        supersedes: Vec::new(),
-                        retracts: Vec::new(),
-                    },
+                let proposal_id = proposed
+                    .generated
+                    .proposal_id
+                    .ok_or_else(|| SemanticError::MissingDependency(proposal_operation.clone()))?;
+                let status: String = transaction
+                    .query_row(
+                        "SELECT status FROM proposal_status WHERE proposal_id=?1",
+                        [proposal_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .map_err(database_error)?;
+                if status != "proposed" {
+                    return Err(SemanticError::InvalidTransition(format!(
+                        "proposal {proposal_id} is already {status}, cannot reject"
+                    )));
+                }
+                transaction
+                    .execute(
+                        "UPDATE proposal_status SET status='rejected' WHERE proposal_id=?1",
+                        [proposal_id.to_string()],
+                    )
+                    .map_err(database_error)?;
+                let rejection = RejectionObject {
+                    kind: "claim_rejection".to_owned(),
+                    proposal_id,
                 };
                 Ok(MutationMaterial {
-                    event_type: "claim_confirmed",
-                    object_bytes: canonical_bytes(&confirmation)?,
+                    event_type: "claim_rejected",
+                    object_bytes: canonical_bytes(&rejection)?,
                     media_type: OBJECT_MEDIA_TYPE.to_owned(),
-                    generated: GeneratedIds {
-                        claim_id: Some(claim_id),
-                        ..GeneratedIds::default()
-                    },
+                    generated: GeneratedIds::default(),
+                })
+            },
+        )
+    }
+
+    /// Retracts a previously confirmed claim. History and evidence are kept;
+    /// the claim simply stops being current as of this event.
+    pub fn retract(
+        &self,
+        context: &TrustedContext,
+        command: RetractCommand,
+    ) -> Result<MutationOutcome> {
+        let request_hash = request_hash("retract", &command)?;
+        let claim_operation = command.claim_operation_id.clone();
+        self.mutate(
+            context,
+            &command.operation_id,
+            &request_hash,
+            move |transaction, identity| {
+                let confirmed = stored_outcome(transaction, context, &claim_operation)?;
+                let claim_id = confirmed.generated.claim_id.ok_or_else(|| {
+                    SemanticError::InvalidTransition(format!(
+                        "operation {claim_operation} did not confirm a claim"
+                    ))
+                })?;
+                let retracted_at: Option<Option<i64>> = transaction
+                    .query_row(
+                        "SELECT retracted_at_event_seq FROM claim_status WHERE claim_id=?1",
+                        [claim_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(database_error)?;
+                let Some(retracted_at) = retracted_at else {
+                    return Err(SemanticError::InvalidTransition(format!(
+                        "claim {claim_id} is not a known confirmed claim"
+                    )));
+                };
+                if retracted_at.is_some() {
+                    return Err(SemanticError::InvalidTransition(format!(
+                        "claim {claim_id} is already retracted"
+                    )));
+                }
+                transaction
+                    .execute(
+                        "UPDATE claim_status SET retracted_at_event_seq=?2 WHERE claim_id=?1",
+                        params![claim_id.to_string(), identity.event_seq as i64],
+                    )
+                    .map_err(database_error)?;
+                let retraction = RetractionObject {
+                    kind: "claim_retraction".to_owned(),
+                    claim_id,
+                };
+                Ok(MutationMaterial {
+                    event_type: "claim_retracted",
+                    object_bytes: canonical_bytes(&retraction)?,
+                    media_type: OBJECT_MEDIA_TYPE.to_owned(),
+                    generated: GeneratedIds::default(),
                 })
             },
         )
@@ -1222,6 +1488,104 @@ impl SemanticStore {
             }
         }
         Ok(None)
+    }
+
+    /// Scoped, bitemporal claim query: buckets every confirmed claim in
+    /// `(domain, subject, predicate)` into `active`/`future`/`past` as of
+    /// `ledger_head` (recorded time) and `world_time` (valid time). A claim
+    /// is superseded/retracted "as of" `ledger_head` only when the recorded
+    /// transition sequence is at or before that head, so replaying an
+    /// earlier head correctly excludes later supersession/retraction.
+    pub fn claims_current(
+        &self,
+        ledger_head: u64,
+        world_time: DateTime<Utc>,
+        domain: &str,
+        subject: &str,
+        predicate: &str,
+    ) -> Result<CurrentClaims> {
+        let connection = open_connection(&self.root)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT claim_id, confirmed_event_seq, superseded_by_event_seq, retracted_at_event_seq
+                 FROM claim_status
+                 WHERE domain=?1 AND subject=?2 AND predicate=?3 AND confirmed_event_seq<=?4",
+            )
+            .map_err(database_error)?;
+        let rows = statement
+            .query_map(
+                params![domain, subject, predicate, ledger_head as i64],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                    ))
+                },
+            )
+            .map_err(database_error)?;
+
+        let mut result = CurrentClaims::default();
+        for row in rows {
+            let (claim_id, confirmed_event_seq, superseded_by, retracted_at) =
+                row.map_err(database_error)?;
+            let confirmed_event_seq = u64::try_from(confirmed_event_seq)
+                .map_err(|_| SemanticError::CorruptLedger("negative event sequence".to_owned()))?;
+            let is_superseded_as_of = superseded_by
+                .map(|seq| seq as u64 <= ledger_head)
+                .unwrap_or(false);
+            let is_retracted_as_of = retracted_at
+                .map(|seq| seq as u64 <= ledger_head)
+                .unwrap_or(false);
+
+            let object_id: String = connection
+                .query_row(
+                    "SELECT object_id FROM events WHERE owner_id=?1 AND event_seq=?2",
+                    params![self.marker.owner_id.to_string(), confirmed_event_seq as i64],
+                    |row| row.get(0),
+                )
+                .map_err(database_error)?;
+            let object: ConfirmationObject =
+                serde_json::from_slice(&read_object(&self.root, &object_id)?)
+                    .map_err(serialization_error)?;
+            let claim = object.claim;
+            if claim.claim_id.to_string() != claim_id {
+                return Err(SemanticError::CorruptLedger(
+                    "claim_status row does not match confirmation event".to_owned(),
+                ));
+            }
+            let view = ClaimView {
+                claim_id: claim.claim_id,
+                proposal_id: claim.proposal_id,
+                subject: claim.subject,
+                predicate: claim.predicate,
+                value: claim.value,
+                claim_kind: claim.claim_kind,
+                status: claim.status,
+                domain: claim.domain,
+                confidence_basis_points: claim.confidence_basis_points,
+                privacy_label: claim.privacy_label,
+                valid_from: claim.valid_from,
+                valid_to: claim.valid_to,
+                confirmed_event_seq,
+            };
+
+            if is_superseded_as_of || is_retracted_as_of {
+                result.past.push(view);
+                continue;
+            }
+            let started = view.valid_from.is_none_or(|from| from <= world_time);
+            let ended = view.valid_to.is_some_and(|to| world_time >= to);
+            if ended {
+                result.past.push(view);
+            } else if started {
+                result.active.push(view);
+            } else {
+                result.future.push(view);
+            }
+        }
+        Ok(result)
     }
 
     pub fn recover(&self, _request: ManualRecovery) -> Result<()> {
@@ -1576,6 +1940,26 @@ fn initialize_schema(
                label TEXT NOT NULL UNIQUE,
                created_at TEXT NOT NULL
              );
+             CREATE TABLE proposal_status(
+               proposal_id TEXT PRIMARY KEY,
+               status TEXT NOT NULL,
+               claim_id TEXT
+             );
+             -- Status is derived from the three sequence columns against a
+             -- requested ledger_head, not stored as a label: a claim is
+             -- superseded/retracted as of a given head only when that head
+             -- is at or after the recorded transition sequence, which keeps
+             -- as-of queries correct even though this table's rows are
+             -- updated in place.
+             CREATE TABLE claim_status(
+               claim_id TEXT PRIMARY KEY,
+               domain TEXT NOT NULL,
+               subject TEXT NOT NULL,
+               predicate TEXT NOT NULL,
+               confirmed_event_seq INTEGER NOT NULL,
+               superseded_by_event_seq INTEGER,
+               retracted_at_event_seq INTEGER
+             );
              COMMIT;",
         )
         .map_err(database_error)?;
@@ -1803,6 +2187,183 @@ fn stored_outcome(
         .flatten();
     let bytes = bytes.ok_or_else(|| SemanticError::MissingDependency(operation_id.to_owned()))?;
     serde_json::from_slice(&bytes).map_err(serialization_error)
+}
+
+struct ClaimScopeRow {
+    domain: String,
+    subject: String,
+    predicate: String,
+    superseded_by: Option<i64>,
+    retracted_at: Option<i64>,
+}
+
+fn insert_proposal_status(transaction: &Transaction<'_>, proposal_id: Uuid) -> Result<()> {
+    transaction
+        .execute(
+            "INSERT INTO proposal_status(proposal_id,status,claim_id) VALUES (?1,'proposed',NULL)",
+            [proposal_id.to_string()],
+        )
+        .map_err(database_error)?;
+    Ok(())
+}
+
+/// Shared confirm/supersede path: validates the proposal is still pending
+/// and (if present) resolves and validates the claims it supersedes, then
+/// builds the `claim_confirmed` event material. `superseded_claim_operations`
+/// is empty for a plain confirm.
+fn finish_confirmation(
+    transaction: &Transaction<'_>,
+    context: &TrustedContext,
+    root: &Path,
+    proposal_operation: &str,
+    identity: EventIdentity,
+    superseded_claim_operations: &[String],
+) -> Result<MutationMaterial> {
+    let proposed = stored_outcome(transaction, context, proposal_operation)?;
+    let proposal_id = proposed
+        .generated
+        .proposal_id
+        .ok_or_else(|| SemanticError::MissingDependency(proposal_operation.to_owned()))?;
+    let bytes = read_object(root, &proposed.event.payload.object_id)?;
+    let proposal: ProposalObject = serde_json::from_slice(&bytes).map_err(serialization_error)?;
+
+    let status: String = transaction
+        .query_row(
+            "SELECT status FROM proposal_status WHERE proposal_id=?1",
+            [proposal_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(database_error)?;
+    if status != "proposed" {
+        return Err(SemanticError::InvalidTransition(format!(
+            "proposal {proposal_id} is already {status}, cannot confirm"
+        )));
+    }
+    if let Provenance::Inference {
+        unsupported: true, ..
+    } = &proposal.provenance
+    {
+        return Err(SemanticError::UnsupportedInference);
+    }
+
+    let mut superseded_claim_ids = Vec::with_capacity(superseded_claim_operations.len());
+    for claim_operation in superseded_claim_operations {
+        let confirmed = stored_outcome(transaction, context, claim_operation)?;
+        let claim_id = confirmed.generated.claim_id.ok_or_else(|| {
+            SemanticError::InvalidTransition(format!(
+                "operation {claim_operation} did not confirm a claim"
+            ))
+        })?;
+        let row: Option<ClaimScopeRow> = transaction
+            .query_row(
+                "SELECT domain,subject,predicate,superseded_by_event_seq,retracted_at_event_seq FROM claim_status WHERE claim_id=?1",
+                [claim_id.to_string()],
+                |row| {
+                    Ok(ClaimScopeRow {
+                        domain: row.get(0)?,
+                        subject: row.get(1)?,
+                        predicate: row.get(2)?,
+                        superseded_by: row.get(3)?,
+                        retracted_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(database_error)?;
+        let Some(ClaimScopeRow {
+            domain,
+            subject,
+            predicate,
+            superseded_by,
+            retracted_at,
+        }) = row
+        else {
+            return Err(SemanticError::InvalidTransition(format!(
+                "claim {claim_id} is not a known confirmed claim"
+            )));
+        };
+        if superseded_by.is_some() || retracted_at.is_some() {
+            return Err(SemanticError::InvalidTransition(format!(
+                "claim {claim_id} is already superseded or retracted"
+            )));
+        }
+        if domain != proposal.draft.domain
+            || subject != proposal.draft.subject
+            || predicate != proposal.draft.predicate
+        {
+            return Err(SemanticError::InvalidTransition(format!(
+                "claim {claim_id} scope ({domain}/{subject}/{predicate}) does not match new claim scope ({}/{}/{})",
+                proposal.draft.domain, proposal.draft.subject, proposal.draft.predicate
+            )));
+        }
+        superseded_claim_ids.push(claim_id);
+    }
+
+    let claim_id = Uuid::now_v7();
+    let ClaimDraft {
+        subject,
+        predicate,
+        value,
+        claim_kind,
+        domain,
+        confidence_basis_points,
+        privacy_label,
+        valid_from,
+        valid_to,
+    } = proposal.draft;
+    let confirmation = ConfirmationObject {
+        kind: "claim_confirmation".to_owned(),
+        claim: ClaimRecord {
+            claim_id,
+            proposal_id: proposal.proposal_id,
+            subject: subject.clone(),
+            predicate: predicate.clone(),
+            value,
+            claim_kind,
+            status: "confirmed".to_owned(),
+            domain: domain.clone(),
+            confidence_basis_points,
+            privacy_label,
+            valid_from,
+            valid_to,
+            recorded_event_id: identity.event_id,
+            recorded_event_seq: identity.event_seq,
+            provenance: proposal.provenance,
+            supersedes: superseded_claim_ids.clone(),
+            retracts: Vec::new(),
+        },
+    };
+
+    transaction
+        .execute(
+            "UPDATE proposal_status SET status='confirmed', claim_id=?2 WHERE proposal_id=?1",
+            params![proposal_id.to_string(), claim_id.to_string()],
+        )
+        .map_err(database_error)?;
+    transaction
+        .execute(
+            "INSERT INTO claim_status(claim_id,domain,subject,predicate,confirmed_event_seq,superseded_by_event_seq,retracted_at_event_seq) VALUES (?1,?2,?3,?4,?5,NULL,NULL)",
+            params![claim_id.to_string(), domain, subject, predicate, identity.event_seq as i64],
+        )
+        .map_err(database_error)?;
+    for superseded_id in &superseded_claim_ids {
+        transaction
+            .execute(
+                "UPDATE claim_status SET superseded_by_event_seq=?2 WHERE claim_id=?1",
+                params![superseded_id.to_string(), identity.event_seq as i64],
+            )
+            .map_err(database_error)?;
+    }
+
+    Ok(MutationMaterial {
+        event_type: "claim_confirmed",
+        object_bytes: canonical_bytes(&confirmation)?,
+        media_type: OBJECT_MEDIA_TYPE.to_owned(),
+        generated: GeneratedIds {
+            claim_id: Some(claim_id),
+            ..GeneratedIds::default()
+        },
+    })
 }
 
 fn publish_object(root: &Path, bytes: &[u8]) -> Result<String> {
