@@ -2569,11 +2569,10 @@ fn publish_object(root: &Path, transaction: &Transaction<'_>, bytes: &[u8]) -> R
     } else {
         // Fresh object, or the prior ciphertext's key was destroyed: replace
         // whatever is at this path so the file on disk matches the wrapped
-        // key we are about to (re)write.
-        if destination.exists() {
-            fs::remove_file(&destination).map_err(io_error)?;
-        }
-        fs::rename(&temporary, &destination).map_err(io_error)?;
+        // key we are about to (re)write. atomic_replace uses MoveFileExW
+        // with MOVEFILE_REPLACE_EXISTING on Windows (a single syscall) so
+        // there is no window where the destination is briefly missing.
+        atomic_replace(&temporary, &destination)?;
     }
     crash_at("after_object_rename");
 
