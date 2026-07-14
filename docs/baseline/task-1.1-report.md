@@ -1,6 +1,6 @@
 # Task 1.1 — Immutable Object Store + Append-only Events Report
 
-Status: **BUILDER GREEN — awaiting independent validation**
+Status: **PASS** — Independent Validator confirmed at HEAD `70924a7` (GREEN `8ac84e0`)
 
 Approach: **Promote the Task 0.3 semantic spike** (user-approved). The isolated `SemanticStore` that passed Task 0.3 validation is extended in place rather than rewritten; every Task 0.3 behavior and test is carried forward unchanged.
 
@@ -64,3 +64,7 @@ Permitted paths: `src/semantic.rs`, `tests/semantic_store_v1.rs`, `docs/baseline
 - **Toolchain.** The repository-pinned bare `cargo` resolves to the GNU host and fails on missing `dlltool.exe`; all gates run through `cargo +1.95-x86_64-pc-windows-msvc`, consistent with Tasks 0.1–0.3.
 - **MIME strictness.** Media types are accepted only as lowercase essences; uppercase input is rejected rather than normalized. Client-side normalization is deferred to the transport layer (Phase 3).
 - Existing carried risks (4 RUSTSEC findings, CI action tags, fixture pollution, Windows pagefile sensitivity) remain unchanged and unsuppressed.
+
+### Independent Validator result
+
+A read-only validator agent, independent of the builder session, re-ran every gate (RED→GREEN diff trace, both semantic suites, fmt, clippy both feature configs, full 594/0 suite, pinned locked eval 126/126, all four Python suites against the fresh `CARGO_TARGET_DIR` binary, audit comparison 4/4, coverage 88.75%) and performed a focused security review: it confirmed `TrustedContext` can only be minted by `trusted_context()`, `register_client()`, or the non-default-feature test forge hook; the in-transaction registry check runs before the idempotency replay lookup, so an unregistered client cannot replay stored outcomes; `register_client` is fully serialized by the shared coordinator writer mutex with no lock-order inversion; `backup_consistent`'s maintenance write lock excludes all writers with no TOCTOU gap (the `active_transactions` check is defense-in-depth); `VACUUM INTO` uses a bound parameter; and bootstrap seeding cannot double-insert since `initialize_schema` runs only at create. Verdict: **PASS**, zero findings at any severity. Process note recorded for future validators: the Python suites must be invoked with CWD = `tests-integration/` so `uv` picks up the pinned 3.14.4 environment.
