@@ -1,8 +1,44 @@
 # Task 0.3 — Semantic Vertical Slice Report
 
-Status: **VALIDATOR FEEDBACK FIXED — awaiting independent revalidation**
+Status: **ROUND 2 HARDENING FIXED — awaiting independent revalidation**
 
 Outcome: **EXTEND**
+
+## Round 2 — evidence guard and recovery/mutation queuing
+
+RED checkpoint commit: `876838f` added two tests against clean HEAD `1502b0a` (this task's prior GREEN commit) covering gaps not exercised by round 1:
+
+- `empty_or_invalid_utf8_capture_cannot_become_a_confirmed_evidence_claim`: an empty or invalid-UTF-8 captured rendition must not become a confirmed evidence-linked claim; `propose` now rejects it with `InvalidClaim` before an object is published, and the downstream `confirm` call correctly fails with `MissingDependency` since no proposal exists. A valid Thai-language UTF-8 rendition still produces the correct `byte_start`/`byte_end`/`quote_hash`/`object_id` evidence span and confirms normally.
+- `recovery_queued_during_committed_mutation_does_not_deadlock`: a mutation paused after its database commit (via a new `#[cfg(feature = "semantic-test-failpoints")]` test-only pause hook) must not deadlock a concurrently issued `recover()` call; recovery blocks on the maintenance write lock until the paused mutation releases, then both converge with one event, one operation, zero pending outbox rows, and matching ledger/projection checksums.
+
+RED command: `cargo +1.95-x86_64-pc-windows-msvc test --features semantic-test-failpoints --test semantic_vertical_slice -j 1`; RED failure was legitimate `E0599` (`pause_after_commit_for_test`/`recovery_blocked_for_test` not found on `SemanticStore`), not a syntax/config error.
+
+GREEN implementation added to `src/semantic.rs` only:
+
+- Evidence-span guard: `propose` rejects an empty or non-UTF-8 captured rendition with `InvalidClaim` before any proposal object is published.
+- Test-only pause primitive (`SemanticTestPause`/`PauseState`, `pause_after_commit_for_test`, `recovery_blocked_for_test`) gated behind `semantic-test-failpoints`, using a `parking_lot::Condvar` to park a mutation after its commit and signal test observers.
+- `recover()` now increments/decrements a `recovery_waiting` counter around acquiring the maintenance write lock so tests can observe queuing without a busy-wait on internal state.
+- `project_and_ack` switched its maintenance guard from `read()` to `read_recursive()`: the mutation path already holds a maintenance read guard when it calls `project_and_ack`, and parking_lot read locks queue behind a waiting writer by default, so a second plain `read()` on the same thread while `recover()`'s writer is queued would deadlock. `read_recursive()` is safe here because both guards are held by the same call stack on the same thread, never across threads.
+
+All permitted paths remain the same as round 1 (`src/semantic.rs`, `tests/semantic_vertical_slice.rs`, `docs/baseline/task-0.3-report.md`); no legacy Markdown/Git/MCP/ACP/HTTP/Tantivy/Petgraph runtime files were touched.
+
+### Round 2 verification results
+
+| Gate | Result |
+|---|---|
+| Focused semantic suite (`--features semantic-test-failpoints --test semantic_vertical_slice`) | PASS — 18 passed, including both new tests |
+| Rust format (`cargo fmt --check`) | PASS |
+| Rust clippy all targets/features (`-D warnings`) | PASS |
+| Rust all targets/features (`cargo test --all-targets --all-features`) | PASS — 583 passed, 0 failed, 0 ignored (581 round-1 baseline + 2 new) |
+| Semantic per-file coverage (`cargo-llvm-cov 0.8.6`) | PASS — 88.58% lines (1,148/1,296 instrumented lines), minimum 80% |
+| Locked eval (`evals/v1`, pinned `uv run --python 3.14.4`) | PASS — 126/126 cases, `environment_passed=true`, `thresholds_passed=true`, zero threshold failures |
+| Python governance (`tests-integration/governance`) | PASS — 10/10 |
+| Python engine (`tests-integration/engine`) | PASS — 63/63 |
+| Python MCP (`tests-integration/mcp`) | PASS — 76/76 |
+| Python ACP (`tests-integration/acp`) | PASS WITH KNOWN SKIPS — 26 passed, 2 skipped |
+| Dependency audit comparison (`scripts/compare_cargo_audit.ps1` vs `task-0.3-audit-after.json`) | PASS — before 4, after 4, zero new findings |
+
+Known carried risk observed during this round: running the `engine`/`spaces` Python integration suite writes generated default schema files (`procedure.json`, `profile.json`, `semantic.json`) into the tracked `tests/fixtures/wikis/alt-root/schemas/` fixture directory as an untracked side effect. This is the same "test fixture pollution" risk already carried from round 1; it was left untouched and not committed, since cleaning or gitignoring it is outside Task 0.3's permitted paths.
 
 ## Scope and TDD evidence
 

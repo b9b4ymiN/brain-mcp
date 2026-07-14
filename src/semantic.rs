@@ -14,6 +14,8 @@ use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+#[cfg(feature = "semantic-test-failpoints")]
+use parking_lot::Condvar;
 use parking_lot::{Mutex, RwLock};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -358,6 +360,8 @@ struct RootCoordinator {
     projection: Mutex<()>,
     active_handles: AtomicUsize,
     active_transactions: AtomicUsize,
+    #[cfg(feature = "semantic-test-failpoints")]
+    recovery_waiting: AtomicUsize,
 }
 
 impl RootCoordinator {
@@ -368,6 +372,8 @@ impl RootCoordinator {
             projection: Mutex::new(()),
             active_handles: AtomicUsize::new(0),
             active_transactions: AtomicUsize::new(0),
+            #[cfg(feature = "semantic-test-failpoints")]
+            recovery_waiting: AtomicUsize::new(0),
         }
     }
 }
@@ -390,6 +396,8 @@ pub struct SemanticStore {
     marker: StoreMarker,
     coordinator: Arc<RootCoordinator>,
     clock: Arc<dyn SemanticClock>,
+    #[cfg(feature = "semantic-test-failpoints")]
+    pause_after_commit: Arc<PauseState>,
 }
 
 impl Debug for SemanticStore {
@@ -434,6 +442,61 @@ pub enum RollbackStatus {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ManualRecovery;
+
+#[cfg(feature = "semantic-test-failpoints")]
+#[derive(Default)]
+struct PauseState {
+    flags: Mutex<PauseFlags>,
+    condvar: Condvar,
+}
+
+#[cfg(feature = "semantic-test-failpoints")]
+#[derive(Default)]
+struct PauseFlags {
+    armed: bool,
+    entered: bool,
+    released: bool,
+}
+
+/// Test-only handle that holds one mutation paused after its database commit
+/// while the maintenance read guard is still held, so tests can queue
+/// recovery behind it and prove the pair converges without deadlocking.
+#[cfg(feature = "semantic-test-failpoints")]
+pub struct SemanticTestPause {
+    state: Arc<PauseState>,
+}
+
+#[cfg(feature = "semantic-test-failpoints")]
+impl SemanticTestPause {
+    pub fn wait_until_entered(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut flags = self.state.flags.lock();
+        while !flags.entered {
+            if self
+                .state
+                .condvar
+                .wait_until(&mut flags, deadline)
+                .timed_out()
+            {
+                return flags.entered;
+            }
+        }
+        true
+    }
+
+    pub fn release(&self) {
+        let mut flags = self.state.flags.lock();
+        flags.released = true;
+        self.state.condvar.notify_all();
+    }
+}
+
+#[cfg(feature = "semantic-test-failpoints")]
+impl Drop for SemanticTestPause {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
 
 #[cfg(feature = "semantic-test-failpoints")]
 #[derive(Debug)]
@@ -581,6 +644,8 @@ impl SemanticStore {
             marker,
             coordinator,
             clock: config.clock,
+            #[cfg(feature = "semantic-test-failpoints")]
+            pause_after_commit: Arc::default(),
         };
         Ok((store, admin))
     }
@@ -613,6 +678,8 @@ impl SemanticStore {
             marker,
             coordinator,
             clock: config.clock,
+            #[cfg(feature = "semantic-test-failpoints")]
+            pause_after_commit: Arc::default(),
         })
     }
 
@@ -672,6 +739,16 @@ impl SemanticStore {
                 let proposal_id = Uuid::now_v7();
                 let source_object_id = captured.event.payload.object_id;
                 let source_bytes = read_object(&root, &source_object_id)?;
+                if source_bytes.is_empty() {
+                    return Err(SemanticError::InvalidClaim(
+                        "captured rendition is empty, so no evidence span can exist".to_owned(),
+                    ));
+                }
+                if std::str::from_utf8(&source_bytes).is_err() {
+                    return Err(SemanticError::InvalidClaim(
+                        "captured rendition is not valid UTF-8".to_owned(),
+                    ));
+                }
                 let quote_hash = source_object_id
                     .strip_prefix("sha256:")
                     .ok_or_else(|| {
@@ -914,6 +991,8 @@ impl SemanticStore {
         transaction.commit().map_err(database_error)?;
         drop(active);
         crash_at("after_db_commit_before_projection");
+        #[cfg(feature = "semantic-test-failpoints")]
+        self.pause_after_commit_if_armed();
         project_and_ack(&self.root, &self.coordinator)?;
         Ok(outcome)
     }
@@ -983,7 +1062,15 @@ impl SemanticStore {
     }
 
     pub fn recover(&self, _request: ManualRecovery) -> Result<()> {
+        #[cfg(feature = "semantic-test-failpoints")]
+        self.coordinator
+            .recovery_waiting
+            .fetch_add(1, Ordering::SeqCst);
         let _maintenance = self.coordinator.maintenance.write();
+        #[cfg(feature = "semantic-test-failpoints")]
+        self.coordinator
+            .recovery_waiting
+            .fetch_sub(1, Ordering::SeqCst);
         let mut connection = open_connection(&self.root)?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1019,6 +1106,32 @@ impl SemanticStore {
                 .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
                 .map_err(database_error)?,
         })
+    }
+
+    #[cfg(feature = "semantic-test-failpoints")]
+    pub fn pause_after_commit_for_test(&self) -> SemanticTestPause {
+        self.pause_after_commit.flags.lock().armed = true;
+        SemanticTestPause {
+            state: Arc::clone(&self.pause_after_commit),
+        }
+    }
+
+    #[cfg(feature = "semantic-test-failpoints")]
+    fn pause_after_commit_if_armed(&self) {
+        let mut flags = self.pause_after_commit.flags.lock();
+        if !flags.armed {
+            return;
+        }
+        flags.entered = true;
+        self.pause_after_commit.condvar.notify_all();
+        while !flags.released {
+            self.pause_after_commit.condvar.wait(&mut flags);
+        }
+    }
+
+    #[cfg(feature = "semantic-test-failpoints")]
+    pub fn recovery_blocked_for_test(&self) -> bool {
+        self.coordinator.recovery_waiting.load(Ordering::SeqCst) > 0
     }
 
     #[cfg(feature = "semantic-test-failpoints")]
@@ -1562,7 +1675,10 @@ fn ledger_projection(root: &Path) -> Result<ProjectionState> {
 }
 
 fn project_and_ack(root: &Path, coordinator: &RootCoordinator) -> Result<()> {
-    let _maintenance = coordinator.maintenance.read();
+    // Callers on the mutation path already hold a maintenance read guard.
+    // parking_lot readers queue behind a waiting writer, so a plain re-read
+    // here would deadlock against recovery blocked on maintenance.write().
+    let _maintenance = coordinator.maintenance.read_recursive();
     let _projection = coordinator.projection.lock();
     project_and_ack_without_guard(root, coordinator)
 }
