@@ -8,7 +8,9 @@ use llm_wiki::semantic::{
 };
 use serde_json::json;
 use tempfile::TempDir;
-use uuid::{Uuid, Version};
+#[cfg(feature = "semantic-test-failpoints")]
+use uuid::Uuid;
+use uuid::Version;
 
 fn enabled(parent: &Path) -> SemanticConfig {
     SemanticConfig::enabled_for(parent)
@@ -60,10 +62,7 @@ fn registered_clients_have_stable_server_generated_identity() {
         .unwrap()
         .event;
     assert_ne!(codex_event.client_id, console_event.client_id);
-    assert_eq!(
-        codex_event.client_id.get_version(),
-        Some(Version::SortRand)
-    );
+    assert_eq!(codex_event.client_id.get_version(), Some(Version::SortRand));
     assert_eq!(
         console_event.client_id.get_version(),
         Some(Version::SortRand)
@@ -92,7 +91,14 @@ fn registered_clients_have_stable_server_generated_identity() {
 #[test]
 fn register_client_rejects_invalid_and_reserved_labels() {
     let (_parent, _root, store, _bootstrap) = fixture();
-    for label in ["", "__bootstrap__", "__anything", "UPPER", "has space", "ยาว"] {
+    for label in [
+        "",
+        "__bootstrap__",
+        "__anything",
+        "UPPER",
+        "has space",
+        "ยาว",
+    ] {
         assert!(
             matches!(
                 store.register_client(label),
@@ -141,7 +147,10 @@ fn same_operation_id_is_isolated_per_client_and_conflicts_within_client() {
     ));
 
     let bootstrap_outcome = store
-        .capture(&bootstrap, capture("shared-operation", b"payload from owner"))
+        .capture(
+            &bootstrap,
+            capture("shared-operation", b"payload from owner"),
+        )
         .unwrap();
     assert_ne!(
         bootstrap_outcome.event.event_id,

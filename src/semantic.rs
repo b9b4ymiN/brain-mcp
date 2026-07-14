@@ -27,6 +27,8 @@ const DATABASE_FILE: &str = "semantic.sqlite3";
 const MARKER_FILE: &str = "store.marker.json";
 const PROJECTION_FILE: &str = "projection.json";
 const OBJECT_MEDIA_TYPE: &str = "application/vnd.brain.semantic+json";
+const DEFAULT_MAX_OBJECT_BYTES: u64 = 32 * 1024 * 1024;
+const BOOTSTRAP_CLIENT_LABEL: &str = "__bootstrap__";
 
 /// Clock boundary used to make transaction-time behavior testable.
 pub trait SemanticClock: Send + Sync + Debug {
@@ -50,6 +52,7 @@ pub struct SemanticConfig {
     pub enabled: bool,
     allowed_parent: Option<PathBuf>,
     clock: Arc<dyn SemanticClock>,
+    max_object_bytes: u64,
 }
 
 impl Default for SemanticConfig {
@@ -58,6 +61,7 @@ impl Default for SemanticConfig {
             enabled: false,
             allowed_parent: None,
             clock: Arc::new(SystemClock),
+            max_object_bytes: DEFAULT_MAX_OBJECT_BYTES,
         }
     }
 }
@@ -69,12 +73,19 @@ impl SemanticConfig {
             enabled: true,
             allowed_parent: Some(allowed_parent.as_ref().to_path_buf()),
             clock: Arc::new(SystemClock),
+            max_object_bytes: DEFAULT_MAX_OBJECT_BYTES,
         }
     }
 
     /// Replaces the system clock; intended for deterministic application tests.
     pub fn with_clock(mut self, clock: Arc<dyn SemanticClock>) -> Self {
         self.clock = clock;
+        self
+    }
+
+    /// Overrides the capture size limit; zero is rejected at create/open.
+    pub fn with_max_object_bytes(mut self, limit: u64) -> Self {
+        self.max_object_bytes = limit;
         self
     }
 }
@@ -88,6 +99,7 @@ pub enum SemanticError {
     ActiveHandles,
     IdempotencyConflict,
     InvalidInterval,
+    InvalidCapture(String),
     InvalidClaim(String),
     MissingDependency(String),
     CorruptLedger(String),
@@ -112,6 +124,7 @@ impl fmt::Display for SemanticError {
             Self::InvalidInterval => {
                 formatter.write_str("valid interval must be non-empty and ordered")
             }
+            Self::InvalidCapture(reason) => write!(formatter, "invalid capture: {reason}"),
             Self::InvalidClaim(reason) => write!(formatter, "invalid claim: {reason}"),
             Self::MissingDependency(value) => {
                 write!(formatter, "required semantic input is missing: {value}")
@@ -396,6 +409,7 @@ pub struct SemanticStore {
     marker: StoreMarker,
     coordinator: Arc<RootCoordinator>,
     clock: Arc<dyn SemanticClock>,
+    max_object_bytes: u64,
     #[cfg(feature = "semantic-test-failpoints")]
     pause_after_commit: Arc<PauseState>,
 }
@@ -603,6 +617,7 @@ struct ClaimRecord {
 impl SemanticStore {
     pub fn create(root: impl AsRef<Path>, config: SemanticConfig) -> Result<(Self, StoreAdmin)> {
         let (requested_root, allowed_parent) = validate_requested_root(root.as_ref(), &config)?;
+        validate_object_limit(&config)?;
         if requested_root.exists() {
             return Err(SemanticError::InvalidRoot(
                 "target already exists".to_owned(),
@@ -627,7 +642,7 @@ impl SemanticStore {
             &canonical_bytes(&marker)?,
         )?;
         let connection = open_connection(&canonical_root)?;
-        initialize_schema(&connection, &marker)?;
+        initialize_schema(&connection, &marker, config.clock.now())?;
         drop(connection);
 
         let coordinator = coordinator_for(&canonical_root);
@@ -644,6 +659,7 @@ impl SemanticStore {
             marker,
             coordinator,
             clock: config.clock,
+            max_object_bytes: config.max_object_bytes,
             #[cfg(feature = "semantic-test-failpoints")]
             pause_after_commit: Arc::default(),
         };
@@ -652,6 +668,7 @@ impl SemanticStore {
 
     pub fn open(root: impl AsRef<Path>, config: SemanticConfig) -> Result<Self> {
         let (_, allowed_parent) = validate_requested_root(root.as_ref(), &config)?;
+        validate_object_limit(&config)?;
         reject_link_or_reparse(root.as_ref())?;
         let canonical_root = root.as_ref().canonicalize().map_err(io_error)?;
         if canonical_root.parent() != Some(allowed_parent.as_path()) {
@@ -678,6 +695,7 @@ impl SemanticStore {
             marker,
             coordinator,
             clock: config.clock,
+            max_object_bytes: config.max_object_bytes,
             #[cfg(feature = "semantic-test-failpoints")]
             pause_after_commit: Arc::default(),
         })
@@ -692,11 +710,142 @@ impl SemanticStore {
         }
     }
 
+    /// Mints a context for a named client, generating and persisting a
+    /// server-assigned UUIDv7 on first registration. The same label always
+    /// resolves to the same client identity, so a client's idempotency scope
+    /// survives process restarts. Owner and actor stay marker-bound.
+    pub fn register_client(&self, label: &str) -> Result<TrustedContext> {
+        validate_client_label(label)?;
+        let _maintenance = self.coordinator.maintenance.read();
+        let _writer = self.coordinator.writer.lock();
+        let mut connection = open_connection(&self.root)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(database_error)?;
+        let active = ActiveTransaction::new(&self.coordinator);
+        let existing: Option<String> = transaction
+            .query_row(
+                "SELECT client_id FROM clients WHERE label=?1",
+                [label],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(database_error)?;
+        let client_id = match existing {
+            Some(value) => Uuid::parse_str(&value).map_err(|_| {
+                SemanticError::CorruptLedger("registered client has invalid UUID".to_owned())
+            })?,
+            None => {
+                let client_id = Uuid::now_v7();
+                transaction
+                    .execute(
+                        "INSERT INTO clients(client_id,label,created_at) VALUES (?1,?2,?3)",
+                        params![client_id.to_string(), label, self.clock.now().to_rfc3339()],
+                    )
+                    .map_err(database_error)?;
+                client_id
+            }
+        };
+        transaction.commit().map_err(database_error)?;
+        drop(active);
+        Ok(TrustedContext {
+            store_uuid: self.marker.store_uuid,
+            owner_id: self.marker.owner_id,
+            actor_id: self.marker.actor_id,
+            client_id,
+        })
+    }
+
+    /// Snapshots the store into a fresh sibling root under the same allowed
+    /// parent. Holds the maintenance write lock so no mutation, projection,
+    /// or recovery runs while the database (via `VACUUM INTO`), marker,
+    /// objects, and projection snapshot are copied.
+    pub fn backup_consistent(&self, target_root: impl AsRef<Path>) -> Result<()> {
+        let target = target_root.as_ref();
+        if target.exists() {
+            return Err(SemanticError::InvalidRoot(
+                "backup target already exists".to_owned(),
+            ));
+        }
+        let parent = target
+            .parent()
+            .ok_or_else(|| SemanticError::InvalidRoot("backup target has no parent".to_owned()))?;
+        let canonical_parent = parent.canonicalize().map_err(|_| {
+            SemanticError::InvalidRoot("backup target parent is not accessible".to_owned())
+        })?;
+        if canonical_parent.to_string_lossy() != self.marker.allowed_parent {
+            return Err(SemanticError::InvalidRoot(
+                "backup target escaped allowed parent".to_owned(),
+            ));
+        }
+
+        let _maintenance = self.coordinator.maintenance.write();
+        if self.coordinator.active_transactions.load(Ordering::SeqCst) != 0 {
+            return Err(SemanticError::ActiveHandles);
+        }
+        fs::create_dir(target).map_err(io_error)?;
+        fs::create_dir(target.join("staging")).map_err(io_error)?;
+        fs::create_dir(target.join("objects")).map_err(io_error)?;
+
+        let connection = open_connection(&self.root)?;
+        let target_database = target.join(DATABASE_FILE);
+        connection
+            .execute(
+                "VACUUM INTO ?1",
+                [target_database.to_string_lossy().as_ref()],
+            )
+            .map_err(database_error)?;
+        drop(connection);
+        let copy = Connection::open(&target_database).map_err(database_error)?;
+        copy.execute_batch("PRAGMA journal_mode=WAL;")
+            .map_err(database_error)?;
+        drop(copy);
+
+        fs::copy(self.root.join(MARKER_FILE), target.join(MARKER_FILE)).map_err(io_error)?;
+        let projection = self.root.join(PROJECTION_FILE);
+        if projection.is_file() {
+            fs::copy(&projection, target.join(PROJECTION_FILE)).map_err(io_error)?;
+        }
+        for shard in fs::read_dir(self.root.join("objects")).map_err(io_error)? {
+            let shard = shard.map_err(io_error)?.path();
+            if !shard.is_dir() {
+                continue;
+            }
+            let shard_name = shard.file_name().ok_or_else(|| {
+                SemanticError::CorruptLedger("object shard has no name".to_owned())
+            })?;
+            let target_shard = target.join("objects").join(shard_name);
+            fs::create_dir_all(&target_shard).map_err(io_error)?;
+            for entry in fs::read_dir(&shard).map_err(io_error)? {
+                let path = entry.map_err(io_error)?.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let file_name = path.file_name().ok_or_else(|| {
+                    SemanticError::CorruptLedger("object file has no name".to_owned())
+                })?;
+                fs::copy(&path, target_shard.join(file_name)).map_err(io_error)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "semantic-test-failpoints")]
+    pub fn forge_context_for_test(&self, client_id: Uuid) -> TrustedContext {
+        TrustedContext {
+            store_uuid: self.marker.store_uuid,
+            owner_id: self.marker.owner_id,
+            actor_id: self.marker.actor_id,
+            client_id,
+        }
+    }
+
     pub fn capture(
         &self,
         context: &TrustedContext,
         command: CaptureCommand,
     ) -> Result<MutationOutcome> {
+        validate_capture_limits(&command, self.max_object_bytes)?;
         let request_hash = request_hash("capture", &command)?;
         let media_type = command.media_type.clone();
         let bytes = command.bytes.clone();
@@ -903,6 +1052,20 @@ impl SemanticStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(database_error)?;
         let active = ActiveTransaction::new(&self.coordinator);
+
+        let registered: Option<i64> = transaction
+            .query_row(
+                "SELECT 1 FROM clients WHERE client_id=?1",
+                [context.client_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(database_error)?;
+        if registered.is_none() {
+            return Err(SemanticError::MissingDependency(
+                "client is not registered for this store".to_owned(),
+            ));
+        }
 
         if let Some((stored_hash, outcome)) = transaction
             .query_row(
@@ -1371,7 +1534,11 @@ fn open_connection(root: &Path) -> Result<Connection> {
     Ok(connection)
 }
 
-fn initialize_schema(connection: &Connection, marker: &StoreMarker) -> Result<()> {
+fn initialize_schema(
+    connection: &Connection,
+    marker: &StoreMarker,
+    created_at: DateTime<Utc>,
+) -> Result<()> {
     connection
         .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
         .map_err(database_error)?;
@@ -1404,6 +1571,11 @@ fn initialize_schema(connection: &Connection, marker: &StoreMarker) -> Result<()
                PRIMARY KEY(owner_id,event_seq),
                FOREIGN KEY(owner_id,event_seq) REFERENCES events(owner_id,event_seq)
              );
+             CREATE TABLE clients(
+               client_id TEXT PRIMARY KEY,
+               label TEXT NOT NULL UNIQUE,
+               created_at TEXT NOT NULL
+             );
              COMMIT;",
         )
         .map_err(database_error)?;
@@ -1419,6 +1591,16 @@ fn initialize_schema(connection: &Connection, marker: &StoreMarker) -> Result<()
             )
             .map_err(database_error)?;
     }
+    connection
+        .execute(
+            "INSERT INTO clients(client_id,label,created_at) VALUES (?1,?2,?3)",
+            params![
+                marker.client_id.to_string(),
+                BOOTSTRAP_CLIENT_LABEL,
+                created_at.to_rfc3339()
+            ],
+        )
+        .map_err(database_error)?;
     Ok(())
 }
 
@@ -1434,14 +1616,68 @@ fn validate_database_identity(connection: &Connection, marker: &StoreMarker) -> 
     Ok(())
 }
 
+// Client identity intentionally stays out of this check: contexts are minted
+// only by this store (bootstrap or registered client) and the mutation
+// transaction verifies registration against the clients table, so a context
+// can carry any registered client while owner/actor remain marker-bound.
 fn validate_context(marker: &StoreMarker, context: &TrustedContext) -> Result<()> {
     if context.store_uuid != marker.store_uuid
         || context.owner_id != marker.owner_id
         || context.actor_id != marker.actor_id
-        || context.client_id != marker.client_id
     {
         return Err(SemanticError::MissingDependency(
             "trusted context belongs to another store".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_client_label(label: &str) -> Result<()> {
+    let valid_bytes = label.bytes().all(|byte| {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_' | b'.')
+    });
+    if label.is_empty() || label.len() > 64 || !valid_bytes || label.starts_with("__") {
+        return Err(SemanticError::MissingDependency(
+            "client label must be 1-64 bytes of [a-z0-9._-] and must not start with __".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_capture_limits(command: &CaptureCommand, max_object_bytes: u64) -> Result<()> {
+    if command.bytes.len() as u64 > max_object_bytes {
+        return Err(SemanticError::InvalidCapture(format!(
+            "captured object exceeds max_object_bytes={max_object_bytes}"
+        )));
+    }
+    validate_media_type(&command.media_type)
+}
+
+fn validate_media_type(value: &str) -> Result<()> {
+    fn token(part: &str) -> bool {
+        !part.is_empty()
+            && part.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'-' | b'+' | b'.')
+            })
+    }
+    let essence = value.split(';').next().unwrap_or("").trim();
+    let valid = essence
+        .split_once('/')
+        .is_some_and(|(kind, subtype)| token(kind) && token(subtype));
+    if !valid {
+        return Err(SemanticError::InvalidCapture(
+            "media_type must be a lowercase type/subtype MIME essence".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_object_limit(config: &SemanticConfig) -> Result<()> {
+    if config.max_object_bytes == 0 {
+        return Err(SemanticError::InvalidRoot(
+            "max_object_bytes must be positive".to_owned(),
         ));
     }
     Ok(())
