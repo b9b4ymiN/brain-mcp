@@ -604,7 +604,10 @@ fn confirmation_rejects_a_tampered_evidence_less_proposal_object() {
             proposal_operation_id: "tampered-proposal".to_owned(),
         },
     );
-    assert!(matches!(result, Err(SemanticError::CorruptLedger(_))));
+    // Tampering now hits AEAD authentication during decryption (Task 1.2b)
+    // rather than a plaintext-checksum mismatch after a successful decrypt,
+    // so the object is reported unavailable rather than corrupt.
+    assert!(matches!(result, Err(SemanticError::ObjectUnavailable(_))));
     assert_eq!(store.diagnostics().unwrap().events, 2);
 }
 

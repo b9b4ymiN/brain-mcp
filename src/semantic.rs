@@ -13,6 +13,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
+use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
+use aes_gcm::{Aes256Gcm, Key, Nonce};
 use chrono::{DateTime, Utc};
 #[cfg(feature = "semantic-test-failpoints")]
 use parking_lot::Condvar;
@@ -28,6 +30,7 @@ const MARKER_FILE: &str = "store.marker.json";
 const PROJECTION_FILE: &str = "projection.json";
 const OBJECT_MEDIA_TYPE: &str = "application/vnd.brain.semantic+json";
 const DEFAULT_MAX_OBJECT_BYTES: u64 = 32 * 1024 * 1024;
+const AES_GCM_NONCE_LEN: usize = 12;
 const BOOTSTRAP_CLIENT_LABEL: &str = "__bootstrap__";
 
 /// Clock boundary used to make transaction-time behavior testable.
@@ -103,6 +106,7 @@ pub enum SemanticError {
     InvalidClaim(String),
     InvalidTransition(String),
     UnsupportedInference,
+    ObjectUnavailable(String),
     MissingDependency(String),
     CorruptLedger(String),
     Io(String),
@@ -131,6 +135,10 @@ impl fmt::Display for SemanticError {
             Self::InvalidTransition(reason) => write!(formatter, "invalid transition: {reason}"),
             Self::UnsupportedInference => formatter.write_str(
                 "cannot confirm an inference proposal with no evidence; accept it by creating a new user_assertion or decision claim instead",
+            ),
+            Self::ObjectUnavailable(object_id) => write!(
+                formatter,
+                "object {object_id} cannot be decrypted (destroyed key or tampered ciphertext)"
             ),
             Self::MissingDependency(value) => {
                 write!(formatter, "required semantic input is missing: {value}")
@@ -969,7 +977,7 @@ impl SemanticStore {
                 let captured = stored_outcome(transaction, context, &capture_operation)?;
                 let proposal_id = Uuid::now_v7();
                 let source_object_id = captured.event.payload.object_id;
-                let source_bytes = read_object(&root, &source_object_id)?;
+                let source_bytes = decrypt_object(transaction, &root, &source_object_id)?;
                 if source_bytes.is_empty() {
                     return Err(SemanticError::InvalidClaim(
                         "captured rendition is empty, so no evidence span can exist".to_owned(),
@@ -1050,7 +1058,7 @@ impl SemanticStore {
                 for capture_operation in &evidence_captures {
                     let captured = stored_outcome(transaction, context, capture_operation)?;
                     let source_object_id = captured.event.payload.object_id;
-                    let source_bytes = read_object(&root, &source_object_id)?;
+                    let source_bytes = decrypt_object(transaction, &root, &source_object_id)?;
                     let quote_hash = source_object_id
                         .strip_prefix("sha256:")
                         .ok_or_else(|| {
@@ -1369,7 +1377,7 @@ impl SemanticStore {
             event_seq,
         };
         let material = build(&transaction, identity)?;
-        let object_id = publish_object(&self.root, &material.object_bytes)?;
+        let object_id = publish_object(&self.root, &transaction, &material.object_bytes)?;
         let mut event = EventEnvelope {
             schema_version: 1,
             event_id: identity.event_id,
@@ -1616,6 +1624,110 @@ impl SemanticStore {
 
     pub fn diagnostics(&self) -> Result<StoreDiagnostics> {
         diagnostics(&self.root)
+    }
+
+    /// The owner's current key-encryption-key epoch. New objects are
+    /// wrapped under this epoch; older objects may still be wrapped under
+    /// earlier epochs until a rotation rewraps them.
+    pub fn current_epoch(&self) -> Result<u64> {
+        let connection = open_connection(&self.root)?;
+        let epoch: i64 = connection
+            .query_row("SELECT MAX(epoch) FROM epoch_keys", [], |row| row.get(0))
+            .map_err(database_error)?;
+        u64::try_from(epoch).map_err(|_| SemanticError::CorruptLedger("invalid epoch".to_owned()))
+    }
+
+    pub fn wrapped_key_count(&self) -> Result<usize> {
+        let connection = open_connection(&self.root)?;
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM wrapped_keys", [], |row| row.get(0))
+            .map_err(database_error)?;
+        usize::try_from(count)
+            .map_err(|_| SemanticError::CorruptLedger("invalid wrapped key count".to_owned()))
+    }
+
+    /// Cryptographically erases a single object: deletes its wrapped DEK so
+    /// the ciphertext bytes on disk (which may still exist) can never be
+    /// decrypted again. This is the per-object primitive a future hard-purge
+    /// saga calls for each target; it does not touch the event ledger, so
+    /// object identity/history is untouched — only recoverability is
+    /// destroyed.
+    pub fn destroy_wrapped_key(&self, object_id: &str) -> Result<()> {
+        let _maintenance = self.coordinator.maintenance.read();
+        let _writer = self.coordinator.writer.lock();
+        let connection = open_connection(&self.root)?;
+        connection
+            .execute("DELETE FROM wrapped_keys WHERE object_id=?1", [object_id])
+            .map_err(database_error)?;
+        Ok(())
+    }
+
+    /// Generates a new epoch KEK, rewraps every existing object's DEK under
+    /// it, and destroys the previous epoch's KEK. Requires the exclusive
+    /// maintenance lock so no concurrent mutation can create a new
+    /// wrapped-key row under the old epoch mid-rotation. This is the
+    /// defense-in-depth half of a hard purge (ADR Decision 7): even if an
+    /// old epoch KEK were ever compromised, it no longer protects anything
+    /// once every surviving object has been rewrapped under a fresh one.
+    pub fn rotate_epoch_and_rewrap(&self) -> Result<u64> {
+        let _maintenance = self.coordinator.maintenance.write();
+        let mut connection = open_connection(&self.root)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(database_error)?;
+        let active = ActiveTransaction::new(&self.coordinator);
+
+        let old_epoch: i64 = transaction
+            .query_row("SELECT MAX(epoch) FROM epoch_keys", [], |row| row.get(0))
+            .map_err(database_error)?;
+        let old_kek = load_epoch_key(&transaction, old_epoch)?;
+        let new_epoch = old_epoch + 1;
+        let new_key = Aes256Gcm::generate_key(&mut OsRng);
+        transaction
+            .execute(
+                "INSERT INTO epoch_keys(epoch,key_material,created_at) VALUES (?1,?2,?3)",
+                params![new_epoch, new_key.as_slice(), self.clock.now().to_rfc3339()],
+            )
+            .map_err(database_error)?;
+        let new_kek = Aes256Gcm::new(&new_key);
+
+        let rows: Vec<(String, Vec<u8>, Vec<u8>)> = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT object_id, wrapped_dek, dek_nonce FROM wrapped_keys WHERE epoch=?1",
+                )
+                .map_err(database_error)?;
+            statement
+                .query_map([old_epoch], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .map_err(database_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(database_error)?
+        };
+        for (object_id, wrapped_dek, dek_nonce) in rows {
+            let wrap_nonce = Nonce::from_slice(&dek_nonce);
+            let dek_bytes = old_kek
+                .decrypt(wrap_nonce, wrapped_dek.as_ref())
+                .map_err(|_| SemanticError::ObjectUnavailable(object_id.clone()))?;
+            let new_wrap_nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+            let new_wrapped = new_kek
+                .encrypt(&new_wrap_nonce, dek_bytes.as_ref())
+                .map_err(|_| SemanticError::Serialization("key rewrap failed".to_owned()))?;
+            transaction
+                .execute(
+                    "UPDATE wrapped_keys SET epoch=?2, wrapped_dek=?3, dek_nonce=?4 WHERE object_id=?1",
+                    params![object_id, new_epoch, new_wrapped, new_wrap_nonce.as_slice()],
+                )
+                .map_err(database_error)?;
+        }
+        transaction
+            .execute("DELETE FROM epoch_keys WHERE epoch=?1", [old_epoch])
+            .map_err(database_error)?;
+        transaction.commit().map_err(database_error)?;
+        drop(active);
+        u64::try_from(new_epoch)
+            .map_err(|_| SemanticError::CorruptLedger("invalid epoch".to_owned()))
     }
 
     pub fn storage_pragmas(&self) -> Result<StoragePragmas> {
@@ -1961,6 +2073,24 @@ fn initialize_schema(
                superseded_by_event_seq INTEGER,
                retracted_at_event_seq INTEGER
              );
+             -- epoch_keys holds the owner's key-encryption-key (KEK) history.
+             -- wrapped_keys holds each object's random data-encryption-key
+             -- (DEK), itself encrypted under one epoch's KEK. Cryptographic
+             -- erasure of a single object is `DELETE FROM wrapped_keys`;
+             -- erasure of every object under a whole epoch is destroying
+             -- that epoch's row (done automatically by rotate-and-rewrap
+             -- once nothing references it any more).
+             CREATE TABLE epoch_keys(
+               epoch INTEGER PRIMARY KEY,
+               key_material BLOB NOT NULL,
+               created_at TEXT NOT NULL
+             );
+             CREATE TABLE wrapped_keys(
+               object_id TEXT PRIMARY KEY,
+               epoch INTEGER NOT NULL,
+               wrapped_dek BLOB NOT NULL,
+               dek_nonce BLOB NOT NULL
+             );
              COMMIT;",
         )
         .map_err(database_error)?;
@@ -1984,6 +2114,13 @@ fn initialize_schema(
                 BOOTSTRAP_CLIENT_LABEL,
                 created_at.to_rfc3339()
             ],
+        )
+        .map_err(database_error)?;
+    let first_key = Aes256Gcm::generate_key(&mut OsRng);
+    connection
+        .execute(
+            "INSERT INTO epoch_keys(epoch,key_material,created_at) VALUES (1,?1,?2)",
+            params![first_key.as_slice(), created_at.to_rfc3339()],
         )
         .map_err(database_error)?;
     Ok(())
@@ -2226,7 +2363,7 @@ fn finish_confirmation(
             "operation {proposal_operation} did not propose a claim"
         ))
     })?;
-    let bytes = read_object(root, &proposed.event.payload.object_id)?;
+    let bytes = decrypt_object(transaction, root, &proposed.event.payload.object_id)?;
     let proposal: ProposalObject = serde_json::from_slice(&bytes).map_err(serialization_error)?;
 
     let status: String = transaction
@@ -2368,13 +2505,45 @@ fn finish_confirmation(
     })
 }
 
-fn publish_object(root: &Path, bytes: &[u8]) -> Result<String> {
+/// Content identity stays the plaintext hash (preserving dedup and every
+/// evidence-span byte offset/quote hash computed against plaintext), but the
+/// bytes written to disk are an AEAD ciphertext under a per-object DEK,
+/// itself wrapped by the owner's current epoch KEK. The wrapped-key row is
+/// inserted in the same transaction as the resulting event so the two can
+/// never diverge on crash.
+fn publish_object(root: &Path, transaction: &Transaction<'_>, bytes: &[u8]) -> Result<String> {
     let digest = sha256(bytes);
     let object_id = format!("sha256:{digest}");
-    let temporary = root.join("staging").join(format!("{}.tmp", Uuid::now_v7()));
-    write_new_file(&temporary, bytes)?;
-    crash_at("after_object_temp_flush");
     let destination = object_path(root, &object_id)?;
+
+    // Encryption and the crash_at points below run unconditionally, even
+    // when the destination already exists (content-addressed dedup) and the
+    // resulting ciphertext will just be discarded below: Task 0.3's crash
+    // recovery tests deliberately re-capture identical content to exercise
+    // "crash mid-dedup", and an early return here would make those
+    // failpoints unreachable and silently defeat that coverage.
+    let epoch: i64 = transaction
+        .query_row("SELECT MAX(epoch) FROM epoch_keys", [], |row| row.get(0))
+        .map_err(database_error)?;
+    let kek = load_epoch_key(transaction, epoch)?;
+
+    let dek = Aes256Gcm::generate_key(&mut OsRng);
+    let content_nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let ciphertext = Aes256Gcm::new(&dek)
+        .encrypt(&content_nonce, bytes)
+        .map_err(|_| SemanticError::Serialization("object encryption failed".to_owned()))?;
+    let wrap_nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let wrapped_dek = kek
+        .encrypt(&wrap_nonce, dek.as_slice())
+        .map_err(|_| SemanticError::Serialization("key wrap failed".to_owned()))?;
+
+    let mut envelope = Vec::with_capacity(content_nonce.len() + ciphertext.len());
+    envelope.extend_from_slice(&content_nonce);
+    envelope.extend_from_slice(&ciphertext);
+
+    let temporary = root.join("staging").join(format!("{}.tmp", Uuid::now_v7()));
+    write_new_file(&temporary, &envelope)?;
+    crash_at("after_object_temp_flush");
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent).map_err(io_error)?;
     }
@@ -2384,7 +2553,27 @@ fn publish_object(root: &Path, bytes: &[u8]) -> Result<String> {
         fs::rename(&temporary, &destination).map_err(io_error)?;
     }
     crash_at("after_object_rename");
+
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO wrapped_keys(object_id,epoch,wrapped_dek,dek_nonce) VALUES (?1,?2,?3,?4)",
+            params![object_id, epoch, wrapped_dek, wrap_nonce.as_slice()],
+        )
+        .map_err(database_error)?;
+    crash_at("after_wrapped_key_insert");
     Ok(object_id)
+}
+
+fn load_epoch_key(connection: &Connection, epoch: i64) -> Result<Aes256Gcm> {
+    let key_material: Vec<u8> = connection
+        .query_row(
+            "SELECT key_material FROM epoch_keys WHERE epoch=?1",
+            [epoch],
+            |row| row.get(0),
+        )
+        .map_err(database_error)?;
+    let key = Key::<Aes256Gcm>::from_slice(&key_material);
+    Ok(Aes256Gcm::new(key))
 }
 
 fn object_path(root: &Path, object_id: &str) -> Result<PathBuf> {
@@ -2403,14 +2592,50 @@ fn object_path(root: &Path, object_id: &str) -> Result<PathBuf> {
     Ok(root.join("objects").join(&digest[..2]).join(digest))
 }
 
-fn read_object(root: &Path, object_id: &str) -> Result<Vec<u8>> {
-    let bytes = fs::read(object_path(root, object_id)?).map_err(io_error)?;
-    if format!("sha256:{}", sha256(&bytes)) != object_id {
+/// Reads and decrypts an object using an already-open connection or
+/// transaction. Callers already inside a mutation transaction must use this
+/// directly (opening a second connection would block on SQLite's single
+/// writer); callers with no open transaction should use `read_object`.
+fn decrypt_object(connection: &Connection, root: &Path, object_id: &str) -> Result<Vec<u8>> {
+    let envelope = fs::read(object_path(root, object_id)?).map_err(io_error)?;
+    if envelope.len() < AES_GCM_NONCE_LEN {
+        return Err(SemanticError::ObjectUnavailable(object_id.to_owned()));
+    }
+    let (content_nonce, ciphertext) = envelope.split_at(AES_GCM_NONCE_LEN);
+    let content_nonce = Nonce::from_slice(content_nonce);
+
+    let row: Option<(i64, Vec<u8>, Vec<u8>)> = connection
+        .query_row(
+            "SELECT epoch, wrapped_dek, dek_nonce FROM wrapped_keys WHERE object_id=?1",
+            [object_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(database_error)?;
+    let Some((epoch, wrapped_dek, dek_nonce)) = row else {
+        return Err(SemanticError::ObjectUnavailable(object_id.to_owned()));
+    };
+    let kek = load_epoch_key(connection, epoch)?;
+    let wrap_nonce = Nonce::from_slice(&dek_nonce);
+    let dek_bytes = kek
+        .decrypt(wrap_nonce, wrapped_dek.as_ref())
+        .map_err(|_| SemanticError::ObjectUnavailable(object_id.to_owned()))?;
+    let dek = Key::<Aes256Gcm>::from_slice(&dek_bytes);
+    let plaintext = Aes256Gcm::new(dek)
+        .decrypt(content_nonce, ciphertext)
+        .map_err(|_| SemanticError::ObjectUnavailable(object_id.to_owned()))?;
+
+    if format!("sha256:{}", sha256(&plaintext)) != object_id {
         return Err(SemanticError::CorruptLedger(
             "object checksum mismatch".to_owned(),
         ));
     }
-    Ok(bytes)
+    Ok(plaintext)
+}
+
+fn read_object(root: &Path, object_id: &str) -> Result<Vec<u8>> {
+    let connection = open_connection(root)?;
+    decrypt_object(&connection, root, object_id)
 }
 
 fn validate_ledger(connection: &Connection) -> Result<()> {
@@ -2544,6 +2769,9 @@ fn remove_unreferenced_objects(root: &Path, transaction: &Transaction<'_>) -> Re
                 .map_err(database_error)?;
             if references == 0 {
                 fs::remove_file(path).map_err(io_error)?;
+                transaction
+                    .execute("DELETE FROM wrapped_keys WHERE object_id=?1", [&object_id])
+                    .map_err(database_error)?;
             }
         }
     }

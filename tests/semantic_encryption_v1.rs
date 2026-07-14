@@ -82,9 +82,7 @@ fn object_bytes_on_disk_are_encrypted_not_plaintext() {
             },
         )
         .unwrap();
-    let proposal = store
-        .object_json(&outcome.event.payload.object_id)
-        .unwrap();
+    let proposal = store.object_json(&outcome.event.payload.object_id).unwrap();
     assert_eq!(proposal["provenance"]["byte_end"], secret.len());
 }
 
