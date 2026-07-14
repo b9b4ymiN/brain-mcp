@@ -1,6 +1,6 @@
 # Task 0.3 — Semantic Vertical Slice Report
 
-Status: **ROUND 2 HARDENING FIXED — awaiting independent revalidation**
+Status: **PASS** — Independent Validator confirmed round 2 at HEAD `a6e5cb8`
 
 Outcome: **EXTEND**
 
@@ -39,6 +39,10 @@ All permitted paths remain the same as round 1 (`src/semantic.rs`, `tests/semant
 | Dependency audit comparison (`scripts/compare_cargo_audit.ps1` vs `task-0.3-audit-after.json`) | PASS — before 4, after 4, zero new findings |
 
 Known carried risk observed during this round: running the `engine`/`spaces` Python integration suite writes generated default schema files (`procedure.json`, `profile.json`, `semantic.json`) into the tracked `tests/fixtures/wikis/alt-root/schemas/` fixture directory as an untracked side effect. This is the same "test fixture pollution" risk already carried from round 1; it was left untouched and not committed, since cleaning or gitignoring it is outside Task 0.3's permitted paths.
+
+### Independent Validator result
+
+A read-only validator agent, independent of the builder session, re-ran every gate above from a clean checkout state (RED→GREEN symbol trace, focused suite, fmt, clippy with and without `--all-features`, release build without the test feature, full all-targets/all-features suite summed to 583/0, locked eval via the pinned `uv run --python 3.14.4` invocation, all four Python integration suites, `cargo audit` comparison, and `cargo-llvm-cov` coverage) and additionally reviewed the `InvalidClaim` fail-closed path and the `read_recursive()` call-site safety argument (confirmed every current caller of `project_and_ack` already holds the outer `maintenance.read()` guard on the same thread, so no new writer-starvation surface is introduced). Verdict: **PASS**, no blocking findings. One non-blocking suggestion was noted: the same-thread-recursive invariant is enforced by call-graph convention only, not a runtime assertion — a future `debug_assert` would harden it further but is not required for this task.
 
 ## Scope and TDD evidence
 
