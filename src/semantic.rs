@@ -1177,10 +1177,11 @@ impl SemanticStore {
             &request_hash,
             move |transaction, _identity| {
                 let proposed = stored_outcome(transaction, context, &proposal_operation)?;
-                let proposal_id = proposed
-                    .generated
-                    .proposal_id
-                    .ok_or_else(|| SemanticError::MissingDependency(proposal_operation.clone()))?;
+                let proposal_id = proposed.generated.proposal_id.ok_or_else(|| {
+                    SemanticError::InvalidTransition(format!(
+                        "operation {proposal_operation} did not propose a claim"
+                    ))
+                })?;
                 let status: String = transaction
                     .query_row(
                         "SELECT status FROM proposal_status WHERE proposal_id=?1",
@@ -2220,10 +2221,11 @@ fn finish_confirmation(
     superseded_claim_operations: &[String],
 ) -> Result<MutationMaterial> {
     let proposed = stored_outcome(transaction, context, proposal_operation)?;
-    let proposal_id = proposed
-        .generated
-        .proposal_id
-        .ok_or_else(|| SemanticError::MissingDependency(proposal_operation.to_owned()))?;
+    let proposal_id = proposed.generated.proposal_id.ok_or_else(|| {
+        SemanticError::InvalidTransition(format!(
+            "operation {proposal_operation} did not propose a claim"
+        ))
+    })?;
     let bytes = read_object(root, &proposed.event.payload.object_id)?;
     let proposal: ProposalObject = serde_json::from_slice(&bytes).map_err(serialization_error)?;
 

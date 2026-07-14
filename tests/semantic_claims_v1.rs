@@ -160,6 +160,50 @@ fn double_confirm_of_same_proposal_is_rejected_as_invalid_transition() {
 }
 
 #[test]
+fn operation_id_of_the_wrong_kind_is_rejected_as_invalid_transition_not_missing_dependency() {
+    let (_parent, _root, store, context) = fixture();
+    store
+        .capture(&context, capture("cap", b"evidence bytes"))
+        .unwrap();
+
+    // "cap" genuinely exists and resolved successfully, it just never
+    // proposed a claim, so this must be an invalid transition rather than a
+    // missing dependency (which is reserved for operation_ids that were
+    // never used at all — see the unknown-claim case below).
+    assert!(matches!(
+        store.confirm(
+            &context,
+            ConfirmCommand {
+                operation_id: "confirm-wrong-kind".to_owned(),
+                proposal_operation_id: "cap".to_owned(),
+            },
+        ),
+        Err(SemanticError::InvalidTransition(_))
+    ));
+    assert!(matches!(
+        store.reject(
+            &context,
+            RejectCommand {
+                operation_id: "reject-wrong-kind".to_owned(),
+                proposal_operation_id: "cap".to_owned(),
+            },
+        ),
+        Err(SemanticError::InvalidTransition(_))
+    ));
+    assert!(matches!(
+        store.retract(
+            &context,
+            RetractCommand {
+                operation_id: "retract-wrong-kind".to_owned(),
+                claim_operation_id: "cap".to_owned(),
+            },
+        ),
+        Err(SemanticError::InvalidTransition(_))
+    ));
+    assert_eq!(store.diagnostics().unwrap().events, 1);
+}
+
+#[test]
 fn retract_marks_a_confirmed_claim_as_no_longer_current() {
     let (_parent, _root, store, context) = fixture();
     store
