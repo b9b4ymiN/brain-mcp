@@ -32,6 +32,13 @@ const OBJECT_MEDIA_TYPE: &str = "application/vnd.brain.semantic+json";
 const DEFAULT_MAX_OBJECT_BYTES: u64 = 32 * 1024 * 1024;
 const AES_GCM_NONCE_LEN: usize = 12;
 const BOOTSTRAP_CLIENT_LABEL: &str = "__bootstrap__";
+/// Capability granted to the bootstrap identity and to any client created
+/// via the unscoped `register_client`, preserving the pre-Task-1.3 behavior
+/// that every registered client could confirm/reject/retract/supersede.
+/// A restricted (e.g. AI extraction worker, ADR Decision 8) identity must
+/// be created via `register_client_scoped` with a narrower list instead.
+const DEFAULT_CLIENT_CAPABILITIES: &[&str] = &["confirm", "purge"];
+const VALID_CLIENT_CAPABILITIES: &[&str] = &["confirm", "purge"];
 
 /// Clock boundary used to make transaction-time behavior testable.
 pub trait SemanticClock: Send + Sync + Debug {
@@ -107,6 +114,7 @@ pub enum SemanticError {
     InvalidTransition(String),
     UnsupportedInference,
     ObjectUnavailable(String),
+    CapabilityDenied(String),
     MissingDependency(String),
     CorruptLedger(String),
     Io(String),
@@ -140,6 +148,7 @@ impl fmt::Display for SemanticError {
                 formatter,
                 "object {object_id} cannot be decrypted (destroyed key or tampered ciphertext)"
             ),
+            Self::CapabilityDenied(reason) => write!(formatter, "capability denied: {reason}"),
             Self::MissingDependency(value) => {
                 write!(formatter, "required semantic input is missing: {value}")
             }
@@ -407,7 +416,7 @@ impl StoreDiagnostics {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrustedContext {
     store_uuid: Uuid,
     owner_id: Uuid,
@@ -805,7 +814,27 @@ impl SemanticStore {
     /// resolves to the same client identity, so a client's idempotency scope
     /// survives process restarts. Owner and actor stay marker-bound.
     pub fn register_client(&self, label: &str) -> Result<TrustedContext> {
+        self.register_client_scoped(label, DEFAULT_CLIENT_CAPABILITIES)
+    }
+
+    /// Registers (or resolves) a client like `register_client`, but grants
+    /// only the given capabilities on first registration -- e.g. an empty
+    /// list creates a pure propose-only worker identity (ADR Decision 8).
+    /// Re-registering an existing label never changes its prior grants,
+    /// even if a broader or narrower list is passed the second time.
+    pub fn register_client_scoped(
+        &self,
+        label: &str,
+        capabilities: &[&str],
+    ) -> Result<TrustedContext> {
         validate_client_label(label)?;
+        for capability in capabilities {
+            if !VALID_CLIENT_CAPABILITIES.contains(capability) {
+                return Err(SemanticError::InvalidClaim(format!(
+                    "unknown capability: {capability}"
+                )));
+            }
+        }
         let _maintenance = self.coordinator.maintenance.read();
         let _writer = self.coordinator.writer.lock();
         let mut connection = open_connection(&self.root)?;
@@ -833,6 +862,14 @@ impl SemanticStore {
                         params![client_id.to_string(), label, self.clock.now().to_rfc3339()],
                     )
                     .map_err(database_error)?;
+                for capability in capabilities {
+                    transaction
+                        .execute(
+                            "INSERT INTO client_capabilities(client_id,capability,granted_at) VALUES (?1,?2,?3)",
+                            params![client_id.to_string(), capability, self.clock.now().to_rfc3339()],
+                        )
+                        .map_err(database_error)?;
+                }
                 client_id
             }
         };
@@ -943,6 +980,7 @@ impl SemanticStore {
             context,
             &command.operation_id,
             &request_hash,
+            None,
             move |_, _identity| {
                 Ok(MutationMaterial {
                     event_type: "source_captured",
@@ -973,6 +1011,7 @@ impl SemanticStore {
             context,
             &command.operation_id,
             &request_hash,
+            None,
             move |transaction, _identity| {
                 let captured = stored_outcome(transaction, context, &capture_operation)?;
                 let proposal_id = Uuid::now_v7();
@@ -1052,6 +1091,7 @@ impl SemanticStore {
             context,
             &command.operation_id,
             &request_hash,
+            None,
             move |transaction, _identity| {
                 let proposal_id = Uuid::now_v7();
                 let mut evidence = Vec::with_capacity(evidence_captures.len());
@@ -1123,6 +1163,7 @@ impl SemanticStore {
             context,
             &command.operation_id,
             &request_hash,
+            Some("confirm"),
             move |transaction, identity| {
                 finish_confirmation(
                     transaction,
@@ -1158,6 +1199,7 @@ impl SemanticStore {
             context,
             &command.operation_id,
             &request_hash,
+            Some("confirm"),
             move |transaction, identity| {
                 finish_confirmation(
                     transaction,
@@ -1183,6 +1225,7 @@ impl SemanticStore {
             context,
             &command.operation_id,
             &request_hash,
+            Some("confirm"),
             move |transaction, _identity| {
                 let proposed = stored_outcome(transaction, context, &proposal_operation)?;
                 let proposal_id = proposed.generated.proposal_id.ok_or_else(|| {
@@ -1235,6 +1278,7 @@ impl SemanticStore {
             context,
             &command.operation_id,
             &request_hash,
+            Some("confirm"),
             move |transaction, identity| {
                 let confirmed = stored_outcome(transaction, context, &claim_operation)?;
                 let claim_id = confirmed.generated.claim_id.ok_or_else(|| {
@@ -1285,6 +1329,7 @@ impl SemanticStore {
         context: &TrustedContext,
         operation_id: &str,
         request_hash: &str,
+        required_capability: Option<&str>,
         build: F,
     ) -> Result<MutationOutcome>
     where
@@ -1295,7 +1340,13 @@ impl SemanticStore {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut backoff = Duration::from_millis(5);
         loop {
-            match self.mutate_once(context, operation_id, request_hash, &build) {
+            match self.mutate_once(
+                context,
+                operation_id,
+                request_hash,
+                required_capability,
+                &build,
+            ) {
                 Err(SemanticError::DatabaseContention(_)) if Instant::now() < deadline => {
                     std::thread::sleep(backoff);
                     backoff = (backoff * 2).min(Duration::from_millis(100));
@@ -1310,6 +1361,7 @@ impl SemanticStore {
         context: &TrustedContext,
         operation_id: &str,
         request_hash: &str,
+        required_capability: Option<&str>,
         build: &F,
     ) -> Result<MutationOutcome>
     where
@@ -1340,6 +1392,22 @@ impl SemanticStore {
             return Err(SemanticError::MissingDependency(
                 "client is not registered for this store".to_owned(),
             ));
+        }
+
+        if let Some(capability) = required_capability {
+            let has_capability: Option<i64> = transaction
+                .query_row(
+                    "SELECT 1 FROM client_capabilities WHERE client_id=?1 AND capability=?2",
+                    params![context.client_id.to_string(), capability],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(database_error)?;
+            if has_capability.is_none() {
+                return Err(SemanticError::CapabilityDenied(format!(
+                    "client lacks required capability: {capability}"
+                )));
+            }
         }
 
         if let Some((stored_hash, outcome)) = transaction
@@ -2053,6 +2121,12 @@ fn initialize_schema(
                label TEXT NOT NULL UNIQUE,
                created_at TEXT NOT NULL
              );
+             CREATE TABLE client_capabilities(
+               client_id TEXT NOT NULL,
+               capability TEXT NOT NULL,
+               granted_at TEXT NOT NULL,
+               PRIMARY KEY(client_id,capability)
+             );
              CREATE TABLE proposal_status(
                proposal_id TEXT PRIMARY KEY,
                status TEXT NOT NULL,
@@ -2116,6 +2190,14 @@ fn initialize_schema(
             ],
         )
         .map_err(database_error)?;
+    for capability in DEFAULT_CLIENT_CAPABILITIES {
+        connection
+            .execute(
+                "INSERT INTO client_capabilities(client_id,capability,granted_at) VALUES (?1,?2,?3)",
+                params![marker.client_id.to_string(), capability, created_at.to_rfc3339()],
+            )
+            .map_err(database_error)?;
+    }
     let first_key = Aes256Gcm::generate_key(&mut OsRng);
     connection
         .execute(

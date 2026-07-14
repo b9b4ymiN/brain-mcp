@@ -48,7 +48,9 @@ fn default_registered_client_retains_confirm_capability() {
     // 1.1/1.2 test already assumes.
     let (_parent, _root, store, _bootstrap) = fixture();
     let codex = store.register_client("codex").unwrap();
-    store.capture(&codex, capture("cap", b"evidence bytes")).unwrap();
+    store
+        .capture(&codex, capture("cap", b"evidence bytes"))
+        .unwrap();
     store
         .propose(
             &codex,
@@ -73,9 +75,13 @@ fn default_registered_client_retains_confirm_capability() {
 #[test]
 fn worker_client_can_propose_but_cannot_confirm_reject_retract_or_supersede() {
     let (_parent, _root, store, bootstrap) = fixture();
-    let worker = store.register_client_scoped("extraction-worker", &[]).unwrap();
+    let worker = store
+        .register_client_scoped("extraction-worker", &[])
+        .unwrap();
 
-    store.capture(&worker, capture("cap", b"evidence bytes")).unwrap();
+    store
+        .capture(&worker, capture("cap", b"evidence bytes"))
+        .unwrap();
     store
         .propose(
             &worker,
@@ -108,14 +114,33 @@ fn worker_client_can_propose_but_cannot_confirm_reject_retract_or_supersede() {
         Err(SemanticError::CapabilityDenied(_))
     ));
 
-    // A trusted actor confirms it instead, then the worker still cannot
-    // retract or supersede its own confirmed claim.
+    // A trusted (fully-capable) actor confirms its own separate claim, then
+    // the worker still cannot retract it. Cross-client handoff of a single
+    // proposal (worker proposes, a different client confirms that exact
+    // proposal_operation_id) is not a supported reference path -- proposal
+    // resolution is scoped per-client (Task 0.3), independent of capability
+    // -- so the trusted claim here is proposed and confirmed by the same
+    // (bootstrap) context, matching how confirm/reject/retract/supersede
+    // already resolve their target operation_id everywhere else.
+    store
+        .capture(&bootstrap, capture("cap-trusted", b"trusted evidence"))
+        .unwrap();
+    store
+        .propose(
+            &bootstrap,
+            ProposeCommand {
+                operation_id: "prop-trusted".to_owned(),
+                capture_operation_id: "cap-trusted".to_owned(),
+                draft: draft(),
+            },
+        )
+        .unwrap();
     let confirmed = store
         .confirm(
             &bootstrap,
             ConfirmCommand {
                 operation_id: "confirm-trusted".to_owned(),
-                proposal_operation_id: "prop".to_owned(),
+                proposal_operation_id: "prop-trusted".to_owned(),
             },
         )
         .unwrap();
@@ -157,7 +182,8 @@ fn worker_client_can_propose_but_cannot_confirm_reject_retract_or_supersede() {
 
     // Denial happens before any event is written.
     let diagnostics = store.diagnostics().unwrap();
-    assert_eq!(diagnostics.events, 5); // cap, prop, cap-b, prop-b, confirm-trusted
+    // cap, prop, cap-trusted, prop-trusted, confirm-trusted, cap-b, prop-b
+    assert_eq!(diagnostics.events, 7);
     let _ = confirmed;
 }
 
@@ -167,7 +193,9 @@ fn worker_can_be_granted_confirm_without_purge() {
     let promoted = store
         .register_client_scoped("promoted-worker", &["confirm"])
         .unwrap();
-    store.capture(&promoted, capture("cap", b"evidence bytes")).unwrap();
+    store
+        .capture(&promoted, capture("cap", b"evidence bytes"))
+        .unwrap();
     store
         .propose(
             &promoted,
@@ -195,10 +223,14 @@ fn scoped_registration_of_an_existing_label_does_not_change_prior_capabilities()
     let worker = store.register_client_scoped("worker", &[]).unwrap();
     // Re-registering the same label with a broader capability list must not
     // silently escalate an already-registered client's grants.
-    let same = store.register_client_scoped("worker", &["confirm", "purge"]).unwrap();
+    let same = store
+        .register_client_scoped("worker", &["confirm", "purge"])
+        .unwrap();
     assert_eq!(worker, same);
 
-    store.capture(&worker, capture("cap", b"evidence bytes")).unwrap();
+    store
+        .capture(&worker, capture("cap", b"evidence bytes"))
+        .unwrap();
     store
         .propose(
             &worker,
