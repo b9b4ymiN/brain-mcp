@@ -1,6 +1,6 @@
 # Task 1.2 — Bitemporal Claims + State Machine Report
 
-Status: **BUILDER GREEN — awaiting independent validation**
+Status: **PASS** — Independent Validator confirmed at HEAD `ec41662` (GREEN `2e77409`, fix `ec41662`)
 
 ## Scope and TDD evidence
 
@@ -52,17 +52,21 @@ Permitted paths: `src/semantic.rs`, `tests/semantic_claims_v1.rs`, `docs/baselin
 
 | Gate | Result |
 |---|---|
-| New suite (`--test semantic_claims_v1`) | PASS — 11 passed |
+| New suite (`--test semantic_claims_v1`) | PASS — 12 passed (11 + 1 added for the error-taxonomy fix) |
 | Task 0.3 suite (`--test semantic_vertical_slice`) | PASS — 18 passed, no regression |
 | Task 1.1 suite (`--test semantic_store_v1`) | PASS — 11 passed, no regression |
 | Rust format | PASS |
 | Rust clippy all targets/features (`-D warnings`) | PASS |
 | Rust clippy all targets, default features (`-D warnings`) | PASS (after extracting `ClaimScopeRow`) |
-| Rust all targets/features | PASS — 605 passed, 0 failed (583 baseline + 11 + 11) |
-| Semantic per-file coverage (`cargo-llvm-cov 0.8.6`, all three semantic suites) | PASS — 88.50% lines (1,701/1,922), minimum 80% |
+| Rust all targets/features | PASS — 606 passed, 0 failed (583 baseline + 12 + 11) |
+| Semantic per-file coverage (`cargo-llvm-cov 0.8.6`, all three semantic suites) | PASS — 88.94% lines (1,713/1,926), minimum 80% |
 | Locked eval (pinned `uv run --python 3.14.4`) | PASS — 126/126, `environment_passed=true`, `thresholds_passed=true` |
 | Python governance / engine / mcp / acp | PASS — 10 / 63 / 76 / 26+2 known skips |
 | Dependency audit comparison vs `task-0.3-audit-after.json` | PASS — before 4, after 4, zero new findings |
+
+### Independent Validator result
+
+First pass returned **FINDINGS** (not blocking, not CRITICAL/HIGH): (1) the report disclosed only one of two RED test-assertion fixes made during GREEN, and (2) `reject`/`finish_confirmation`'s `proposal_id` resolution used `MissingDependency` for a "resolved but wrong kind of operation" case where `retract`/`supersede`'s equivalent `claim_id` resolution correctly used `InvalidTransition` — an untested edge case. Both were fixed in `ec41662`: the report now discloses both RED fixes, the two call sites were standardized on `InvalidTransition`, and a new test (`operation_id_of_the_wrong_kind_is_rejected_as_invalid_transition_not_missing_dependency`) covers `confirm`/`reject`/`retract` together for this case. The same validator agent re-verified independently (re-read the diff, re-ran all affected gates: suite counts, both clippy configs, full suite, coverage) and returned **PASS**, confirming the fix was precisely scoped with no over-reach into the separately-precedented `propose`/`propose_inference` evidence-lookup pattern.
 
 ## Notes and carried risks
 
