@@ -59,18 +59,24 @@ Added `aes-gcm = "0.10"` (RustCrypto). Cargo.lock gained 14 new entries, all Rus
 
 | Gate | Result |
 |---|---|
-| New suite (`--test semantic_encryption_v1`) | PASS — 7 passed |
+| New suite (`--test semantic_encryption_v1`) | PASS — 8 passed (7 + 1 added for the Independent Validator fix below) |
 | Task 1.2 suite (`--test semantic_claims_v1`) | PASS — 12 passed, no regression |
 | Task 0.3 suite (`--test semantic_vertical_slice`) | PASS — 18 passed (after the bug fix + 1 updated assertion), no regression in coverage/intent |
 | Task 1.1 suite (`--test semantic_store_v1`) | PASS — 11 passed, no regression |
 | Rust format | PASS |
 | Rust clippy all targets/features (`-D warnings`) | PASS |
 | Rust clippy all targets, default features (`-D warnings`) | PASS |
-| Rust all targets/features | PASS — 613 passed, 0 failed (606 baseline + 7 new) |
-| Semantic per-file coverage (`cargo-llvm-cov 0.8.6`, all four semantic suites) | PASS — 89.24% lines (1,882/2,109), minimum 80% |
+| Rust all targets/features | PASS — 614 passed, 0 failed (606 baseline + 8 new) |
+| Semantic per-file coverage (`cargo-llvm-cov 0.8.6`, all four semantic suites) | PASS — 89.30% lines (1,895/2,122), minimum 80% |
 | Locked eval (pinned `uv run --python 3.14.4`) | PASS — 126/126, `environment_passed=true`, `thresholds_passed=true` |
 | Python governance / engine / mcp / acp | PASS — 10 / 63 / 76 / 26+2 known skips |
 | Dependency audit comparison vs `task-0.3-audit-after.json` | PASS — before 4, after 4, zero new findings from the 14 new dependencies |
+
+### Independent Validator finding and fix
+
+First pass returned **PASS** with one non-blocking **MEDIUM** finding: `publish_object`'s dedup check (`destination.exists()`) looked only at file presence, not whether the object still had a *live* wrapped key. If `destroy_wrapped_key` had been called for some content, a later capture of byte-identical content would hit the dedup branch, discard its freshly-generated DEK, and leave the object permanently pointing at ciphertext encrypted under the destroyed (unrecoverable) key — silently, with no error at write time. Not reachable via any wired caller yet, but exactly the primitive Task 1.3's purge saga will call, and the validator recommended resolving it before that wiring happens rather than leaving it as an undocumented surprise.
+
+Fixed in `17d021f`: dedup is now keyed on a live `wrapped_keys` row (checked via a `SELECT` before encryption), not file existence. If the file exists but its key was destroyed, the file is overwritten with a fresh DEK/ciphertext and a fresh wrapped-key row (`INSERT OR REPLACE`) instead of being treated as already stored. A new test, `recapturing_identical_content_after_key_destruction_gets_a_fresh_usable_key`, proves recapture after destruction succeeds with a usable key rather than permanent corruption. The `crash_at()` points remain unconditional exactly as before, so this does not reopen the earlier dedup/crash-test bug.
 
 ## Notes and carried risks
 
