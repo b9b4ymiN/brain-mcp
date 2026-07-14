@@ -504,6 +504,75 @@ fn invalid_claim_metadata_cannot_create_evidence_less_proposal() {
 }
 
 #[test]
+fn empty_or_invalid_utf8_capture_cannot_become_a_confirmed_evidence_claim() {
+    for (suffix, bytes) in [("empty", Vec::new()), ("invalid-utf8", vec![0xff, 0xfe])] {
+        let (_parent, _root, store, context) = fixture();
+        let capture_operation = format!("{suffix}-capture");
+        let proposal_operation = format!("{suffix}-proposal");
+        store
+            .capture(&context, capture(&capture_operation, &bytes))
+            .unwrap();
+
+        let proposal = store.propose(
+            &context,
+            ProposeCommand {
+                operation_id: proposal_operation.clone(),
+                capture_operation_id: capture_operation,
+                draft: draft(None, None),
+            },
+        );
+        assert!(matches!(proposal, Err(SemanticError::InvalidClaim(_))));
+        assert!(matches!(
+            store.confirm(
+                &context,
+                ConfirmCommand {
+                    operation_id: format!("{suffix}-confirm"),
+                    proposal_operation_id: proposal_operation,
+                }
+            ),
+            Err(SemanticError::MissingDependency(_))
+        ));
+        assert_eq!(store.diagnostics().unwrap().events, 1);
+    }
+
+    let (_parent, _root, store, context) = fixture();
+    let rendition = "หลักฐาน".as_bytes();
+    let captured = store
+        .capture(&context, capture("utf8-capture", rendition))
+        .unwrap();
+    let proposed = store
+        .propose(
+            &context,
+            ProposeCommand {
+                operation_id: "utf8-proposal".to_owned(),
+                capture_operation_id: "utf8-capture".to_owned(),
+                draft: draft(None, None),
+            },
+        )
+        .unwrap();
+    let provenance = store
+        .object_json(&proposed.event.payload.object_id)
+        .unwrap()["provenance"]
+        .clone();
+    assert_eq!(provenance["byte_start"], 0);
+    assert_eq!(provenance["byte_end"], rendition.len());
+    assert_eq!(
+        provenance["quote_hash"],
+        hex::encode(Sha256::digest(rendition))
+    );
+    assert_eq!(provenance["object_id"], captured.event.payload.object_id);
+    store
+        .confirm(
+            &context,
+            ConfirmCommand {
+                operation_id: "utf8-confirm".to_owned(),
+                proposal_operation_id: "utf8-proposal".to_owned(),
+            },
+        )
+        .unwrap();
+}
+
+#[test]
 fn confirmation_rejects_a_tampered_evidence_less_proposal_object() {
     let (_parent, root, store, context) = fixture();
     store
@@ -644,6 +713,57 @@ fn independent_connections_serialize_unique_and_conflicting_operations() {
     assert_eq!(diagnostics.operations, 22);
     assert_eq!(diagnostics.event_sequences, (1..=22).collect::<Vec<_>>());
     drop(second);
+}
+
+#[cfg(feature = "semantic-test-failpoints")]
+#[test]
+fn recovery_queued_during_committed_mutation_does_not_deadlock() {
+    let (parent, root, store, context) = fixture();
+    let mutation_store = SemanticStore::open(&root, enabled(parent.path())).unwrap();
+    let recovery_store = SemanticStore::open(&root, enabled(parent.path())).unwrap();
+    let pause = mutation_store.pause_after_commit_for_test();
+
+    let (mutation_tx, mutation_rx) = std::sync::mpsc::sync_channel(1);
+    let mutation_context = context.clone();
+    let mutation_thread = thread::spawn(move || {
+        let result = mutation_store.capture(
+            &mutation_context,
+            capture("recovery-overlap", b"committed evidence"),
+        );
+        mutation_tx.send(result).unwrap();
+    });
+    assert!(pause.wait_until_entered(std::time::Duration::from_secs(5)));
+
+    let (recovery_tx, recovery_rx) = std::sync::mpsc::sync_channel(1);
+    let recovery_thread = thread::spawn(move || {
+        let result = recovery_store.recover(ManualRecovery);
+        recovery_tx.send(result).unwrap();
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !store.recovery_blocked_for_test() && std::time::Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert!(
+        store.recovery_blocked_for_test(),
+        "recovery did not queue behind the mutation maintenance guard"
+    );
+
+    pause.release();
+    mutation_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("mutation deadlocked with queued recovery")
+        .unwrap();
+    recovery_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("recovery did not converge after mutation")
+        .unwrap();
+    mutation_thread.join().unwrap();
+    recovery_thread.join().unwrap();
+
+    let diagnostics = store.diagnostics().unwrap();
+    assert_eq!((diagnostics.events, diagnostics.operations), (1, 1));
+    assert_eq!(diagnostics.outbox_pending, 0);
+    assert_eq!(diagnostics.ledger_checksum, diagnostics.projection_checksum);
 }
 
 fn run_crash_child(parent: &Path, root: &Path, failpoint: &str, operation: &str, bytes: &str) {
