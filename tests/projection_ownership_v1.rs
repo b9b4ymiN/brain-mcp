@@ -284,8 +284,8 @@ fn generated_page_type_reflects_claim_kind_not_a_hardcoded_entity() {
 /// have to re-derive them. The projection reads them directly.
 #[test]
 fn claim_view_exposes_origin_and_entity_id_fields() {
-    let (_parent, _root, store, context) = fixture();
-    confirm_user_assertion(&_root_to_store_ref(&store), &context, "x", "project:brain", "value");
+    let (_parent, store, context) = fixture();
+    confirm_user_assertion(&store, &context, "x", "project:brain", "value");
 
     let view = store
         .all_claims_current(store.ledger_head().unwrap(), Utc::now())
@@ -296,12 +296,6 @@ fn claim_view_exposes_origin_and_entity_id_fields() {
         claim.entity_id.is_some(),
         "ClaimView.entity_id must be populated for a confirmed claim"
     );
-}
-
-// helper to satisfy the borrow shape used above; the projection tests reuse
-// the store directly elsewhere, this just keeps one test readable.
-fn _root_to_store_ref<'a>(store: &'a SemanticStore) -> &'a SemanticStore {
-    store
 }
 
 // =============================================================================

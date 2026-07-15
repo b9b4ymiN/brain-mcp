@@ -40,6 +40,25 @@ const BOOTSTRAP_CLIENT_LABEL: &str = "__bootstrap__";
 const DEFAULT_CLIENT_CAPABILITIES: &[&str] = &["confirm", "purge"];
 const VALID_CLIENT_CAPABILITIES: &[&str] = &["confirm", "purge"];
 
+/// On-disk schema version. Bumped 1 → 2 in Task 2.2 when the entity tables
+/// (`entities`, `entity_aliases`) and the `claim_status.entity_id` column
+/// were added. There is no migration path yet (pre-production break, recorded
+/// like Task 1.1's clients-table precedent): a store created under an older
+/// schema_version refuses to open under a newer binary — see
+/// `validate_database_identity`.
+///
+/// NOTE: this is the *on-disk DDL* version, distinct from the *event wire*
+/// version stamped on each `EventEnvelope.schema_version`. The wire format
+/// of an event has not changed in Task 2.2 (same `EventEnvelope` JSON
+/// shape), so events keep `schema_version: 1` to stay valid against the
+/// hash-locked `event-schema-v1.json` contract. Only the on-disk schema
+/// (marker + DDL) moved to 2.
+const CURRENT_DISK_SCHEMA_VERSION: u8 = 2;
+/// Event wire-format version (unchanged since the schema was hash-locked in
+/// Task 0.2). Kept as a named constant rather than a literal so the next
+/// genuine wire break is a one-line change with a clear audit trail.
+const CURRENT_EVENT_SCHEMA_VERSION: u8 = 1;
+
 /// Clock boundary used to make transaction-time behavior testable.
 pub trait SemanticClock: Send + Sync + Debug {
     /// Returns the server-observed UTC time for the next event.
@@ -313,6 +332,65 @@ pub struct SupersedeCommand {
     pub superseded_claim_operation_ids: Vec<String>,
 }
 
+/// Propose a claim the owner asserted directly (Task 2.2 — human edit becomes
+/// an authored event). The `utterance` bytes ARE the evidence: there is no
+/// external source span, so this path mints a `Provenance::UserAssertion`
+/// rather than `Provenance::Evidence`. ADR Decision 6.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProposeUserAssertionCommand {
+    pub operation_id: String,
+    pub utterance: Vec<u8>,
+    pub draft: ClaimDraft,
+}
+
+/// Propose a mechanically-derived claim (Task 2.2). The derivation is
+/// reproducible from `input_hashes` + `method`/`method_version`, and the
+/// `output_hash` pins the derived value. ADR Decision 6's `mechanical`
+/// variant; §5 Memory Policy permits auto-confirm for verifiable metadata.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProposeMechanicalCommand {
+    pub operation_id: String,
+    pub method: String,
+    pub method_version: String,
+    pub input_hashes: Vec<String>,
+    pub output_hash: String,
+    pub draft: ClaimDraft,
+}
+
+/// Rename an entity's canonical subject (Task 2.2 DoD bullet 3). The old
+/// subject becomes a `former_subject` alias so existing references still
+/// resolve — stable IDs and backlinks are preserved.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RenameEntityCommand {
+    pub operation_id: String,
+    pub entity_id: Uuid,
+    pub new_subject: String,
+}
+
+/// Merge the source entity into the target (Task 2.2 DoD bullet 3). Every
+/// claim attached to the source is rewritten onto the target, and the
+/// source's subject (plus its prior aliases) become backlinks to the target.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergeEntitiesCommand {
+    pub operation_id: String,
+    pub source_entity_id: Uuid,
+    pub target_entity_id: Uuid,
+}
+
+/// One row of the `entities` table (Task 2.2). Stable UUIDv7 identity that
+/// survives rename/merge; `canonical_subject` is the current display name.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EntityRecord {
+    pub entity_id: Uuid,
+    pub domain: String,
+    pub canonical_subject: String,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObjectPayload {
     pub kind: String,
@@ -360,6 +438,19 @@ impl MutationOutcome {
     }
 }
 
+/// Origin classification for a claim (GOAL-vNext §13 Task 2.2 DoD bullet 1).
+/// Derived deterministically from provenance: anything an authenticated owner
+/// asserted or that was mechanically verified is `HumanAuthored`; anything an
+/// AI worker proposed (evidence ingest or inference) is `AgentPropored`. The
+/// `generated` ownership class is a *file* property of the projection output,
+/// not a claim origin — see `projection::OWNERSHIP_MARKER`.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum OriginClass {
+    HumanAuthored,
+    AgentProposed,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ClaimView {
     pub claim_id: Uuid,
@@ -375,6 +466,18 @@ pub struct ClaimView {
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     pub confirmed_event_seq: u64,
+    /// ADR Decision 6 provenance variant name (`evidence` / `inference` /
+    /// `user_assertion` / `mechanical`). Exposed so projection adapters and
+    /// the generated-wiki frontmatter can render provenance without
+    /// re-deriving it from the encrypted claim payload.
+    pub provenance_kind: String,
+    /// Task 2.2 origin class — derived from `provenance_kind`. See
+    /// [`OriginClass`].
+    pub origin: OriginClass,
+    /// Stable UUIDv7 entity this claim resolves to (ADR Decision 3). Populated
+    /// for confirmed claims; `None` only for legacy rows that pre-date the
+    /// entity table (none exist in production — backfill is Task 2.3).
+    pub entity_id: Option<Uuid>,
 }
 
 /// Result of a scoped, time-aware claim query. `active` claims are current
@@ -713,6 +816,40 @@ enum Provenance {
         evidence: Vec<InferenceEvidenceSpan>,
         unsupported: bool,
     },
+    /// A claim the owner asserted directly — "human edit becomes an authored
+    /// event" (GOAL-vNext §13 Task 2.2 DoD bullet 2). The evidence is the
+    /// utterance itself, captured as an object; there is no external source
+    /// span. ADR Decision 6 names this variant and §5 Memory Policy marks
+    /// explicit "จำไว้" / preference saves as `user_assertion`.
+    UserAssertion {
+        actor_id: Uuid,
+        utterance_object_id: String,
+        utterance_byte_start: u64,
+        utterance_byte_end: u64,
+    },
+    /// Mechanically-derived metadata (hash/title/time) whose derivation is
+    /// reproducible from input hashes — ADR Decision 6's fourth variant. §5
+    /// allows auto-confirm for "metadata ที่ตรวจเชิงกลไกได้".
+    Mechanical {
+        method: String,
+        method_version: String,
+        input_hashes: Vec<String>,
+        output_hash: String,
+    },
+}
+
+impl Provenance {
+    /// The ADR Decision 6 variant name, snake_cased — exposed on `ClaimView`
+    /// so projection adapters (and the generated-wiki frontmatter) can tell
+    /// provenance kinds apart without re-deriving them.
+    fn kind(&self) -> &'static str {
+        match self {
+            Provenance::Evidence { .. } => "evidence",
+            Provenance::Inference { .. } => "inference",
+            Provenance::UserAssertion { .. } => "user_assertion",
+            Provenance::Mechanical { .. } => "mechanical",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -789,7 +926,7 @@ impl SemanticStore {
         let canonical_root = requested_root.canonicalize().map_err(io_error)?;
 
         let marker = StoreMarker {
-            schema_version: 1,
+            schema_version: CURRENT_DISK_SCHEMA_VERSION,
             store_uuid: Uuid::now_v7(),
             owner_id: Uuid::now_v7(),
             actor_id: Uuid::now_v7(),
@@ -1405,6 +1542,460 @@ impl SemanticStore {
         )
     }
 
+    // ── Task 2.2: human-authored + mechanical proposal paths ────────────────
+
+    /// Propose a claim the owner asserted directly (Task 2.2 — human edit
+    /// becomes an authored event). The utterance bytes ARE the evidence, so
+    /// this path mints a `Provenance::UserAssertion` instead of the external
+    /// `Provenance::Evidence` that `propose` produces. ADR Decision 6.
+    pub fn propose_user_assertion(
+        &self,
+        context: &TrustedContext,
+        command: ProposeUserAssertionCommand,
+    ) -> Result<MutationOutcome> {
+        validate_claim_draft(&command.draft)?;
+        if command.utterance.is_empty() {
+            return Err(SemanticError::InvalidClaim(
+                "user assertion utterance is empty".to_owned(),
+            ));
+        }
+        let request_hash = request_hash("propose_user_assertion", &command)?;
+        let utterance = command.utterance.clone();
+        let draft = command.draft.clone();
+        let actor_id = context.actor_id;
+        self.mutate(
+            context,
+            &command.operation_id,
+            &request_hash,
+            None,
+            move |transaction, _identity| {
+                let proposal_id = Uuid::now_v7();
+                // Capture the utterance as a content-addressed object inside
+                // the same transaction, exactly like `capture` does, so the
+                // user_assertion spans point at real bytes.
+                let utterance_object_id =
+                    publish_object(&self.root, transaction, &utterance)?;
+                let utterance_byte_end = u64::try_from(utterance.len()).map_err(|_| {
+                    SemanticError::CorruptLedger("utterance is too large".to_owned())
+                })?;
+                let proposal = ProposalObject {
+                    kind: "claim_proposal".to_owned(),
+                    proposal_id,
+                    source_object_id: utterance_object_id.clone(),
+                    provenance: Provenance::UserAssertion {
+                        actor_id,
+                        utterance_object_id,
+                        utterance_byte_start: 0,
+                        utterance_byte_end,
+                    },
+                    draft: draft.clone(),
+                };
+                insert_proposal_status(transaction, proposal_id)?;
+                Ok(MutationMaterial {
+                    event_type: "claim_proposed",
+                    object_bytes: canonical_bytes(&proposal)?,
+                    media_type: OBJECT_MEDIA_TYPE.to_owned(),
+                    generated: GeneratedIds {
+                        proposal_id: Some(proposal_id),
+                        ..GeneratedIds::default()
+                    },
+                })
+            },
+        )
+    }
+
+    /// Propose a mechanically-derived claim (Task 2.2). The derivation is
+    /// reproducible from `input_hashes` + `method`/`method_version`, pinned by
+    /// `output_hash`. ADR Decision 6's `mechanical` variant.
+    pub fn propose_mechanical(
+        &self,
+        context: &TrustedContext,
+        command: ProposeMechanicalCommand,
+    ) -> Result<MutationOutcome> {
+        validate_claim_draft(&command.draft)?;
+        if command.method.is_empty() || command.method_version.is_empty() {
+            return Err(SemanticError::InvalidClaim(
+                "mechanical provenance requires non-empty method and method_version".to_owned(),
+            ));
+        }
+        let request_hash = request_hash("propose_mechanical", &command)?;
+        let method = command.method.clone();
+        let method_version = command.method_version.clone();
+        let input_hashes = command.input_hashes.clone();
+        let output_hash = command.output_hash.clone();
+        let draft = command.draft.clone();
+        self.mutate(
+            context,
+            &command.operation_id,
+            &request_hash,
+            None,
+            move |transaction, _identity| {
+                let proposal_id = Uuid::now_v7();
+                let proposal = ProposalObject {
+                    kind: "claim_proposal".to_owned(),
+                    proposal_id,
+                    source_object_id: String::new(),
+                    provenance: Provenance::Mechanical {
+                        method: method.clone(),
+                        method_version: method_version.clone(),
+                        input_hashes: input_hashes.clone(),
+                        output_hash: output_hash.clone(),
+                    },
+                    draft: draft.clone(),
+                };
+                insert_proposal_status(transaction, proposal_id)?;
+                Ok(MutationMaterial {
+                    event_type: "claim_proposed",
+                    object_bytes: canonical_bytes(&proposal)?,
+                    media_type: OBJECT_MEDIA_TYPE.to_owned(),
+                    generated: GeneratedIds {
+                        proposal_id: Some(proposal_id),
+                        ..GeneratedIds::default()
+                    },
+                })
+            },
+        )
+    }
+
+    // ── Task 2.2: entity model public read/resolve API ──────────────────────
+
+    /// Resolve `(domain, subject)` to a stable entity_id, minting a new
+    /// UUIDv7 entity if none exists yet. Idempotent: the same tuple always
+    /// resolves to the same id. Resolution checks aliases first, so former
+    /// subjects (post-rename/merge) keep resolving. ADR Decision 3.
+    pub fn resolve_or_create_entity(
+        &self,
+        context: &TrustedContext,
+        domain: &str,
+        subject: &str,
+    ) -> Result<Uuid> {
+        validate_context(&self.marker, context)?;
+        let mut connection = open_connection(&self.root)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(database_error)?;
+        let _writer = self.coordinator.writer.lock();
+        let entity_id = resolve_or_create_entity_in_tx(
+            &transaction,
+            domain,
+            subject,
+            next_event_seq(&transaction, context.owner_id)?,
+        )?;
+        transaction.commit().map_err(database_error)?;
+        Ok(entity_id)
+    }
+
+    /// Resolve `(domain, alias)` to an entity_id without creating one. Returns
+    /// `Err(MissingDependency)` if no entity has ever held this alias — callers
+    /// that need create-on-demand semantics use [`Self::resolve_or_create_entity`].
+    pub fn resolve_entity(
+        &self,
+        context: &TrustedContext,
+        domain: &str,
+        alias: &str,
+    ) -> Result<Uuid> {
+        validate_context(&self.marker, context)?;
+        let _maintenance = self.coordinator.maintenance.read();
+        let connection = open_connection(&self.root)?;
+        resolve_entity_in_tx(&connection, domain, alias)?
+            .ok_or_else(|| SemanticError::MissingDependency(format!("entity {domain}/{alias}")))
+    }
+
+    /// Read the canonical subject + identity of an entity by its stable id.
+    pub fn entity_by_id(
+        &self,
+        context: &TrustedContext,
+        entity_id: Uuid,
+    ) -> Result<EntityRecord> {
+        validate_context(&self.marker, context)?;
+        let _maintenance = self.coordinator.maintenance.read();
+        let connection = open_connection(&self.root)?;
+        let row: Option<(String, String, String)> = connection
+            .query_row(
+                "SELECT entity_id, canonical_subject, created_at FROM entities WHERE entity_id=?1",
+                [entity_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(database_error)?;
+        let (_, canonical_subject, created_at) = row.ok_or_else(|| {
+            SemanticError::MissingDependency(format!("entity {entity_id}"))
+        })?;
+        let parsed_created = created_at.parse().map_err(|_| {
+            SemanticError::CorruptLedger("entity created_at is not RFC 3339".to_owned())
+        })?;
+        // Recover the domain via the canonical alias row.
+        let domain: String = connection
+            .query_row(
+                "SELECT domain FROM entity_aliases WHERE entity_id=?1 AND kind='canonical' ORDER BY aliased_at_event_seq DESC LIMIT 1",
+                [entity_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(database_error)?;
+        Ok(EntityRecord {
+            entity_id,
+            domain,
+            canonical_subject,
+            created_at: parsed_created,
+        })
+    }
+
+    /// Rename an entity's canonical subject (Task 2.2 DoD bullet 3). Emits an
+    /// `entity_renamed` event, updates `entities.canonical_subject`, and
+    /// records the OLD subject as a `former_subject` alias so existing
+    /// references keep resolving (backlink preservation). The new subject must
+    /// not collide with another entity in the same domain — that is a merge.
+    pub fn rename_entity(
+        &self,
+        context: &TrustedContext,
+        command: RenameEntityCommand,
+    ) -> Result<MutationOutcome> {
+        let request_hash = request_hash("rename_entity", &command)?;
+        let entity_id = command.entity_id;
+        let new_subject = command.new_subject.clone();
+        self.mutate(
+            context,
+            &command.operation_id,
+            &request_hash,
+            Some("confirm"),
+            move |transaction, identity| {
+                // Load current canonical row.
+                let row: Option<(String, String)> = transaction
+                    .query_row(
+                        "SELECT domain, canonical_subject FROM entities WHERE entity_id=?1",
+                        [entity_id.to_string()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(database_error)?;
+                let (domain, old_subject) = row.ok_or_else(|| {
+                    SemanticError::MissingDependency(format!("entity {entity_id}"))
+                })?;
+                if old_subject == new_subject {
+                    return Err(SemanticError::InvalidTransition(format!(
+                        "entity {entity_id} canonical subject is already {new_subject}"
+                    )));
+                }
+                // Collision check: a *different* entity already owns this subject.
+                let collision: Option<String> = transaction
+                    .query_row(
+                        "SELECT entity_id FROM entities WHERE domain=?1 AND canonical_subject=?2 AND entity_id<>?3",
+                        params![domain, new_subject, entity_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(database_error)?;
+                if collision.is_some() {
+                    return Err(SemanticError::InvalidTransition(format!(
+                        "subject {new_subject} in domain {domain} is already canonical for a different entity; use merge instead"
+                    )));
+                }
+                transaction
+                    .execute(
+                        "UPDATE entities SET canonical_subject=?2 WHERE entity_id=?1",
+                        params![entity_id.to_string(), new_subject.clone()],
+                    )
+                    .map_err(database_error)?;
+                // Record the old subject as a former_subject alias (backlink)
+                // and the new subject as canonical.
+                insert_alias(transaction, &domain, &old_subject, entity_id, "former_subject", identity.event_seq)?;
+                insert_alias(transaction, &domain, &new_subject, entity_id, "canonical", identity.event_seq)?;
+                let payload = serde_json::json!({
+                    "kind": "entity_renamed",
+                    "entity_id": entity_id,
+                    "domain": domain,
+                    "old_subject": old_subject,
+                    "new_subject": new_subject,
+                });
+                Ok(MutationMaterial {
+                    event_type: "entity_renamed",
+                    object_bytes: canonical_bytes(&payload)?,
+                    media_type: OBJECT_MEDIA_TYPE.to_owned(),
+                    generated: GeneratedIds::default(),
+                })
+            },
+        )
+    }
+
+    /// Merge the source entity into the target (Task 2.2 DoD bullet 3). Emits
+    /// an `entity_merged` event, rewrites every `claim_status.entity_id` from
+    /// source onto target, and turns the source's canonical subject (plus its
+    /// prior aliases) into backlinks pointing at the target. No claim loses
+    /// its entity reference; no alias is deleted.
+    pub fn merge_entities(
+        &self,
+        context: &TrustedContext,
+        command: MergeEntitiesCommand,
+    ) -> Result<MutationOutcome> {
+        if command.source_entity_id == command.target_entity_id {
+            return Err(SemanticError::InvalidTransition(format!(
+                "cannot merge entity {} into itself",
+                command.source_entity_id
+            )));
+        }
+        let request_hash = request_hash("merge_entities", &command)?;
+        let source = command.source_entity_id;
+        let target = command.target_entity_id;
+        self.mutate(
+            context,
+            &command.operation_id,
+            &request_hash,
+            Some("confirm"),
+            move |transaction, identity| {
+                let source_row: Option<(String, String)> = transaction
+                    .query_row(
+                        "SELECT domain, canonical_subject FROM entities WHERE entity_id=?1",
+                        [source.to_string()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(database_error)?;
+                let (source_domain, source_subject) = source_row.ok_or_else(|| {
+                    SemanticError::MissingDependency(format!("entity {source}"))
+                })?;
+                let target_row: Option<(String, String)> = transaction
+                    .query_row(
+                        "SELECT domain, canonical_subject FROM entities WHERE entity_id=?1",
+                        [target.to_string()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(database_error)?;
+                let (target_domain, _target_subject) = target_row.ok_or_else(|| {
+                    SemanticError::MissingDependency(format!("entity {target}"))
+                })?;
+                if source_domain != target_domain {
+                    return Err(SemanticError::InvalidTransition(format!(
+                        "cannot merge across domains: source={source_domain}, target={target_domain}"
+                    )));
+                }
+                // Rewrite every claim attached to the source onto the target.
+                let moved = transaction
+                    .execute(
+                        "UPDATE claim_status SET entity_id=?2 WHERE entity_id=?1",
+                        params![source.to_string(), target.to_string()],
+                    )
+                    .map_err(database_error)?;
+                // Fold the source's canonical subject + all its aliases onto the
+                // target so every historical reference keeps resolving.
+                let mut alias_statement = transaction
+                    .prepare("SELECT alias FROM entity_aliases WHERE entity_id=?1")
+                    .map_err(database_error)?;
+                let alias_rows = alias_statement
+                    .query_map([source.to_string()], |row| row.get::<_, String>(0))
+                    .map_err(database_error)?;
+                let mut aliases = Vec::new();
+                for alias_row in alias_rows {
+                    aliases.push(alias_row.map_err(database_error)?);
+                }
+                drop(alias_statement);
+                aliases.push(source_subject.clone());
+                for alias in &aliases {
+                    insert_alias(transaction, &source_domain, alias, target, "former_subject", identity.event_seq)?;
+                }
+                // The source entity row is no longer canonical, but we keep it
+                // (audit + the merge event references it). Mark canonical as
+                // merged to avoid accidental re-resolution as primary.
+                transaction
+                    .execute(
+                        "DELETE FROM entities WHERE entity_id=?1",
+                        [source.to_string()],
+                    )
+                    .map_err(database_error)?;
+                let payload = serde_json::json!({
+                    "kind": "entity_merged",
+                    "domain": source_domain,
+                    "source_entity_id": source,
+                    "target_entity_id": target,
+                    "claims_moved": moved,
+                });
+                Ok(MutationMaterial {
+                    event_type: "entity_merged",
+                    object_bytes: canonical_bytes(&payload)?,
+                    media_type: OBJECT_MEDIA_TYPE.to_owned(),
+                    generated: GeneratedIds::default(),
+                })
+            },
+        )
+    }
+
+    /// Enumerate every claim attached to an entity (Task 2.2). Used by the
+    /// merge test to prove no claim is orphaned, and by future Console views.
+    pub fn claims_for_entity(
+        &self,
+        context: &TrustedContext,
+        entity_id: Uuid,
+    ) -> Result<Vec<ClaimView>> {
+        validate_context(&self.marker, context)?;
+        let _maintenance = self.coordinator.maintenance.read();
+        let connection = open_connection(&self.root)?;
+        let mut statement = connection
+            .prepare("SELECT claim_id, confirmed_event_seq FROM claim_status WHERE entity_id=?1")
+            .map_err(database_error)?;
+        let rows = statement
+            .query_map([entity_id.to_string()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(database_error)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (claim_id_text, confirmed_event_seq) = row.map_err(database_error)?;
+            let object_id: String = connection
+                .query_row(
+                    "SELECT object_id FROM events WHERE owner_id=?1 AND event_seq=?2",
+                    params![self.marker.owner_id.to_string(), confirmed_event_seq],
+                    |row| row.get(0),
+                )
+                .map_err(database_error)?;
+            let object: ConfirmationObject =
+                serde_json::from_slice(&decrypt_object(&connection, &self.root, &object_id)?)
+                    .map_err(serialization_error)?;
+            let seq = u64::try_from(confirmed_event_seq)
+                .map_err(|_| SemanticError::CorruptLedger("negative event sequence".to_owned()))?;
+            out.push(build_claim_view(object.claim, seq, Some(&claim_id_text)));
+        }
+        Ok(out)
+    }
+
+    /// Snapshot of every entity's current canonical subject, keyed by
+    /// `entity_id` text. Used by the projection layer so a renamed entity's
+    /// generated page reflects the *current* canonical subject rather than the
+    /// subject string captured at confirm time — the claim payload is an
+    /// immutable historical record, but the generated wiki is a live view
+    /// (ADR Decision 1: generated wiki is a replaceable materialized view).
+    pub fn entity_canonical_subjects(
+        &self,
+        context: &TrustedContext,
+    ) -> Result<std::collections::HashMap<Uuid, String>> {
+        validate_context(&self.marker, context)?;
+        let _maintenance = self.coordinator.maintenance.read();
+        let connection = open_connection(&self.root)?;
+        let mut statement = connection
+            .prepare("SELECT entity_id, canonical_subject FROM entities")
+            .map_err(database_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(database_error)?;
+        let mut out = std::collections::HashMap::new();
+        for row in rows {
+            let (entity_id_text, canonical_subject) = row.map_err(database_error)?;
+            if let Ok(entity_id) = Uuid::parse_str(&entity_id_text) {
+                out.insert(entity_id, canonical_subject);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Owner-scoped variant of [`Self::entity_canonical_subjects`] for callers
+    /// (like the projection adapter) that only hold a `&SemanticStore` and use
+    /// the bootstrap trusted context. Identical read path.
+    pub fn entity_canonical_subjects_owned(&self) -> std::collections::HashMap<Uuid, String> {
+        self.entity_canonical_subjects(&self.trusted_context())
+            .unwrap_or_default()
+    }
+
     fn mutate<F>(
         &self,
         context: &TrustedContext,
@@ -1528,7 +2119,7 @@ impl SemanticStore {
         let material = build(&transaction, identity)?;
         let object_id = publish_object(&self.root, &transaction, &material.object_bytes)?;
         let mut event = EventEnvelope {
-            schema_version: 1,
+            schema_version: CURRENT_EVENT_SCHEMA_VERSION,
             event_id: identity.event_id,
             owner_id: context.owner_id,
             event_seq,
@@ -1635,21 +2226,21 @@ impl SemanticStore {
             let starts = claim.valid_from.is_none_or(|from| from <= world_time);
             let ends = claim.valid_to.is_none_or(|to| world_time < to);
             if starts && ends {
-                return Ok(Some(ClaimView {
-                    claim_id: claim.claim_id,
-                    proposal_id: claim.proposal_id,
-                    subject: claim.subject,
-                    predicate: claim.predicate,
-                    value: claim.value,
-                    claim_kind: claim.claim_kind,
-                    status: claim.status,
-                    domain: claim.domain,
-                    confidence_basis_points: claim.confidence_basis_points,
-                    privacy_label: claim.privacy_label,
-                    valid_from: claim.valid_from,
-                    valid_to: claim.valid_to,
-                    confirmed_event_seq: event_seq,
-                }));
+                // Look up the stable entity_id this claim is bound to (Task 2.2).
+                let entity_id_text: Option<String> = connection
+                    .query_row(
+                        "SELECT entity_id FROM claim_status WHERE claim_id=?1",
+                        [claim.claim_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(database_error)?
+                    .flatten();
+                return Ok(Some(build_claim_view(
+                    claim,
+                    event_seq,
+                    entity_id_text.as_deref(),
+                )));
             }
         }
         Ok(None)
@@ -1678,7 +2269,7 @@ impl SemanticStore {
         let connection = &transaction;
         let mut statement = connection
             .prepare(
-                "SELECT claim_id, confirmed_event_seq, superseded_by_event_seq, retracted_at_event_seq
+                "SELECT claim_id, confirmed_event_seq, superseded_by_event_seq, retracted_at_event_seq, entity_id
                  FROM claim_status
                  WHERE domain=?1 AND subject=?2 AND predicate=?3 AND confirmed_event_seq<=?4",
             )
@@ -1692,6 +2283,7 @@ impl SemanticStore {
                         row.get::<_, i64>(1)?,
                         row.get::<_, Option<i64>>(2)?,
                         row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
                     ))
                 },
             )
@@ -1699,7 +2291,7 @@ impl SemanticStore {
 
         let mut result = CurrentClaims::default();
         for row in rows {
-            let (claim_id, confirmed_event_seq, superseded_by, retracted_at) =
+            let (claim_id, confirmed_event_seq, superseded_by, retracted_at, entity_id) =
                 row.map_err(database_error)?;
             let confirmed_event_seq = u64::try_from(confirmed_event_seq)
                 .map_err(|_| SemanticError::CorruptLedger("negative event sequence".to_owned()))?;
@@ -1726,21 +2318,7 @@ impl SemanticStore {
                     "claim_status row does not match confirmation event".to_owned(),
                 ));
             }
-            let view = ClaimView {
-                claim_id: claim.claim_id,
-                proposal_id: claim.proposal_id,
-                subject: claim.subject,
-                predicate: claim.predicate,
-                value: claim.value,
-                claim_kind: claim.claim_kind,
-                status: claim.status,
-                domain: claim.domain,
-                confidence_basis_points: claim.confidence_basis_points,
-                privacy_label: claim.privacy_label,
-                valid_from: claim.valid_from,
-                valid_to: claim.valid_to,
-                confirmed_event_seq,
-            };
+            let view = build_claim_view(claim, confirmed_event_seq, entity_id.as_deref());
 
             if is_superseded_as_of || is_retracted_as_of {
                 result.past.push(view);
@@ -1781,7 +2359,7 @@ impl SemanticStore {
         let connection = &transaction;
         let mut statement = connection
             .prepare(
-                "SELECT claim_id, confirmed_event_seq, superseded_by_event_seq, retracted_at_event_seq
+                "SELECT claim_id, confirmed_event_seq, superseded_by_event_seq, retracted_at_event_seq, entity_id
                  FROM claim_status
                  WHERE confirmed_event_seq<=?1",
             )
@@ -1793,13 +2371,14 @@ impl SemanticStore {
                     row.get::<_, i64>(1)?,
                     row.get::<_, Option<i64>>(2)?,
                     row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             })
             .map_err(database_error)?;
 
         let mut result = CurrentClaims::default();
         for row in rows {
-            let (claim_id, confirmed_event_seq, superseded_by, retracted_at) =
+            let (claim_id, confirmed_event_seq, superseded_by, retracted_at, entity_id) =
                 row.map_err(database_error)?;
             let confirmed_event_seq = u64::try_from(confirmed_event_seq)
                 .map_err(|_| SemanticError::CorruptLedger("negative event sequence".to_owned()))?;
@@ -1826,21 +2405,7 @@ impl SemanticStore {
                     "claim_status row does not match confirmation event".to_owned(),
                 ));
             }
-            let view = ClaimView {
-                claim_id: claim.claim_id,
-                proposal_id: claim.proposal_id,
-                subject: claim.subject,
-                predicate: claim.predicate,
-                value: claim.value,
-                claim_kind: claim.claim_kind,
-                status: claim.status,
-                domain: claim.domain,
-                confidence_basis_points: claim.confidence_basis_points,
-                privacy_label: claim.privacy_label,
-                valid_from: claim.valid_from,
-                valid_to: claim.valid_to,
-                confirmed_event_seq,
-            };
+            let view = build_claim_view(claim, confirmed_event_seq, entity_id.as_deref());
 
             if is_superseded_as_of || is_retracted_as_of {
                 result.past.push(view);
@@ -3022,7 +3587,34 @@ fn initialize_schema(
                predicate TEXT NOT NULL,
                confirmed_event_seq INTEGER NOT NULL,
                superseded_by_event_seq INTEGER,
-               retracted_at_event_seq INTEGER
+               retracted_at_event_seq INTEGER,
+               -- Task 2.2: stable entity this claim resolves to. Populated at
+               -- confirm time; nullable only for rows backfilled from legacy
+               -- stores (none in production — Task 2.3 territory).
+               entity_id TEXT
+             );
+             -- Task 2.2 entity model (ADR Decision 3). One stable UUIDv7 per
+             -- (domain, canonical_subject). Rename updates canonical_subject
+             -- but keeps entity_id; merge rewrites claim_status.entity_id and
+             -- turns the source subject into an alias row.
+             CREATE TABLE entities(
+               entity_id TEXT PRIMARY KEY,
+               domain TEXT NOT NULL,
+               canonical_subject TEXT NOT NULL,
+               created_at TEXT NOT NULL,
+               UNIQUE(domain, canonical_subject)
+             );
+             -- Every subject string (or external id) that has ever resolved to
+             -- an entity. kind='canonical' mirrors the current
+             -- canonical_subject; kind='former_subject' is a rename/merge
+             -- backlink; kind='external' is a provider id alias (Decision 3).
+             CREATE TABLE entity_aliases(
+               domain TEXT NOT NULL,
+               alias TEXT NOT NULL,
+               entity_id TEXT NOT NULL,
+               kind TEXT NOT NULL,
+               aliased_at_event_seq INTEGER NOT NULL,
+               PRIMARY KEY(domain, alias, entity_id)
              );
              -- epoch_keys holds the owner's key-encryption-key (KEK) history.
              -- wrapped_keys holds each object's random data-encryption-key
@@ -3145,6 +3737,17 @@ fn validate_database_identity(connection: &Connection, marker: &StoreMarker) -> 
         .map_err(database_error)?;
     if value != marker.store_uuid.to_string() {
         return Err(SemanticError::MarkerMismatch);
+    }
+    // Schema-version gate (Task 2.2). There is no migration path yet, so a
+    // store created under a different schema_version must fail closed rather
+    // than silently run against DDL it was not initialised with — pre-
+    // production break, recorded like Task 1.1's clients-table precedent.
+    // This compares the on-disk DDL version, not the event wire version.
+    if marker.schema_version != CURRENT_DISK_SCHEMA_VERSION {
+        return Err(SemanticError::CorruptLedger(format!(
+            "store schema_version {} does not match binary schema_version {} (no migration path yet)",
+            marker.schema_version, CURRENT_DISK_SCHEMA_VERSION
+        )));
     }
     Ok(())
 }
@@ -3346,6 +3949,46 @@ struct ClaimScopeRow {
     retracted_at: Option<i64>,
 }
 
+/// Build a `ClaimView` from a decrypted `ClaimRecord`, deriving the Task 2.2
+/// ownership fields (`provenance_kind`, `origin`, `entity_id`) deterministically
+/// from the claim payload. `entity_id_text` is the value read from the
+/// `claim_status.entity_id` column (None only for legacy rows that pre-date
+/// the entity table — none exist in production).
+fn build_claim_view(
+    claim: ClaimRecord,
+    confirmed_event_seq: u64,
+    entity_id_text: Option<&str>,
+) -> ClaimView {
+    let provenance_kind = claim.provenance.kind();
+    let origin = match claim.provenance {
+        // The owner asserted these directly (user_assertion) or they were
+        // mechanically verified (mechanical) — human-authored origin.
+        Provenance::UserAssertion { .. } | Provenance::Mechanical { .. } => OriginClass::HumanAuthored,
+        // Evidence ingest (external source) and inference (AI worker) are
+        // agent-proposed, even after confirmation.
+        Provenance::Evidence { .. } | Provenance::Inference { .. } => OriginClass::AgentProposed,
+    };
+    let entity_id = entity_id_text.and_then(|text| Uuid::parse_str(text).ok());
+    ClaimView {
+        claim_id: claim.claim_id,
+        proposal_id: claim.proposal_id,
+        subject: claim.subject,
+        predicate: claim.predicate,
+        value: claim.value,
+        claim_kind: claim.claim_kind,
+        status: claim.status,
+        domain: claim.domain,
+        confidence_basis_points: claim.confidence_basis_points,
+        privacy_label: claim.privacy_label,
+        valid_from: claim.valid_from,
+        valid_to: claim.valid_to,
+        confirmed_event_seq,
+        provenance_kind: provenance_kind.to_owned(),
+        origin,
+        entity_id,
+    }
+}
+
 fn insert_proposal_status(transaction: &Transaction<'_>, proposal_id: Uuid) -> Result<()> {
     transaction
         .execute(
@@ -3461,6 +4104,11 @@ fn finish_confirmation(
         valid_from,
         valid_to,
     } = proposal.draft;
+    // Resolve (or lazily create) the entity this claim attaches to, inside the
+    // same confirm transaction so the claim_status row is never written
+    // without an entity_id. This is the point where a confirmed claim becomes
+    // bound to a stable UUIDv7 identity (ADR Decision 3, Task 2.2).
+    let entity_id = resolve_or_create_entity_in_tx(transaction, &domain, &subject, identity.event_seq)?;
     let confirmation = ConfirmationObject {
         kind: "claim_confirmation".to_owned(),
         claim: ClaimRecord {
@@ -3492,8 +4140,8 @@ fn finish_confirmation(
         .map_err(database_error)?;
     transaction
         .execute(
-            "INSERT INTO claim_status(claim_id,domain,subject,predicate,confirmed_event_seq,superseded_by_event_seq,retracted_at_event_seq) VALUES (?1,?2,?3,?4,?5,NULL,NULL)",
-            params![claim_id.to_string(), domain, subject, predicate, identity.event_seq as i64],
+            "INSERT INTO claim_status(claim_id,domain,subject,predicate,confirmed_event_seq,superseded_by_event_seq,retracted_at_event_seq,entity_id) VALUES (?1,?2,?3,?4,?5,NULL,NULL,?6)",
+            params![claim_id.to_string(), domain, subject, predicate, identity.event_seq as i64, entity_id.to_string()],
         )
         .map_err(database_error)?;
     for superseded_id in &superseded_claim_ids {
@@ -3514,6 +4162,80 @@ fn finish_confirmation(
             ..GeneratedIds::default()
         },
     })
+}
+
+// =============================================================================
+// Entity model helpers (Task 2.2) — all run inside the caller's transaction.
+// ADR Decision 3: entity identity is a server-minted UUIDv7 that never
+// encodes the subject string, slug, or provider id. Aliases are the only way
+// a former subject string or external id keeps resolving after a rename/merge.
+// =============================================================================
+
+/// Resolve `(domain, subject)` to an entity_id inside the given transaction,
+/// minting a new entity (and a `canonical` alias) if none exists yet. Used by
+/// `finish_confirmation` so every confirmed claim is bound to a stable entity
+/// in the same transaction that writes its `claim_status` row.
+fn resolve_or_create_entity_in_tx(
+    connection: &Connection,
+    domain: &str,
+    subject: &str,
+    event_seq: u64,
+) -> Result<Uuid> {
+    if let Some(entity_id) = resolve_entity_in_tx(connection, domain, subject)? {
+        return Ok(entity_id);
+    }
+    let entity_id = Uuid::now_v7();
+    connection
+        .execute(
+            "INSERT INTO entities(entity_id,domain,canonical_subject,created_at) VALUES (?1,?2,?3,?4)",
+            params![entity_id.to_string(), domain, subject, now_rfc3339()],
+        )
+        .map_err(database_error)?;
+    insert_alias(connection, domain, subject, entity_id, "canonical", event_seq)?;
+    Ok(entity_id)
+}
+
+/// Resolve `(domain, alias)` to an entity_id by checking both the canonical
+/// subject column and the `entity_aliases` table (former subjects + external
+/// ids). Returns `None` if no entity has ever held this string in this domain.
+fn resolve_entity_in_tx(
+    connection: &Connection,
+    domain: &str,
+    alias: &str,
+) -> Result<Option<Uuid>> {
+    let row: Option<(String,)> = connection
+        .query_row(
+            "SELECT entity_id FROM entity_aliases WHERE domain=?1 AND alias=?2 ORDER BY aliased_at_event_seq DESC LIMIT 1",
+            params![domain, alias],
+            |row| Ok((row.get::<_, String>(0)?,)),
+        )
+        .optional()
+        .map_err(database_error)?;
+    match row {
+        Some((text,)) => Ok(Uuid::parse_str(&text).ok()),
+        None => Ok(None),
+    }
+}
+
+fn insert_alias(
+    connection: &Connection,
+    domain: &str,
+    alias: &str,
+    entity_id: Uuid,
+    kind: &str,
+    event_seq: u64,
+) -> Result<()> {
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO entity_aliases(domain,alias,entity_id,kind,aliased_at_event_seq) VALUES (?1,?2,?3,?4,?5)",
+            params![domain, alias, entity_id.to_string(), kind, event_seq as i64],
+        )
+        .map_err(database_error)?;
+    Ok(())
+}
+
+fn now_rfc3339() -> String {
+    Utc::now().to_rfc3339()
 }
 
 /// Content identity stays the plaintext hash (preserving dedup and every

@@ -20,7 +20,7 @@ use crate::graph::{self, GraphFilter};
 use crate::index_manager::{IndexReport, SpaceIndexManager};
 use crate::index_schema::IndexSchema;
 use crate::markdown;
-use crate::semantic::{ClaimView, PrivacyLabel, SemanticStore, canonicalize_json};
+use crate::semantic::{ClaimView, OriginClass, PrivacyLabel, SemanticStore, canonicalize_json};
 use crate::type_registry::SpaceTypeRegistry;
 
 /// Marker file dropped at the root of every directory this module manages.
@@ -98,6 +98,19 @@ pub fn rebuild_projection(
         .collect();
     claims.sort_by_key(|claim| claim.claim_id);
 
+    // Project the live canonical subject onto each claim: a claim's payload
+    // records the subject string it was confirmed under (an immutable
+    // historical fact), but the generated wiki is a materialized view of the
+    // entity's current identity (ADR Decision 1). After a rename, the page
+    // title follows the new canonical subject; the claim's own `subject`
+    // field is preserved in the body for provenance.
+    let canonical_subjects = store.entity_canonical_subjects_owned();
+    for claim in &mut claims {
+        if let Some(canonical) = claim.entity_id.and_then(|id| canonical_subjects.get(&id)) {
+            claim.subject = canonical.clone();
+        }
+    }
+
     if generated_wiki_root.exists() {
         if !generated_wiki_root.join(OWNERSHIP_MARKER).is_file() {
             anyhow::bail!(
@@ -164,15 +177,44 @@ fn composite_checksum(
     Ok(hex::encode(hasher.finalize()))
 }
 
-/// Render one confirmed claim as a generated-wiki Markdown page. The `type`
-/// is fixed to `entity` (the "semantic" schema family's generic subtype) —
-/// mapping every `claim_kind` to a distinct page type is deferred; nothing
-/// in Task 2.1's DoD requires that taxonomy, only that a valid, indexable
-/// page comes out the other end.
+/// Map a claim's `claim_kind` to a generated-wiki page `type`. Closes Task
+/// 2.1's deferred "every claim renders as type: entity" simplification: a
+/// `preference`/`decision` claim is no longer mis-typed as `entity`. Unknown
+/// kinds fall back to `entity` (the semantic schema family's generic subtype)
+/// so a new claim_kind never breaks the projection.
+fn page_type_for_claim_kind(claim_kind: &str) -> &str {
+    match claim_kind {
+        "preference" | "decision" => "preference",
+        "procedure" => "procedure",
+        "observation" | "external_fact" | "entity" => "entity",
+        "user_assertion" => "entity",
+        _ => "entity",
+    }
+}
+
+/// Origin class as it appears in generated-wiki frontmatter (`human-authored`
+/// or `agent-proposed`). Mirrors `OriginClass`'s serde kebab-case rendering so
+/// the projection output and the JSON view agree byte-for-byte.
+fn origin_label(origin: OriginClass) -> &'static str {
+    match origin {
+        OriginClass::HumanAuthored => "human-authored",
+        OriginClass::AgentProposed => "agent-proposed",
+    }
+}
+
+/// Render one confirmed claim as a generated-wiki Markdown page. Task 2.2
+/// extends Task 2.1's frontmatter with the ownership dimensions GOAL-vNext
+/// §13 Task 2.2 mandates: `origin` (`human-authored`/`agent-proposed`),
+/// `provenance` (the ADR Decision 6 variant name), and `entity_id` (the
+/// stable UUIDv7). The page `type` now follows `claim_kind` rather than being
+/// hardcoded to `entity`.
 fn render_claim_page(claim: &ClaimView) -> String {
     let mut fm: BTreeMap<String, YamlValue> = BTreeMap::new();
     fm.insert("title".into(), YamlValue::String(claim.subject.clone()));
-    fm.insert("type".into(), YamlValue::String("entity".into()));
+    fm.insert(
+        "type".into(),
+        YamlValue::String(page_type_for_claim_kind(&claim.claim_kind).to_owned()),
+    );
     fm.insert("status".into(), YamlValue::String("active".into()));
     fm.insert(
         "confidence".into(),
@@ -188,14 +230,30 @@ fn render_claim_page(claim: &ClaimView) -> String {
         "claim_id".into(),
         YamlValue::String(claim.claim_id.to_string()),
     );
+    fm.insert(
+        "origin".into(),
+        YamlValue::String(origin_label(claim.origin).to_owned()),
+    );
+    fm.insert(
+        "provenance".into(),
+        YamlValue::String(claim.provenance_kind.clone()),
+    );
+    if let Some(entity_id) = claim.entity_id {
+        fm.insert(
+            "entity_id".into(),
+            YamlValue::String(entity_id.to_string()),
+        );
+    }
 
     let body = format!(
-        "## {}\n\n- predicate: `{}`\n- value: `{}`\n- kind: `{}`\n- domain: `{}`\n- confirmed_event_seq: `{}`\n",
+        "## {}\n\n- predicate: `{}`\n- value: `{}`\n- kind: `{}`\n- domain: `{}`\n- origin: `{}`\n- provenance: `{}`\n- confirmed_event_seq: `{}`\n",
         claim.subject,
         claim.predicate,
         claim.value,
         claim.claim_kind,
         claim.domain,
+        origin_label(claim.origin),
+        claim.provenance_kind,
         claim.confirmed_event_seq,
     );
 
