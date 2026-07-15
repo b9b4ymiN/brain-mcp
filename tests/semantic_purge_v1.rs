@@ -13,6 +13,8 @@
 use std::path::{Path, PathBuf};
 #[cfg(feature = "semantic-test-failpoints")]
 use std::sync::atomic::{AtomicI64, Ordering};
+#[cfg(feature = "semantic-test-failpoints")]
+use std::time::Duration;
 
 use chrono::Utc;
 #[cfg(feature = "semantic-test-failpoints")]
@@ -831,4 +833,158 @@ fn retract_does_not_touch_the_purge_registry_or_destroy_keys() {
     assert!(!store.is_denied(&object_id).unwrap());
     assert!(store.object_exists(&object_id));
     assert!(store.object_json(&object_id).is_ok());
+}
+
+/// TOCTOU proof for the task's own named "one dominant risk": a
+/// `registry_denied` commit that lands *while* a `claims_current` call is
+/// mid-flight (already past its own deny-check for one row) must not tear
+/// that call's view -- every row it touches must reflect one consistent
+/// snapshot fixed before the denial committed, not a mix where an
+/// earlier-processed row succeeds and a later one suddenly reports Denied.
+/// This is the scenario the approved Task Brief committed to testing via
+/// the Task 0.3 pause-hook pattern (`pause_read_after_deny_check_for_test`,
+/// armed inside `decrypt_object` itself, immediately after its deny/seal
+/// check and before it touches the ciphertext file).
+#[cfg(feature = "semantic-test-failpoints")]
+#[test]
+fn claims_current_uses_one_snapshot_across_all_rows_despite_a_mid_query_denial() {
+    let targets_parent = tempfile::tempdir().unwrap();
+    let targets = two_targets(targets_parent.path());
+    let (_parent, _root, store, context) = fixture_with_targets(targets);
+
+    let mut draft_a = draft();
+    draft_a.subject = "GULF".to_owned();
+    draft_a.predicate = "target_price".to_owned();
+    draft_a.claim_kind = "external_fact".to_owned();
+    draft_a.domain = "stocks".to_owned();
+    draft_a.value = json!(58);
+    let mut draft_b = draft_a.clone();
+    draft_b.value = json!(62);
+
+    store
+        .capture(&context, capture("cap-a", b"broker a says 58"))
+        .unwrap();
+    store
+        .propose(
+            &context,
+            ProposeCommand {
+                operation_id: "prop-a".to_owned(),
+                capture_operation_id: "cap-a".to_owned(),
+                draft: draft_a,
+            },
+        )
+        .unwrap();
+    store
+        .confirm(
+            &context,
+            ConfirmCommand {
+                operation_id: "confirm-a".to_owned(),
+                proposal_operation_id: "prop-a".to_owned(),
+            },
+        )
+        .unwrap();
+
+    store
+        .capture(&context, capture("cap-b", b"broker b says 62"))
+        .unwrap();
+    store
+        .propose(
+            &context,
+            ProposeCommand {
+                operation_id: "prop-b".to_owned(),
+                capture_operation_id: "cap-b".to_owned(),
+                draft: draft_b,
+            },
+        )
+        .unwrap();
+    let confirm_b = store
+        .confirm(
+            &context,
+            ConfirmCommand {
+                operation_id: "confirm-b".to_owned(),
+                proposal_operation_id: "prop-b".to_owned(),
+            },
+        )
+        .unwrap();
+    let object_b = confirm_b.event.payload.object_id;
+
+    let pause = store.pause_read_after_deny_check_for_test();
+    let store_ref = &store;
+    let ledger_head = store.ledger_head().unwrap();
+    std::thread::scope(|scope| {
+        let reader = scope.spawn(move || {
+            store_ref.claims_current(ledger_head, Utc::now(), "stocks", "GULF", "target_price")
+        });
+
+        assert!(
+            pause.wait_until_entered(Duration::from_secs(5)),
+            "reader did not reach the pause point before the deadline"
+        );
+        // Deny claim B's object while the reader's transaction is paused
+        // between the deny-check and the plaintext read for whichever row
+        // it is currently on -- SQLite's WAL snapshot for that already-open
+        // deferred transaction was fixed at its first read, before this
+        // commit, so the rest of the same call must still see the
+        // pre-denial state consistently.
+        store_ref
+            .append_registry_denial(std::slice::from_ref(&object_b))
+            .unwrap();
+        assert!(store_ref.is_denied(&object_b).unwrap());
+        pause.release();
+
+        let result = reader
+            .join()
+            .unwrap()
+            .expect("in-flight claims_current must not observe a torn mid-query denial");
+        let total = result.active.len() + result.past.len() + result.future.len();
+        assert_eq!(
+            total, 2,
+            "claims_current must see one consistent pre-denial snapshot across every row"
+        );
+    });
+
+    // The denial is fully durable for this store's *next* (new) call.
+    assert!(matches!(
+        store.claims_current(
+            store.ledger_head().unwrap(),
+            Utc::now(),
+            "stocks",
+            "GULF",
+            "target_price"
+        ),
+        Err(SemanticError::Denied(_))
+    ));
+}
+
+/// `retention_pending` must invalidate only backups actually capable of
+/// decrypting a purge target -- an earlier backup made before the target
+/// object even existed carries no wrapped key for it and must survive.
+#[test]
+fn retention_pending_spares_a_backup_that_cannot_decrypt_the_target() {
+    let targets_parent = tempfile::tempdir().unwrap();
+    let targets = two_targets(targets_parent.path());
+    let (parent, _root, store, context) = fixture_with_targets(targets);
+
+    // An unrelated backup made before the purge target is even captured.
+    let unrelated_backup = parent.path().join("early-backup");
+    store.backup_consistent(&unrelated_backup).unwrap();
+    assert!(unrelated_backup.exists());
+
+    let object_id = confirm_a_claim(&store, &context);
+    let preview = store
+        .purge_preview(std::slice::from_ref(&object_id))
+        .unwrap();
+    let receipt = store
+        .purge_execute(&context, "purge-op", &preview.preview_hash, &preview.nonce)
+        .unwrap();
+    assert_eq!(receipt.state, "completed");
+
+    // The unrelated, pre-dating backup was never capable of decrypting the
+    // target and must survive; the fresh post-purge backup exists too.
+    assert!(
+        unrelated_backup.exists(),
+        "a backup with no wrapped key for the target must not be destroyed by an unrelated purge"
+    );
+    let fresh_backup = PathBuf::from(receipt.new_backup_path.unwrap());
+    assert!(fresh_backup.exists());
 }

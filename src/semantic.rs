@@ -500,6 +500,8 @@ struct RootCoordinator {
     active_transactions: AtomicUsize,
     #[cfg(feature = "semantic-test-failpoints")]
     recovery_waiting: AtomicUsize,
+    #[cfg(feature = "semantic-test-failpoints")]
+    pause_read_after_deny_check: Arc<PauseState>,
 }
 
 impl RootCoordinator {
@@ -512,6 +514,8 @@ impl RootCoordinator {
             active_transactions: AtomicUsize::new(0),
             #[cfg(feature = "semantic-test-failpoints")]
             recovery_waiting: AtomicUsize::new(0),
+            #[cfg(feature = "semantic-test-failpoints")]
+            pause_read_after_deny_check: Arc::default(),
         }
     }
 }
@@ -584,14 +588,14 @@ pub enum RollbackStatus {
 pub struct ManualRecovery;
 
 #[cfg(feature = "semantic-test-failpoints")]
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct PauseState {
     flags: Mutex<PauseFlags>,
     condvar: Condvar,
 }
 
 #[cfg(feature = "semantic-test-failpoints")]
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct PauseFlags {
     armed: bool,
     entered: bool,
@@ -1914,6 +1918,24 @@ impl SemanticStore {
         }
     }
 
+    /// Arms a pause inside `decrypt_object`, right after its deny/seal check
+    /// and before it materializes plaintext, so a test can race a
+    /// concurrent `append_registry_denial` against an in-flight read and
+    /// prove the read observes one consistent snapshot across every object
+    /// it touches (e.g. every row of one `claims_current` call) rather than
+    /// a torn mix of pre- and post-denial state.
+    #[cfg(feature = "semantic-test-failpoints")]
+    pub fn pause_read_after_deny_check_for_test(&self) -> SemanticTestPause {
+        self.coordinator
+            .pause_read_after_deny_check
+            .flags
+            .lock()
+            .armed = true;
+        SemanticTestPause {
+            state: Arc::clone(&self.coordinator.pause_read_after_deny_check),
+        }
+    }
+
     #[cfg(feature = "semantic-test-failpoints")]
     fn pause_after_commit_if_armed(&self) {
         let mut flags = self.pause_after_commit.flags.lock();
@@ -2168,6 +2190,15 @@ impl SemanticStore {
         let mut sorted = targets.to_vec();
         sorted.sort();
         sorted.dedup();
+        // Reject a malformed target now rather than letting it enter a
+        // running saga: object_path()'s format check would otherwise only
+        // fire inside live_deleted/projections_cleaned, after registry_denied
+        // and key_revoked already committed for the *other*, well-formed
+        // targets in the same batch -- permanently stalling the saga instead
+        // of failing before anything irreversible happens.
+        for target in &sorted {
+            object_path(&self.root, target)?;
+        }
         let preview_hash = sha256(&canonical_bytes(&sorted)?);
         let nonce = Uuid::now_v7().to_string();
         let expires_at = self.clock.now() + chrono::Duration::seconds(60);
@@ -2360,7 +2391,7 @@ impl SemanticStore {
                     crash_at("purge_after_projections_cleaned");
                 }
                 "projections_cleaned" => {
-                    self.advance_purge_retention_pending(purge_id)?;
+                    self.advance_purge_retention_pending(purge_id, &saga.targets)?;
                     crash_at("purge_after_retention_pending");
                 }
                 "retention_pending" => {
@@ -2489,14 +2520,17 @@ impl SemanticStore {
         self.set_purge_state(purge_id, "projections_cleaned")
     }
 
-    /// Invalidates (deletes) every backup this store made that might still
-    /// carry a wrapped key for the purge's targets, then creates and
-    /// independently verifies one fresh backup -- taken after key_revoked
-    /// and live_deleted, so it naturally carries neither the destroyed key
-    /// nor the deleted object. Only backups this store itself created and
-    /// tracks are addressed; an externally copied backup is an operator
-    /// responsibility, matching the ADR's own backup model.
-    fn advance_purge_retention_pending(&self, purge_id: Uuid) -> Result<()> {
+    /// Invalidates (deletes) every backup this store made whose OWN
+    /// `wrapped_keys` table still has a live row for at least one purge
+    /// target -- i.e. every backup actually capable of decrypting a
+    /// target, not every backup this store has ever made -- then creates
+    /// and independently verifies one fresh backup, taken after
+    /// key_revoked and live_deleted, so it naturally carries neither the
+    /// destroyed key nor the deleted object. Only backups this store
+    /// itself created and tracks are addressed; an externally copied
+    /// backup is an operator responsibility, matching the ADR's own
+    /// backup model.
+    fn advance_purge_retention_pending(&self, purge_id: Uuid, targets: &[String]) -> Result<()> {
         let paths: Vec<String> = {
             let connection = open_connection(&self.root)?;
             let mut statement = connection
@@ -2510,6 +2544,34 @@ impl SemanticStore {
         };
         for path in &paths {
             let path_buf = PathBuf::from(path);
+            let backup_database = path_buf.join(DATABASE_FILE);
+            // Only a backup whose OWN wrapped_keys table still has a row for
+            // at least one purge target could actually decrypt it -- a
+            // backup taken before the target ever existed, or of unrelated
+            // data, must not be destroyed by this purge (ADR Decision 7:
+            // "invalidate backups capable of decryption", not every backup).
+            let mut can_decrypt_a_target = false;
+            if backup_database.is_file() {
+                let backup_connection =
+                    Connection::open(&backup_database).map_err(database_error)?;
+                for target in targets {
+                    let has_key: Option<i64> = backup_connection
+                        .query_row(
+                            "SELECT 1 FROM wrapped_keys WHERE object_id=?1",
+                            [target],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(database_error)?;
+                    if has_key.is_some() {
+                        can_decrypt_a_target = true;
+                        break;
+                    }
+                }
+            }
+            if !can_decrypt_a_target {
+                continue;
+            }
             if path_buf.exists() {
                 fs::remove_dir_all(&path_buf).map_err(io_error)?;
             }
@@ -3489,6 +3551,7 @@ fn decrypt_object(connection: &Connection, root: &Path, object_id: &str) -> Resu
     if denied.is_some() {
         return Err(SemanticError::Denied(object_id.to_owned()));
     }
+    pause_read_after_deny_check_if_armed(root);
 
     let envelope = fs::read(object_path(root, object_id)?).map_err(io_error)?;
     if envelope.len() < AES_GCM_NONCE_LEN {
@@ -3983,3 +4046,23 @@ fn crash_at(name: &str) {
 
 #[cfg(not(feature = "semantic-test-failpoints"))]
 fn crash_at(_name: &str) {}
+
+#[cfg(feature = "semantic-test-failpoints")]
+fn pause_read_after_deny_check_if_armed(root: &Path) {
+    let coordinator = coordinator_for(root);
+    let mut flags = coordinator.pause_read_after_deny_check.flags.lock();
+    if !flags.armed {
+        return;
+    }
+    flags.entered = true;
+    coordinator.pause_read_after_deny_check.condvar.notify_all();
+    while !flags.released {
+        coordinator
+            .pause_read_after_deny_check
+            .condvar
+            .wait(&mut flags);
+    }
+}
+
+#[cfg(not(feature = "semantic-test-failpoints"))]
+fn pause_read_after_deny_check_if_armed(_root: &Path) {}
