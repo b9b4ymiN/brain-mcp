@@ -85,14 +85,18 @@ fn write_destructive() -> ToolAnnotations {
 fn annotations_for(name: &str) -> ToolAnnotations {
     match name {
         // Read-only tools — no environment mutation.
-        "wiki_search" | "wiki_list" | "wiki_content_read" | "wiki_history" | "wiki_schema"
-        | "wiki_stats" | "wiki_graph" | "wiki_resolve" | "wiki_lint" | "wiki_suggest"
-        | "profile_get" | "semantic_search" | "semantic_get" | "procedural_find"
-        | "procedural_get" | "graph_neighbors" | "audit_history" | "wiki_index_status" => {
-            read_only()
-        }
-        // Destructive — removes data.
-        "wiki_spaces_remove" => write_destructive(),
+        "wiki_search" | "wiki_list" | "wiki_content_read" | "wiki_history" | "wiki_stats"
+        | "wiki_graph" | "wiki_resolve" | "wiki_lint" | "wiki_suggest" | "profile_get"
+        | "semantic_search" | "semantic_get" | "procedural_find" | "procedural_get"
+        | "graph_neighbors" | "audit_history" | "wiki_index_status" => read_only(),
+        // Destructive — removes data. `wiki_schema` is a multi-action tool
+        // whose `action: remove` path can delete a schema file AND page files
+        // from disk (`delete_pages: true`), so it is classified by its most
+        // dangerous action rather than its read paths (list/show/validate).
+        // Splitting it into separate read/write tools is deferred; until then
+        // the worst-case-safe destructive hint prevents a client from
+        // auto-approving it based on a read-only hint.
+        "wiki_spaces_remove" | "wiki_schema" => write_destructive(),
         // Idempotent mutations — safe to retry with the same args.
         "wiki_index_rebuild" | "wiki_config" | "wiki_spaces_set_default" => write_idempotent(),
         // Additive/side-effecting mutations — not destructive, not idempotent.

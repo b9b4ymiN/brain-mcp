@@ -34,7 +34,10 @@ fn every_tool_has_annotations() {
 }
 
 /// Read-only tools declare `read_only_hint == true`. A tool that only reads
-/// (search, list, read, history, schema, stats) must not hint destructive.
+/// (search, list, read, history, stats) must not hint destructive. Note:
+/// `wiki_schema` is intentionally NOT in this list — it is a multi-action
+/// tool whose `action: remove` path deletes files, so it is classified
+/// destructive (see `destructive_tools_declare_destructive_hint`).
 #[test]
 fn read_only_tools_declare_read_only_hint() {
     let tools = tool_list();
@@ -43,7 +46,6 @@ fn read_only_tools_declare_read_only_hint() {
         "wiki_list",
         "wiki_content_read",
         "wiki_history",
-        "wiki_schema",
         "wiki_stats",
         "wiki_graph",
         "wiki_resolve",
@@ -73,12 +75,14 @@ fn read_only_tools_declare_read_only_hint() {
 }
 
 /// Destructive mutation tools declare `destructive_hint == true` and
-/// `read_only_hint == false`. A tool that deletes or rewrites (content_write
-/// with replace, index_rebuild, spaces_remove) must be marked.
+/// `read_only_hint == false`. Includes multi-action tools whose most-dangerous
+/// action deletes data: `wiki_schema` (action:remove with delete_pages:true
+/// removes page files from disk) is classified by its worst case, not its read
+/// paths.
 #[test]
 fn destructive_tools_declare_destructive_hint() {
     let tools = tool_list();
-    let destructive_names = ["wiki_spaces_remove"];
+    let destructive_names = ["wiki_spaces_remove", "wiki_schema"];
     for name in destructive_names {
         let tool = tools
             .iter()
