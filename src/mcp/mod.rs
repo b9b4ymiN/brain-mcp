@@ -164,11 +164,15 @@ impl ServerHandler for McpServer {
                 });
             }
 
-            let tool_result = if result.is_error {
+            let mut tool_result = if result.is_error {
                 CallToolResult::error(result.content)
             } else {
                 CallToolResult::success(result.content)
             };
+            // Task 3.1 §7.2: propagate structured content (if the handler set
+            // it) so clients that understand structured_content read JSON
+            // directly while others fall back to the text block.
+            tool_result.structured_content = result.structured_content;
 
             Ok(tool_result)
         }

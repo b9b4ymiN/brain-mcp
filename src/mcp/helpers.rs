@@ -62,6 +62,25 @@ pub struct ToolResult {
     pub notify_uris: Vec<String>,
     /// True if the resource list has changed (triggers `resources/list_changed`).
     pub notify_resources_changed: bool,
+    /// Optional structured JSON result (Task 3.1). When set, the rmcp
+    /// `CallToolResult` populates both `structured_content` (this value) and
+    /// `content` (a text fallback). Clients that understand structured
+    /// content read this directly; others fall back to the text block.
+    /// §7.2: "structured content + text fallback".
+    pub structured_content: Option<Value>,
+}
+
+impl ToolResult {
+    /// Build a success ToolResult carrying only text (no structured content).
+    pub fn text(text: String) -> Self {
+        Self {
+            content: vec![Content::text(text)],
+            is_error: false,
+            notify_uris: vec![],
+            notify_resources_changed: false,
+            structured_content: None,
+        }
+    }
 }
 
 // ── Handler result type ───────────────────────────────────────────────────────
@@ -72,6 +91,41 @@ pub type ToolHandlerResult = Result<(Vec<Content>, Vec<String>), String>;
 /// Wrap a plain text string as a successful `ToolHandlerResult` with no URI notifications.
 pub fn ok_text(text: String) -> ToolHandlerResult {
     Ok((vec![Content::text(text)], vec![]))
+}
+
+/// Build a success `ToolResult` with BOTH structured JSON content and a text
+/// fallback (the JSON pretty-printed). Read tools that return JSON should use
+/// this so clients get a single coherent result regardless of whether they
+/// understand `structured_content`. §7.2: "structured content + text fallback".
+pub fn ok_structured(payload: Value) -> ToolResult {
+    let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_owned());
+    ToolResult {
+        content: vec![Content::text(text)],
+        is_error: false,
+        notify_uris: vec![],
+        notify_resources_changed: false,
+        structured_content: Some(payload),
+    }
+}
+
+/// Build an error `ToolResult` with structured `{code, message}` content and
+/// an actionable text fallback. The text uses the `[CODE]` prefix so clients
+/// that ignore structured content can still parse the code. §7.2: "actionable
+/// error".
+pub fn err_structured(error: WikiError, detail: impl fmt::Display) -> ToolResult {
+    let message = detail.to_string();
+    let structured = serde_json::json!({
+        "code": error.code(),
+        "message": message,
+    });
+    let text = err_code(error, &message);
+    ToolResult {
+        content: vec![Content::text(text)],
+        is_error: true,
+        notify_uris: vec![],
+        notify_resources_changed: false,
+        structured_content: Some(structured),
+    }
 }
 
 /// Wrap an error message as an MCP content block with `"error: "` prefix.
@@ -105,7 +159,6 @@ pub fn arg_usize(args: &Map<String, Value>, key: &str) -> Option<usize> {
 
 // ── Wiki resolution ───────────────────────────────────────────────────────────
 
-/// Resolve the target wiki from Engine state + optional `wiki` arg.
 /// Resolve the target wiki from Engine state + optional `wiki` arg.
 pub fn resolve_wiki_name(
     engine: &EngineState,

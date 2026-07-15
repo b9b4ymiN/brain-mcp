@@ -9,9 +9,8 @@
 //! result shaping, NOT the wiki engine. It proves the contracts are stable
 //! and self-consistent.
 
-use llm_wiki::mcp::helpers::{ToolResult, err_code, WikiError};
+use llm_wiki::mcp::helpers::{ToolResult, WikiError, err_code};
 use llm_wiki::mcp::tools::tool_list;
-use rmcp::model::ToolAnnotations;
 
 // =============================================================================
 // DoD: annotations — every tool carries the right hints (§7.2)
@@ -140,7 +139,10 @@ fn every_tool_input_schema_is_a_valid_object_schema() {
             tool.name
         );
         assert!(
-            schema.get("properties").and_then(|v| v.as_object()).is_some(),
+            schema
+                .get("properties")
+                .and_then(|v| v.as_object())
+                .is_some(),
             "tool {} input schema must have a properties object",
             tool.name
         );
@@ -197,7 +199,10 @@ fn tool_result_has_structured_content_field() {
         notify_resources_changed: false,
         structured_content: Some(serde_json::json!({"ok": true})),
     };
-    assert_eq!(result.structured_content, Some(serde_json::json!({"ok": true})));
+    assert_eq!(
+        result.structured_content,
+        Some(serde_json::json!({"ok": true}))
+    );
 }
 
 /// `ok_structured` builds a ToolResult with BOTH a text fallback (the JSON

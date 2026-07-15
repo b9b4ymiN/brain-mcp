@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rmcp::model::Tool;
+use rmcp::model::{Tool, ToolAnnotations};
 use serde_json::{Map, Value, json};
 
 use super::McpServer;
@@ -38,11 +38,83 @@ fn opt_int(desc: &str) -> Value {
     json!({"type": "integer", "description": desc})
 }
 
+// ── Tool annotations (Task 3.1) ───────────────────────────────────────────────
+//
+// GOAL-vNext §7.2 makes MCP annotations mandatory: every tool carries
+// `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`
+// so clients can reason about read-only vs destructive calls without
+// probing. Rather than thread a fourth arg through every `Tool::new` call
+// (which would touch all 29 declarations), we attach annotations in a
+// single post-processing pass keyed on the tool name.
+
+fn read_only() -> ToolAnnotations {
+    ToolAnnotations::new()
+        .read_only(true)
+        .destructive(false)
+        .idempotent(true)
+        .open_world(false)
+}
+
+fn write_additive() -> ToolAnnotations {
+    ToolAnnotations::new()
+        .read_only(false)
+        .destructive(false)
+        .idempotent(false)
+        .open_world(false)
+}
+
+fn write_idempotent() -> ToolAnnotations {
+    ToolAnnotations::new()
+        .read_only(false)
+        .destructive(false)
+        .idempotent(true)
+        .open_world(false)
+}
+
+fn write_destructive() -> ToolAnnotations {
+    ToolAnnotations::new()
+        .read_only(false)
+        .destructive(true)
+        .idempotent(false)
+        .open_world(false)
+}
+
+/// Map a tool name to its §7.2 annotation profile. Unknown tools default to
+/// the most conservative non-read-only profile (write-additive) so a future
+/// tool is never accidentally hinted as read-only.
+fn annotations_for(name: &str) -> ToolAnnotations {
+    match name {
+        // Read-only tools — no environment mutation.
+        "wiki_search" | "wiki_list" | "wiki_content_read" | "wiki_history" | "wiki_schema"
+        | "wiki_stats" | "wiki_graph" | "wiki_resolve" | "wiki_lint" | "wiki_suggest"
+        | "profile_get" | "semantic_search" | "semantic_get" | "procedural_find"
+        | "procedural_get" | "graph_neighbors" | "audit_history" | "wiki_index_status" => {
+            read_only()
+        }
+        // Destructive — removes data.
+        "wiki_spaces_remove" => write_destructive(),
+        // Idempotent mutations — safe to retry with the same args.
+        "wiki_index_rebuild" | "wiki_config" | "wiki_spaces_set_default" => write_idempotent(),
+        // Additive/side-effecting mutations — not destructive, not idempotent.
+        // create/register/list are space-management; write/new/commit/ingest
+        // touch content; export writes a file.
+        "wiki_spaces_create"
+        | "wiki_spaces_register"
+        | "wiki_spaces_list"
+        | "wiki_content_write"
+        | "wiki_content_new"
+        | "wiki_content_commit"
+        | "wiki_ingest"
+        | "wiki_export" => write_additive(),
+        _ => write_additive(),
+    }
+}
+
 // ── Tool definitions ─────────────────────────────────────────────────────────
 
 /// Return the complete list of MCP tool definitions for registration.
 pub fn tool_list() -> Vec<Tool> {
-    vec![
+    let tools = vec![
         Tool::new(
             "wiki_spaces_create",
             "Initialize a new wiki repository",
@@ -426,7 +498,17 @@ pub fn tool_list() -> Vec<Tool> {
                 &["path"],
             ),
         ),
-    ]
+    ];
+    // Task 3.1: attach the §7.2 annotation profile to every tool in a single
+    // pass. This keeps the declarations above readable (3-arg Tool::new) and
+    // centralizes the read-only/destructive/idempotent policy in one match.
+    tools
+        .into_iter()
+        .map(|tool| {
+            let name = tool.name.clone();
+            tool.with_annotations(annotations_for(&name))
+        })
+        .collect()
 }
 
 // ── Dispatch ──────────────────────────────────────────────────────────────────
@@ -482,6 +564,7 @@ pub fn call(server: &McpServer, name: &str, args: &Map<String, Value>) -> ToolRe
                 is_error: false,
                 notify_uris,
                 notify_resources_changed,
+                structured_content: None,
             }
         }
         Ok(Err(msg)) => {
@@ -491,6 +574,7 @@ pub fn call(server: &McpServer, name: &str, args: &Map<String, Value>) -> ToolRe
                 is_error: true,
                 notify_uris: vec![],
                 notify_resources_changed: false,
+                structured_content: None,
             }
         }
         Err(_) => {
@@ -500,6 +584,7 @@ pub fn call(server: &McpServer, name: &str, args: &Map<String, Value>) -> ToolRe
                 is_error: true,
                 notify_uris: vec![],
                 notify_resources_changed: false,
+                structured_content: None,
             }
         }
     }
