@@ -1,6 +1,17 @@
 # Task 2.1 — Projection Adapters Report
 
-Status: **awaiting Independent Validator**. RED `d031110`, GREEN `715f780`, fix round `a7a97b7` on branch `vnext/phase-0`.
+Status: **awaiting Independent Validator re-verification of fix round 2**. RED `d031110`, GREEN `715f780`, fix round 1 `a7a97b7`, fix round 2 `ac181f8` on branch `vnext/phase-0`.
+
+## Fix round 2 — Independent Validator findings closed
+
+The first Independent Validator pass (against `f28ebeb`) returned **FINDINGS**: 0 CRITICAL/HIGH, 2 MEDIUM, 5 LOW/INFO. Closed at `ac181f8`:
+
+- **[MEDIUM, fixed]** `cargo fmt --check` failed on `a7a97b7` — the isolation-test allowlist edit (fix round 1) was never reformatted afterward. `cargo fmt` applied; `cargo fmt --check` reverified clean.
+- **[MEDIUM, fixed]** `rebuild_projection`'s "must be a projector-owned directory" contract was documentation-only — nothing stopped a future caller from pointing it at a real, human-authored `wiki_root` and having its content silently `remove_dir_all`'d. Added an `OWNERSHIP_MARKER` (`.projection-owned`) file dropped at the root of every directory the function manages; a pre-existing directory missing the marker is now refused with an error rather than deleted. New test `rebuild_refuses_to_delete_a_directory_it_does_not_own` proves it.
+- **[LOW, fixed as a free fail-safe]** Projected claims weren't filtered by `privacy_label`. Currently a no-op in practice (`validate_claim_draft` already rejects any non-`LocalOnly` claim at capture time), but added an explicit filter now so the projector doesn't silently start leaking `PrivateExternalAllowed`/`Publishable` claims the moment a future release-authorization mechanism allows them to exist.
+- **Not acted on** (documented, not regressions this task introduced): LOW-4 (the isolation guard test doesn't recurse into `src/` subdirectories — pre-existing structural limitation; independently confirmed nothing under `acp/`/`mcp/`/`ops/` currently references `semantic::`), LOW-5 (unrelated pre-existing untracked fixture files), LOW-6 (composite checksum's three metadata reads are non-atomic — inherited from the purge saga's own identical precedent pattern, not a new regression), LOW-7 (`Utc::now()` called fresh per `rebuild_projection` call in tests rather than pinned once — currently harmless, no time-bounded claim exercises it).
+
+Re-verified after the fix: `cargo fmt --check` clean, `cargo clippy --all-targets --all-features` clean, `cargo test` (default) 646/646, `cargo test --all-features -j 2` 657/657 — 0 failures.
 
 ## Why this task exists
 
@@ -49,8 +60,8 @@ This was flagged to the user rather than silently fixed, given the forbidden-pat
 | GREEN (`cargo test --test projection_v1`) | 8/8 passed, first run |
 | `cargo fmt --check` | 2 files needed formatting (line wraps only); applied, re-verified clean |
 | `cargo clippy --all-targets --all-features` | 1 warning (`unnecessary_sort_by`) → fixed → clean |
-| `cargo test` (default features) | 645/645 passed, 0 failed, 21 binaries |
-| `cargo test --all-features` (`-j 2`, worked around a pagefile-exhaustion build failure at full parallelism) | 656/656 passed, 0 failed, 37 binaries |
+| `cargo test` (default features) | 645/645 passed pre-fix-round-2, 646/646 after (new guard test) — 0 failed, 21 binaries |
+| `cargo test --all-features` (`-j 2`, worked around a pagefile-exhaustion build failure at full parallelism) | 656/656 passed pre-fix-round-2, 657/657 after — 0 failed, 37 binaries |
 | `cargo llvm-cov --all-features` | `projection.rs`: 100.00% lines (77/77), 100.00% functions (4/4), 91.22% regions (135/148). `semantic.rs`: 89.75% lines (consistent with the 89.74% baseline at Task 1.3's close — the two new additive methods did not regress it) |
 
 ## Notes and carried risks
