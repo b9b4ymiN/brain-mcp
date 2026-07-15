@@ -354,8 +354,5 @@ fn rollback_to_null_bindings_is_lossless_and_recoverable() {
         .unwrap();
     assert!(recovered.active[0].entity_id.is_some());
     // And the entity_id is stable across rollback/recover (same entity).
-    assert_eq!(
-        populated.active[0].entity_id,
-        recovered.active[0].entity_id
-    );
+    assert_eq!(populated.active[0].entity_id, recovered.active[0].entity_id);
 }

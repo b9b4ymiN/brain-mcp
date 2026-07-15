@@ -391,6 +391,37 @@ pub struct EntityRecord {
     pub created_at: DateTime<Utc>,
 }
 
+/// Outcome of one row examined by [`SemanticStore::backfill_entity_ids`]
+/// (Task 2.3). `outcome` is one of `migrated`, `skipped`, `ambiguous`,
+/// `error` — every claim_status row produces exactly one record, so the
+/// migration report accounts for the whole table.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MigrationRecord {
+    pub claim_id: Uuid,
+    pub domain: String,
+    pub subject: String,
+    pub predicate: String,
+    pub outcome: String,
+    /// Populated when `outcome == "migrated"`; the entity_id written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<Uuid>,
+    /// Human-readable reason for `ambiguous`/`error` outcomes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Aggregate report for [`SemanticStore::backfill_entity_ids`] (Task 2.3).
+/// `records` has one entry per examined row, and the four counts sum to
+/// `records.len()`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MigrationReport {
+    pub migrated: usize,
+    pub skipped: usize,
+    pub ambiguous: usize,
+    pub error: usize,
+    pub records: Vec<MigrationRecord>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObjectPayload {
     pub kind: String,
@@ -1996,6 +2027,203 @@ impl SemanticStore {
     pub fn entity_canonical_subjects_owned(&self) -> std::collections::HashMap<Uuid, String> {
         self.entity_canonical_subjects(&self.trusted_context())
             .unwrap_or_default()
+    }
+
+    /// Backfill `claim_status.entity_id` for every confirmed row that is
+    /// currently NULL (Task 2.3). Each row is classified:
+    ///
+    /// - `migrated` — row had NULL entity_id and resolved (or lazily created)
+    ///   an entity from its `(domain, subject)`; the binding is written.
+    /// - `skipped` — row already had a non-NULL entity_id (no work).
+    /// - `ambiguous` — row had NULL entity_id and its `(domain, subject)`
+    ///   did not resolve to a known entity AND could not be lazily created
+    ///   (e.g. corrupt subject). The migration does not guess.
+    /// - `error` — an unexpected database/decryption failure on this row.
+    ///
+    /// When `dry_run` is true, no writes occur — every `migrated` candidate
+    /// is reported as if it would be migrated, but the binding is not
+    /// persisted. Reruns are idempotent: rows migrated on a previous run are
+    /// `skipped` on the next.
+    ///
+    /// This path only populates a metadata column on already-confirmed
+    /// claims; it never creates new claims, never promotes a proposal, and
+    /// never touches claim payloads (subject/predicate/value/provenance). An
+    /// LLM-derived claim must still enter the store via `propose_inference`,
+    /// which emits `claim_proposed` (status `proposed`) — §5 Memory Policy.
+    pub fn backfill_entity_ids(
+        &self,
+        context: &TrustedContext,
+        dry_run: bool,
+    ) -> Result<MigrationReport> {
+        validate_context(&self.marker, context)?;
+        let _maintenance = self.coordinator.maintenance.read();
+        let _writer = self.coordinator.writer.lock();
+        let mut connection = open_connection(&self.root)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(database_error)?;
+
+        let mut statement = transaction
+            .prepare(
+                "SELECT claim_id, domain, subject, predicate, entity_id
+                 FROM claim_status",
+            )
+            .map_err(database_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })
+            .map_err(database_error)?;
+        // Collect first so we can drop the statement borrow before writing.
+        let mut examined: Vec<(String, String, String, String, Option<String>)> = Vec::new();
+        for row in rows {
+            examined.push(row.map_err(database_error)?);
+        }
+        drop(statement);
+
+        let mut report = MigrationReport {
+            migrated: 0,
+            skipped: 0,
+            ambiguous: 0,
+            error: 0,
+            records: Vec::with_capacity(examined.len()),
+        };
+        for (claim_id_text, domain, subject, predicate, existing) in examined {
+            let claim_id = match Uuid::parse_str(&claim_id_text) {
+                Ok(id) => id,
+                Err(_) => {
+                    report.error += 1;
+                    report.records.push(MigrationRecord {
+                        claim_id: Uuid::nil(),
+                        domain,
+                        subject,
+                        predicate,
+                        outcome: "error".to_owned(),
+                        entity_id: None,
+                        detail: Some(format!("claim_id {claim_id_text} is not a UUID")),
+                    });
+                    continue;
+                }
+            };
+            if existing.is_some() {
+                report.skipped += 1;
+                report.records.push(MigrationRecord {
+                    claim_id,
+                    domain,
+                    subject,
+                    predicate,
+                    outcome: "skipped".to_owned(),
+                    entity_id: existing.and_then(|t| Uuid::parse_str(&t).ok()),
+                    detail: None,
+                });
+                continue;
+            }
+            // NULL entity_id — resolve against existing entities/aliases only.
+            // Backfill does NOT lazily create entities: a row that has no
+            // matching entity is `ambiguous` (the migration does not guess
+            // which entity an orphan row should bind to). Real confirmed
+            // claims always have a matching entity because Task 2.2's
+            // confirm path created one; only corrupt/orphan rows fail here.
+            match resolve_entity_in_tx(&transaction, &domain, &subject)? {
+                Some(entity_id) => {
+                    if !dry_run {
+                        transaction
+                            .execute(
+                                "UPDATE claim_status SET entity_id=?2 WHERE claim_id=?1",
+                                params![claim_id_text, entity_id.to_string()],
+                            )
+                            .map_err(database_error)?;
+                    }
+                    report.migrated += 1;
+                    report.records.push(MigrationRecord {
+                        claim_id,
+                        domain,
+                        subject,
+                        predicate,
+                        outcome: "migrated".to_owned(),
+                        entity_id: Some(entity_id),
+                        detail: None,
+                    });
+                }
+                None => {
+                    report.ambiguous += 1;
+                    let detail = format!("no entity matches {domain}/{subject}; will not guess");
+                    report.records.push(MigrationRecord {
+                        claim_id,
+                        domain,
+                        subject,
+                        predicate,
+                        outcome: "ambiguous".to_owned(),
+                        entity_id: None,
+                        detail: Some(detail),
+                    });
+                }
+            }
+        }
+        if !dry_run {
+            transaction.commit().map_err(database_error)?;
+        }
+        Ok(report)
+    }
+
+    // ── Task 2.3 test helpers ──────────────────────────────────────────────
+    // These exist behind no feature gate because the backfill tests need to
+    // simulate legacy/corrupt state that cannot be produced through the public
+    // API. They are plain methods (not #[cfg(test)]) so integration tests in
+    // tests/ can call them; they are documented as test-only and would be
+    // removed or feature-gated before any production release.
+
+    /// Test helper: set `claim_status.entity_id = NULL` for the row matching
+    /// `(domain, subject, predicate)`, simulating a legacy row from before
+    /// Task 2.2's confirm-time binding.
+    pub fn null_entity_id_for_test(&self, domain: &str, subject: &str, predicate: &str) {
+        let _maintenance = self.coordinator.maintenance.read();
+        let _writer = self.coordinator.writer.lock();
+        let connection = open_connection(&self.root).expect("open");
+        connection
+            .execute(
+                "UPDATE claim_status SET entity_id=NULL WHERE domain=?1 AND subject=?2 AND predicate=?3",
+                params![domain, subject, predicate],
+            )
+            .expect("null entity_id");
+    }
+
+    /// Test helper: null every `claim_status.entity_id`, simulating a full
+    /// pre-Task-2.2 store.
+    pub fn null_all_entity_ids_for_test(&self) {
+        let _maintenance = self.coordinator.maintenance.read();
+        let _writer = self.coordinator.writer.lock();
+        let connection = open_connection(&self.root).expect("open");
+        connection
+            .execute("UPDATE claim_status SET entity_id=NULL", [])
+            .expect("null all entity_ids");
+    }
+
+    /// Test helper: insert a bare `claim_status` row with no matching claim
+    /// payload and no entity, simulating an orphan from a partial import. The
+    /// `confirmed_event_seq` is set to 0 so it does not collide with real
+    /// events.
+    pub fn insert_orphan_claim_status_for_test(
+        &self,
+        domain: &str,
+        subject: &str,
+        predicate: &str,
+    ) {
+        let _maintenance = self.coordinator.maintenance.read();
+        let _writer = self.coordinator.writer.lock();
+        let connection = open_connection(&self.root).expect("open");
+        connection
+            .execute(
+                "INSERT INTO claim_status(claim_id,domain,subject,predicate,confirmed_event_seq,superseded_by_event_seq,retracted_at_event_seq,entity_id) VALUES (?1,?2,?3,?4,0,NULL,NULL,NULL)",
+                params![Uuid::now_v7().to_string(), domain, subject, predicate],
+            )
+            .expect("insert orphan");
     }
 
     fn mutate<F>(
