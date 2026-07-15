@@ -2032,13 +2032,15 @@ impl SemanticStore {
     /// Backfill `claim_status.entity_id` for every confirmed row that is
     /// currently NULL (Task 2.3). Each row is classified:
     ///
-    /// - `migrated` — row had NULL entity_id and resolved (or lazily created)
-    ///   an entity from its `(domain, subject)`; the binding is written.
+    /// - `migrated` — row had NULL entity_id and `(domain, subject)` resolved
+    ///   to an existing entity (via `entity_aliases`); the binding is written.
     /// - `skipped` — row already had a non-NULL entity_id (no work).
-    /// - `ambiguous` — row had NULL entity_id and its `(domain, subject)`
-    ///   did not resolve to a known entity AND could not be lazily created
-    ///   (e.g. corrupt subject). The migration does not guess.
-    /// - `error` — an unexpected database/decryption failure on this row.
+    /// - `ambiguous` — row had NULL entity_id and `(domain, subject)` did not
+    ///   resolve to any existing entity. Backfill is **resolve-only**: it does
+    ///   not lazily create entities, so an orphan row (e.g. from a partial
+    ///   import with no matching entity) stays unbound rather than being
+    ///   silently bound to a freshly-minted entity.
+    /// - `error` — the row's `claim_id` failed to parse as a UUID (corrupt row).
     ///
     /// When `dry_run` is true, no writes occur — every `migrated` candidate
     /// is reported as if it would be migrated, but the binding is not
