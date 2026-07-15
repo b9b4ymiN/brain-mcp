@@ -1111,8 +1111,10 @@ fn semantic_module_is_isolated_and_legacy_runtime_does_not_call_writer() {
         // projections. Every other legacy file remains forbidden from
         // referencing `semantic::` — this allowlist is intentionally one
         // entry wide, not a relaxation of the isolation guarantee itself.
-        if matches!(file_name, Some("semantic.rs") | Some("lib.rs") | Some("projection.rs"))
-            || !path.is_file()
+        if matches!(
+            file_name,
+            Some("semantic.rs") | Some("lib.rs") | Some("projection.rs")
+        ) || !path.is_file()
         {
             continue;
         }

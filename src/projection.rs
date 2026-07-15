@@ -20,8 +20,16 @@ use crate::graph::{self, GraphFilter};
 use crate::index_manager::{IndexReport, SpaceIndexManager};
 use crate::index_schema::IndexSchema;
 use crate::markdown;
-use crate::semantic::{ClaimView, SemanticStore, canonicalize_json};
+use crate::semantic::{ClaimView, PrivacyLabel, SemanticStore, canonicalize_json};
 use crate::type_registry::SpaceTypeRegistry;
+
+/// Marker file dropped at the root of every directory this module manages.
+/// `rebuild_projection` refuses to `remove_dir_all` a pre-existing directory
+/// that lacks this marker, so a caller mistake (passing a real, human-
+/// authored `wiki_root` as `generated_wiki_root`) fails loudly instead of
+/// silently deleting content. Not a Tantivy-indexable page (no `.md`
+/// extension), so `SpaceIndexManager::rebuild`'s `WalkDir` scan ignores it.
+const OWNERSHIP_MARKER: &str = ".projection-owned";
 
 /// Identity of one rebuilt projection: the canonical-state fingerprint it
 /// was built from (`ledger_head`/`purge_epoch`/`schema_version`, the same
@@ -53,9 +61,12 @@ pub struct RebuildOutcome {
 /// Rebuild every projection (generated Markdown, Tantivy, Petgraph) from the
 /// canonical claim set as of `world_time`.
 ///
-/// `generated_wiki_root` is deleted and recreated on every call — it must be
+/// `generated_wiki_root` is deleted and recreated on every call. It must be
 /// a directory exclusively owned by this projector, never a human-authored
-/// wiki root. `index_manager`'s index is rebuilt in place via the existing
+/// wiki root; this is enforced at runtime via an ownership marker (see
+/// [`OWNERSHIP_MARKER`]), not just documented as a caller contract — a
+/// pre-existing directory without the marker is refused rather than deleted.
+/// `index_manager`'s index is rebuilt in place via the existing
 /// `SpaceIndexManager::rebuild`, and the graph is built from that index's
 /// searcher via the existing `graph::build_graph` — this module adds no new
 /// search/graph engine, only the claim-to-Markdown adapter layer between
@@ -73,13 +84,33 @@ pub fn rebuild_projection(
     let purge_epoch = store.registry_epoch()?;
     let schema_version = store.schema_version();
 
-    let mut claims = store.all_claims_current(ledger_head, world_time)?.active;
+    // Only LocalOnly claims can exist in the store today — validate_claim_draft
+    // rejects any other privacy_label at capture time. This filter is
+    // currently a no-op in practice, kept as a fail-safe default so the
+    // projector doesn't start leaking PrivateExternalAllowed/Publishable
+    // claims into generated Markdown/Tantivy/Petgraph the moment a future
+    // release-authorization mechanism allows them to exist.
+    let mut claims: Vec<ClaimView> = store
+        .all_claims_current(ledger_head, world_time)?
+        .active
+        .into_iter()
+        .filter(|claim| claim.privacy_label == PrivacyLabel::LocalOnly)
+        .collect();
     claims.sort_by_key(|claim| claim.claim_id);
 
     if generated_wiki_root.exists() {
+        if !generated_wiki_root.join(OWNERSHIP_MARKER).is_file() {
+            anyhow::bail!(
+                "refusing to rebuild projection into {}: missing {OWNERSHIP_MARKER} ownership \
+                 marker (this directory is not exclusively owned by rebuild_projection — \
+                 pass a directory this function created, never a human-authored wiki root)",
+                generated_wiki_root.display(),
+            );
+        }
         fs::remove_dir_all(generated_wiki_root)?;
     }
     fs::create_dir_all(generated_wiki_root)?;
+    fs::write(generated_wiki_root.join(OWNERSHIP_MARKER), b"")?;
 
     for claim in &claims {
         let slug = format!("claims/{}", claim.claim_id);

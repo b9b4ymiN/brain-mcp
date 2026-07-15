@@ -53,9 +53,17 @@ fn draft(subject: &str, value: i64) -> ClaimDraft {
 
 /// Capture -> propose -> confirm one claim under a unique operation-id tag.
 /// Returns the confirm operation_id (needed to retract/supersede later).
-fn confirm_claim(store: &SemanticStore, context: &TrustedContext, tag: &str, subject: &str) -> String {
+fn confirm_claim(
+    store: &SemanticStore,
+    context: &TrustedContext,
+    tag: &str,
+    subject: &str,
+) -> String {
     store
-        .capture(context, capture(&format!("cap-{tag}"), format!("evidence {tag}").as_bytes()))
+        .capture(
+            context,
+            capture(&format!("cap-{tag}"), format!("evidence {tag}").as_bytes()),
+        )
         .unwrap();
     store
         .propose(
@@ -327,7 +335,8 @@ fn generated_projection_never_touches_the_human_authored_wiki_root() {
     let human_wiki_root = repo_root.join("wiki");
     std::fs::create_dir_all(human_wiki_root.join("concepts")).unwrap();
     let human_page = human_wiki_root.join("concepts/moe.md");
-    let human_content = "---\ntitle: \"MoE\"\ntype: concept\nstatus: active\n---\n\nHuman-authored.\n";
+    let human_content =
+        "---\ntitle: \"MoE\"\ntype: concept\nstatus: active\n---\n\nHuman-authored.\n";
     std::fs::write(&human_page, human_content).unwrap();
 
     let (mgr, schema, registry) = index_setup(parent.path());
@@ -347,6 +356,37 @@ fn generated_projection_never_touches_the_human_authored_wiki_root() {
     assert_eq!(after, human_content);
     assert!(!generated_root.starts_with(&human_wiki_root));
     assert!(!human_wiki_root.starts_with(&generated_root));
+}
+
+#[test]
+fn rebuild_refuses_to_delete_a_directory_it_does_not_own() {
+    let (parent, store, context) = fixture();
+    confirm_claim(&store, &context, "a", "GULF");
+
+    let (repo_root, generated_root) = repo_and_generated_root(parent.path());
+    // Simulate a caller mistake: pointing rebuild_projection at a directory
+    // that already has real content and no ownership marker.
+    std::fs::create_dir_all(&generated_root).unwrap();
+    let unmarked_page = generated_root.join("not-mine.md");
+    let unmarked_content =
+        "---\ntitle: \"Not Mine\"\ntype: concept\nstatus: active\n---\n\nPre-existing.\n";
+    std::fs::write(&unmarked_page, unmarked_content).unwrap();
+
+    let (mgr, schema, registry) = index_setup(parent.path());
+
+    let result = rebuild_projection(
+        &store,
+        Utc::now(),
+        &generated_root,
+        &repo_root,
+        &mgr,
+        &schema,
+        &registry,
+    );
+
+    assert!(result.is_err());
+    let after = std::fs::read_to_string(&unmarked_page).unwrap();
+    assert_eq!(after, unmarked_content);
 }
 
 // ── checkpoint lag visibility ────────────────────────────────────────────────
@@ -369,7 +409,10 @@ fn checkpoint_lag_is_zero_immediately_after_rebuild_and_positive_after_a_new_cla
         &registry,
     )
     .unwrap();
-    assert_eq!(llm_wiki::projection::checkpoint_lag(&outcome.checkpoint, &store).unwrap(), 0);
+    assert_eq!(
+        llm_wiki::projection::checkpoint_lag(&outcome.checkpoint, &store).unwrap(),
+        0
+    );
 
     confirm_claim(&store, &context, "b", "PTT");
     assert!(llm_wiki::projection::checkpoint_lag(&outcome.checkpoint, &store).unwrap() > 0);
