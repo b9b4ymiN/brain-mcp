@@ -150,7 +150,10 @@ fn user_assertion_proposal_does_not_require_a_prior_capture() {
             draft: preference_draft("editor", "tabs"),
         },
     );
-    assert!(result.is_ok(), "user assertion needs no capture: {result:?}");
+    assert!(
+        result.is_ok(),
+        "user assertion needs no capture: {result:?}"
+    );
 }
 
 /// Mechanically-derived metadata (hash/title/time) is its own provenance kind,
@@ -298,7 +301,10 @@ fn resolve_or_create_entity_is_idempotent_per_domain_subject() {
     let second = store
         .resolve_or_create_entity(&context, "stocks", "GULF")
         .expect("second resolve");
-    assert_eq!(first, second, "same (domain, subject) must resolve to one entity");
+    assert_eq!(
+        first, second,
+        "same (domain, subject) must resolve to one entity"
+    );
 
     // A different subject in the same domain is a different entity.
     let other = store
@@ -422,12 +428,16 @@ fn merge_entities_moves_claims_and_keeps_aliases_as_backlinks() {
     assert_eq!(resolved, target);
 
     // The claim's entity_id was rewritten to the target (no orphan claims).
-    let claims = store.claims_for_entity(&context, target).expect("claims_for_entity");
+    let claims = store
+        .claims_for_entity(&context, target)
+        .expect("claims_for_entity");
     assert!(
         claims.iter().any(|c| c.subject == "GULF-dup"),
         "merged claim must remain reachable via target entity"
     );
-    let source_claims = store.claims_for_entity(&context, source).expect("source claims");
+    let source_claims = store
+        .claims_for_entity(&context, source)
+        .expect("source claims");
     assert!(
         source_claims.is_empty(),
         "source entity must hold no claims after merge"
@@ -562,7 +572,9 @@ fn rename_entity_is_idempotent_under_operation_id_replay() {
         entity
     );
     assert_eq!(
-        store.resolve_entity(&context, "stocks", "GULF-old").unwrap(),
+        store
+            .resolve_entity(&context, "stocks", "GULF-old")
+            .unwrap(),
         entity
     );
 }

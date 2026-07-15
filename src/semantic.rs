@@ -1573,8 +1573,7 @@ impl SemanticStore {
                 // Capture the utterance as a content-addressed object inside
                 // the same transaction, exactly like `capture` does, so the
                 // user_assertion spans point at real bytes.
-                let utterance_object_id =
-                    publish_object(&self.root, transaction, &utterance)?;
+                let utterance_object_id = publish_object(&self.root, transaction, &utterance)?;
                 let utterance_byte_end = u64::try_from(utterance.len()).map_err(|_| {
                     SemanticError::CorruptLedger("utterance is too large".to_owned())
                 })?;
@@ -1670,11 +1669,15 @@ impl SemanticStore {
         subject: &str,
     ) -> Result<Uuid> {
         validate_context(&self.marker, context)?;
+        // Take the in-process writer lock BEFORE opening the Immediate
+        // transaction, matching `mutate_once`'s ordering: without it, two
+        // threads could both BEGIN IMMEDIATE on separate connections and the
+        // loser would surface a DatabaseContention error with no retry loop.
+        let _writer = self.coordinator.writer.lock();
         let mut connection = open_connection(&self.root)?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(database_error)?;
-        let _writer = self.coordinator.writer.lock();
         let entity_id = resolve_or_create_entity_in_tx(
             &transaction,
             domain,
@@ -1702,11 +1705,7 @@ impl SemanticStore {
     }
 
     /// Read the canonical subject + identity of an entity by its stable id.
-    pub fn entity_by_id(
-        &self,
-        context: &TrustedContext,
-        entity_id: Uuid,
-    ) -> Result<EntityRecord> {
+    pub fn entity_by_id(&self, context: &TrustedContext, entity_id: Uuid) -> Result<EntityRecord> {
         validate_context(&self.marker, context)?;
         let _maintenance = self.coordinator.maintenance.read();
         let connection = open_connection(&self.root)?;
@@ -1718,9 +1717,8 @@ impl SemanticStore {
             )
             .optional()
             .map_err(database_error)?;
-        let (_, canonical_subject, created_at) = row.ok_or_else(|| {
-            SemanticError::MissingDependency(format!("entity {entity_id}"))
-        })?;
+        let (_, canonical_subject, created_at) =
+            row.ok_or_else(|| SemanticError::MissingDependency(format!("entity {entity_id}")))?;
         let parsed_created = created_at.parse().map_err(|_| {
             SemanticError::CorruptLedger("entity created_at is not RFC 3339".to_owned())
         })?;
@@ -1893,9 +1891,13 @@ impl SemanticStore {
                 for alias in &aliases {
                     insert_alias(transaction, &source_domain, alias, target, "former_subject", identity.event_seq)?;
                 }
-                // The source entity row is no longer canonical, but we keep it
-                // (audit + the merge event references it). Mark canonical as
-                // merged to avoid accidental re-resolution as primary.
+                // Remove the source's canonical row: its claims were already
+                // rewritten onto the target, and every alias (including its
+                // former canonical subject) now points at the target with a
+                // higher `aliased_at_event_seq`, so `resolve_entity_in_tx`'s
+                // `ORDER BY ... DESC LIMIT 1` resolves the target. The merge
+                // event itself is the audit record — the source entity_id is
+                // captured in the event payload below.
                 transaction
                     .execute(
                         "DELETE FROM entities WHERE entity_id=?1",
@@ -3963,7 +3965,9 @@ fn build_claim_view(
     let origin = match claim.provenance {
         // The owner asserted these directly (user_assertion) or they were
         // mechanically verified (mechanical) — human-authored origin.
-        Provenance::UserAssertion { .. } | Provenance::Mechanical { .. } => OriginClass::HumanAuthored,
+        Provenance::UserAssertion { .. } | Provenance::Mechanical { .. } => {
+            OriginClass::HumanAuthored
+        }
         // Evidence ingest (external source) and inference (AI worker) are
         // agent-proposed, even after confirmation.
         Provenance::Evidence { .. } | Provenance::Inference { .. } => OriginClass::AgentProposed,
@@ -4108,7 +4112,8 @@ fn finish_confirmation(
     // same confirm transaction so the claim_status row is never written
     // without an entity_id. This is the point where a confirmed claim becomes
     // bound to a stable UUIDv7 identity (ADR Decision 3, Task 2.2).
-    let entity_id = resolve_or_create_entity_in_tx(transaction, &domain, &subject, identity.event_seq)?;
+    let entity_id =
+        resolve_or_create_entity_in_tx(transaction, &domain, &subject, identity.event_seq)?;
     let confirmation = ConfirmationObject {
         kind: "claim_confirmation".to_owned(),
         claim: ClaimRecord {
@@ -4191,7 +4196,14 @@ fn resolve_or_create_entity_in_tx(
             params![entity_id.to_string(), domain, subject, now_rfc3339()],
         )
         .map_err(database_error)?;
-    insert_alias(connection, domain, subject, entity_id, "canonical", event_seq)?;
+    insert_alias(
+        connection,
+        domain,
+        subject,
+        entity_id,
+        "canonical",
+        event_seq,
+    )?;
     Ok(entity_id)
 }
 

@@ -277,7 +277,10 @@ fn generated_page_type_reflects_claim_kind_not_a_hardcoded_entity() {
         page_type, "entity",
         "preference claim must not collapse to the generic entity type"
     );
-    assert!(!page_type.is_empty(), "type must be derived from claim_kind");
+    assert!(
+        !page_type.is_empty(),
+        "type must be derived from claim_kind"
+    );
 }
 
 /// `ClaimView` exposes `origin` and `entity_id` so projection adapters don't
@@ -328,7 +331,11 @@ fn hand_editing_a_generated_page_does_not_survive_the_next_rebuild() {
     // Tamper with a generated page — this must NOT become semantic state.
     let claims_dir = generated_root.join("claims");
     let tampered = claims_dir.join("__tamper.md");
-    std::fs::write(&tampered, "---\ntitle: \"INJECTED\"\n---\n\nmalicious hand edit").unwrap();
+    std::fs::write(
+        &tampered,
+        "---\ntitle: \"INJECTED\"\n---\n\nmalicious hand edit",
+    )
+    .unwrap();
 
     let second = rebuild_projection(
         &store,

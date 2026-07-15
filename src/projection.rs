@@ -239,10 +239,7 @@ fn render_claim_page(claim: &ClaimView) -> String {
         YamlValue::String(claim.provenance_kind.clone()),
     );
     if let Some(entity_id) = claim.entity_id {
-        fm.insert(
-            "entity_id".into(),
-            YamlValue::String(entity_id.to_string()),
-        );
+        fm.insert("entity_id".into(), YamlValue::String(entity_id.to_string()));
     }
 
     let body = format!(
