@@ -1,6 +1,6 @@
 # Task 2.1 — Projection Adapters Report
 
-Status: **awaiting Independent Validator re-verification of fix round 2**. RED `d031110`, GREEN `715f780`, fix round 1 `a7a97b7`, fix round 2 `ac181f8` on branch `vnext/phase-0`.
+Status: **PASS** — Independent Validator confirmed at HEAD `2258cc8` on branch `vnext/phase-0` (RED `d031110`, GREEN `715f780`, fix round 1 `a7a97b7`, fix round 2 `ac181f8`, docs `2258cc8`), after a first pass returned 2 MEDIUM findings (closed in fix round 2) and 5 LOW/INFO findings (4 deferred with recorded reasoning, 1 fixed as a free fail-safe). The validator independently re-ran every gate and re-read every changed file for the re-verification pass rather than trusting the reported numbers, and returned a final **PASS** with 0 CRITICAL/HIGH/MEDIUM open. Clear to close Task 2.1.
 
 ## Fix round 2 — Independent Validator findings closed
 
