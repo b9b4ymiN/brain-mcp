@@ -390,6 +390,37 @@ pub struct CurrentClaims {
     pub past: Vec<ClaimView>,
 }
 
+/// Result of `purge_preview`: the caller must echo `preview_hash` and
+/// `nonce` back to `purge_execute` before `expires_at` (ADR Decision 7).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PurgePreview {
+    pub preview_hash: String,
+    pub nonce: String,
+    pub expires_at: DateTime<Utc>,
+    pub targets: Vec<String>,
+}
+
+/// Current state/result of a hard-purge saga. `state` is one of
+/// `requested`, `registry_denied`, `key_revoked`, `live_deleted`,
+/// `projections_cleaned`, `retention_pending`, or `completed`; only a
+/// `completed` receipt carries a `composite_checksum`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PurgeReceipt {
+    pub purge_id: Uuid,
+    pub state: String,
+    pub registry_epoch: Option<u64>,
+    pub new_backup_path: Option<String>,
+    pub composite_checksum: Option<String>,
+}
+
+struct PurgeSagaRow {
+    state: String,
+    targets: Vec<String>,
+    registry_epoch: Option<u64>,
+    new_backup_path: Option<String>,
+    composite_checksum: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectionState {
     pub event_count: usize,
@@ -990,6 +1021,16 @@ impl SemanticStore {
                 fs::copy(&path, target_shard.join(file_name)).map_err(io_error)?;
             }
         }
+        // Recorded in THIS store's own database (not the backup copy) so a
+        // future hard-purge saga's retention_pending step knows which
+        // backups it made and may still be able to decrypt the target.
+        let record_connection = open_connection(&self.root)?;
+        record_connection
+            .execute(
+                "INSERT INTO purge_backup_sets(backup_path,created_at,invalidated_at) VALUES (?1,?2,NULL)",
+                params![target.to_string_lossy(), self.clock.now().to_rfc3339()],
+            )
+            .map_err(database_error)?;
         Ok(())
     }
 
@@ -1980,6 +2021,10 @@ impl SemanticStore {
                 "purge registry requires at least 2 configured replication targets".to_owned(),
             ));
         }
+        let mut denied_ids: Vec<String> = ids.to_vec();
+        denied_ids.sort();
+        denied_ids.dedup();
+
         let _maintenance = self.coordinator.maintenance.read();
         let _writer = self.coordinator.writer.lock();
         let mut connection = open_connection(&self.root)?;
@@ -1987,19 +2032,31 @@ impl SemanticStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(database_error)?;
         let head = local_registry_head(&transaction)?;
-        let next_epoch = head.as_ref().map_or(1, |entry| entry.epoch + 1);
-        let prior_hash = head.map(|entry| entry.entry_hash);
-        let mut denied_ids: Vec<String> = ids.to_vec();
-        denied_ids.sort();
-        denied_ids.dedup();
-        let entry_hash = registry_entry_hash(next_epoch, &denied_ids, &prior_hash)?;
-        let entry = RegistryEntryFile {
-            epoch: next_epoch,
-            denied_ids,
-            entry_hash,
-            prior_entry_hash: prior_hash,
+        // Idempotent retry: if the current head already denies exactly this
+        // normalized batch, this call is a repeat of the immediately
+        // preceding one (e.g. a purge saga step retrying replication after a
+        // quorum shortfall) -- reuse that entry instead of minting a new
+        // epoch for the same batch. A batch that differs even partially
+        // from the head (a distinct call, interleaved with another) still
+        // gets its own fresh epoch below.
+        let entry = if head
+            .as_ref()
+            .is_some_and(|entry| entry.denied_ids == denied_ids)
+        {
+            head.expect("checked Some above")
+        } else {
+            let next_epoch = head.as_ref().map_or(1, |entry| entry.epoch + 1);
+            let prior_hash = head.map(|entry| entry.entry_hash);
+            let entry_hash = registry_entry_hash(next_epoch, &denied_ids, &prior_hash)?;
+            let fresh = RegistryEntryFile {
+                epoch: next_epoch,
+                denied_ids,
+                entry_hash,
+                prior_entry_hash: prior_hash,
+            };
+            insert_registry_entry(&transaction, &fresh)?;
+            fresh
         };
-        insert_registry_entry(&transaction, &entry)?;
         transaction.commit().map_err(database_error)?;
 
         let quorum = quorum_needed(self.purge_registry_targets.len());
@@ -2013,10 +2070,11 @@ impl SemanticStore {
         }
         if acknowledged < quorum {
             return Err(SemanticError::RegistryQuorumFailed(format!(
-                "only {acknowledged} of {quorum} required replication targets acknowledged epoch {next_epoch}"
+                "only {acknowledged} of {quorum} required replication targets acknowledged epoch {}",
+                entry.epoch
             )));
         }
-        Ok(next_epoch)
+        Ok(entry.epoch)
     }
 
     /// Re-checks the configured replication targets and, if a reachable
@@ -2093,6 +2151,430 @@ impl SemanticStore {
         set_registry_sealed(&transaction, false)?;
         transaction.commit().map_err(database_error)?;
         Ok(())
+    }
+
+    /// Previews a hard purge of `targets` (object IDs), returning a
+    /// `preview_hash` the caller must echo back to `purge_execute` and a
+    /// single-use nonce bound to that hash, expiring in 60 seconds (ADR
+    /// Decision 7). Claim-ID-to-object-ID resolution stays the caller's
+    /// job in this phase, matching Task 1.2's documented context-dimension
+    /// simplification -- both are deferred scope, not silently dropped.
+    pub fn purge_preview(&self, targets: &[String]) -> Result<PurgePreview> {
+        if targets.is_empty() {
+            return Err(SemanticError::InvalidClaim(
+                "purge preview requires at least one target".to_owned(),
+            ));
+        }
+        let mut sorted = targets.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        let preview_hash = sha256(&canonical_bytes(&sorted)?);
+        let nonce = Uuid::now_v7().to_string();
+        let expires_at = self.clock.now() + chrono::Duration::seconds(60);
+        let targets_json = serde_json::to_string(&sorted).map_err(serialization_error)?;
+
+        let _maintenance = self.coordinator.maintenance.read();
+        let _writer = self.coordinator.writer.lock();
+        let connection = open_connection(&self.root)?;
+        connection
+            .execute(
+                "INSERT INTO purge_nonces(nonce,preview_hash,targets_json,expires_at,used_at) VALUES (?1,?2,?3,?4,NULL)",
+                params![nonce, preview_hash, targets_json, expires_at.to_rfc3339()],
+            )
+            .map_err(database_error)?;
+
+        Ok(PurgePreview {
+            preview_hash,
+            nonce,
+            expires_at,
+            targets: sorted,
+        })
+    }
+
+    /// Authorizes and starts (or idempotently resumes/replays) a hard-purge
+    /// saga bound to a `purge_preview` result. Requires the `purge`
+    /// capability. Same `(client_id, operation_id)` with the same
+    /// `preview_hash` resumes/replays; a different `preview_hash` under the
+    /// same `operation_id` is `IdempotencyConflict`. The nonce is validated
+    /// and consumed only when a saga is first created -- resuming an
+    /// already-started saga (including after a crash) needs no nonce, since
+    /// authorization already happened at creation.
+    pub fn purge_execute(
+        &self,
+        context: &TrustedContext,
+        operation_id: &str,
+        preview_hash: &str,
+        nonce: &str,
+    ) -> Result<PurgeReceipt> {
+        validate_context(&self.marker, context)?;
+        validate_operation_id(operation_id)?;
+        let request_hash = sha256(preview_hash.as_bytes());
+
+        let purge_id = {
+            let _maintenance = self.coordinator.maintenance.read();
+            let _writer = self.coordinator.writer.lock();
+            let mut connection = open_connection(&self.root)?;
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(database_error)?;
+
+            let registered: Option<i64> = transaction
+                .query_row(
+                    "SELECT 1 FROM clients WHERE client_id=?1",
+                    [context.client_id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(database_error)?;
+            if registered.is_none() {
+                return Err(SemanticError::MissingDependency(
+                    "client is not registered for this store".to_owned(),
+                ));
+            }
+            let has_capability: Option<i64> = transaction
+                .query_row(
+                    "SELECT 1 FROM client_capabilities WHERE client_id=?1 AND capability='purge'",
+                    [context.client_id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(database_error)?;
+            if has_capability.is_none() {
+                return Err(SemanticError::CapabilityDenied(
+                    "client lacks required capability: purge".to_owned(),
+                ));
+            }
+
+            let existing: Option<(String, String)> = transaction
+                .query_row(
+                    "SELECT purge_id, request_hash FROM purge_sagas WHERE client_id=?1 AND operation_id=?2",
+                    params![context.client_id.to_string(), operation_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(database_error)?;
+
+            if let Some((purge_id, stored_request_hash)) = existing {
+                if stored_request_hash != request_hash {
+                    return Err(SemanticError::IdempotencyConflict);
+                }
+                transaction.commit().map_err(database_error)?;
+                Uuid::parse_str(&purge_id)
+                    .map_err(|_| SemanticError::CorruptLedger("invalid purge_id".to_owned()))?
+            } else {
+                let nonce_row: Option<(String, String, String, Option<String>)> = transaction
+                    .query_row(
+                        "SELECT preview_hash, targets_json, expires_at, used_at FROM purge_nonces WHERE nonce=?1",
+                        [nonce],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .optional()
+                    .map_err(database_error)?;
+                let Some((stored_preview_hash, targets_json, expires_at, used_at)) = nonce_row
+                else {
+                    return Err(SemanticError::InvalidClaim(
+                        "unknown purge nonce".to_owned(),
+                    ));
+                };
+                if used_at.is_some() {
+                    return Err(SemanticError::InvalidClaim(
+                        "purge nonce already used".to_owned(),
+                    ));
+                }
+                if stored_preview_hash != preview_hash {
+                    return Err(SemanticError::InvalidClaim(
+                        "preview_hash does not match nonce".to_owned(),
+                    ));
+                }
+                let expires_at: DateTime<Utc> = expires_at
+                    .parse()
+                    .map_err(|_| SemanticError::CorruptLedger("invalid nonce expiry".to_owned()))?;
+                if self.clock.now() >= expires_at {
+                    return Err(SemanticError::InvalidClaim(
+                        "purge nonce expired".to_owned(),
+                    ));
+                }
+                transaction
+                    .execute(
+                        "UPDATE purge_nonces SET used_at=?1 WHERE nonce=?2",
+                        params![self.clock.now().to_rfc3339(), nonce],
+                    )
+                    .map_err(database_error)?;
+
+                let purge_id = Uuid::now_v7();
+                transaction
+                    .execute(
+                        "INSERT INTO purge_sagas(purge_id,client_id,operation_id,request_hash,targets_json,preview_hash,state,created_at) VALUES (?1,?2,?3,?4,?5,?6,'requested',?7)",
+                        params![
+                            purge_id.to_string(),
+                            context.client_id.to_string(),
+                            operation_id,
+                            request_hash,
+                            targets_json,
+                            preview_hash,
+                            self.clock.now().to_rfc3339()
+                        ],
+                    )
+                    .map_err(database_error)?;
+                transaction.commit().map_err(database_error)?;
+                crash_at("purge_after_requested");
+                purge_id
+            }
+        };
+
+        self.run_purge_saga(purge_id)
+    }
+
+    /// Continues an in-flight hard-purge saga from its persisted state.
+    /// Needs no capability/nonce: authorization already happened when the
+    /// saga was created by `purge_execute`. Used to recover after a crash,
+    /// or to retry a step that previously failed (e.g. a registry
+    /// replication quorum shortfall).
+    pub fn purge_resume(&self, purge_id: Uuid) -> Result<PurgeReceipt> {
+        self.run_purge_saga(purge_id)
+    }
+
+    /// Current receipt/state for a purge saga, without advancing it.
+    pub fn purge_status(&self, purge_id: Uuid) -> Result<PurgeReceipt> {
+        self.purge_receipt(purge_id)
+    }
+
+    fn run_purge_saga(&self, purge_id: Uuid) -> Result<PurgeReceipt> {
+        loop {
+            let saga = self.load_purge_saga(purge_id)?;
+            match saga.state.as_str() {
+                "requested" => {
+                    self.advance_purge_registry_denied(purge_id, &saga.targets)?;
+                    crash_at("purge_after_registry_denied");
+                }
+                "registry_denied" => {
+                    self.advance_purge_key_revoked(purge_id, &saga.targets)?;
+                    crash_at("purge_after_key_revoked");
+                }
+                "key_revoked" => {
+                    self.advance_purge_live_deleted(purge_id, &saga.targets)?;
+                    crash_at("purge_after_live_deleted");
+                }
+                "live_deleted" => {
+                    self.advance_purge_projections_cleaned(purge_id, &saga.targets)?;
+                    crash_at("purge_after_projections_cleaned");
+                }
+                "projections_cleaned" => {
+                    self.advance_purge_retention_pending(purge_id)?;
+                    crash_at("purge_after_retention_pending");
+                }
+                "retention_pending" => {
+                    self.advance_purge_completed(purge_id)?;
+                    crash_at("purge_after_completed");
+                }
+                "completed" => return self.purge_receipt(purge_id),
+                other => {
+                    return Err(SemanticError::CorruptLedger(format!(
+                        "unknown purge saga state: {other}"
+                    )));
+                }
+            }
+        }
+    }
+
+    fn load_purge_saga(&self, purge_id: Uuid) -> Result<PurgeSagaRow> {
+        let connection = open_connection(&self.root)?;
+        let row: (String, String, Option<i64>, Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT state, targets_json, registry_epoch, new_backup_path, composite_checksum FROM purge_sagas WHERE purge_id=?1",
+                [purge_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .map_err(database_error)?;
+        let (state, targets_json, registry_epoch, new_backup_path, composite_checksum) = row;
+        let targets: Vec<String> =
+            serde_json::from_str(&targets_json).map_err(serialization_error)?;
+        Ok(PurgeSagaRow {
+            state,
+            targets,
+            registry_epoch: registry_epoch.map(|value| value as u64),
+            new_backup_path,
+            composite_checksum,
+        })
+    }
+
+    fn set_purge_state(&self, purge_id: Uuid, state: &str) -> Result<()> {
+        let connection = open_connection(&self.root)?;
+        connection
+            .execute(
+                "UPDATE purge_sagas SET state=?1 WHERE purge_id=?2",
+                params![state, purge_id.to_string()],
+            )
+            .map_err(database_error)?;
+        Ok(())
+    }
+
+    fn advance_purge_registry_denied(&self, purge_id: Uuid, targets: &[String]) -> Result<()> {
+        let epoch = self.append_registry_denial(targets)?;
+        let connection = open_connection(&self.root)?;
+        connection
+            .execute(
+                "UPDATE purge_sagas SET state='registry_denied', registry_epoch=?1 WHERE purge_id=?2",
+                params![epoch as i64, purge_id.to_string()],
+            )
+            .map_err(database_error)?;
+        Ok(())
+    }
+
+    fn advance_purge_key_revoked(&self, purge_id: Uuid, targets: &[String]) -> Result<()> {
+        for target in targets {
+            self.destroy_wrapped_key(target)?;
+        }
+        self.rotate_epoch_and_rewrap()?;
+        self.set_purge_state(purge_id, "key_revoked")
+    }
+
+    fn advance_purge_live_deleted(&self, purge_id: Uuid, targets: &[String]) -> Result<()> {
+        for target in targets {
+            let path = object_path(&self.root, target)?;
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(io_error(error)),
+            }
+        }
+        self.set_purge_state(purge_id, "live_deleted")
+    }
+
+    /// Phase 1 has no wired projections (Tantivy/Petgraph/generated
+    /// Markdown land in Phase 2 Task 2.1), so there is nothing to rewrite
+    /// or rebuild yet -- but this step still performs a real absence proof
+    /// rather than a no-op: every target's on-disk ciphertext, wrapped
+    /// key, and denial record are independently re-checked. A stray
+    /// leftover copy (e.g. from a crash before `live_deleted` completed,
+    /// or a hand-restored file) fails this step closed instead of silently
+    /// advancing past it.
+    fn advance_purge_projections_cleaned(&self, purge_id: Uuid, targets: &[String]) -> Result<()> {
+        let connection = open_connection(&self.root)?;
+        for target in targets {
+            let path = object_path(&self.root, target)?;
+            if path.exists() {
+                return Err(SemanticError::CorruptLedger(format!(
+                    "absence proof failed: object file for {target} still exists"
+                )));
+            }
+            let has_key: Option<i64> = connection
+                .query_row(
+                    "SELECT 1 FROM wrapped_keys WHERE object_id=?1",
+                    [target],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(database_error)?;
+            if has_key.is_some() {
+                return Err(SemanticError::CorruptLedger(format!(
+                    "absence proof failed: wrapped key for {target} still exists"
+                )));
+            }
+            let denied: Option<i64> = connection
+                .query_row(
+                    "SELECT 1 FROM purge_denied_ids WHERE denied_id=?1",
+                    [target],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(database_error)?;
+            if denied.is_none() {
+                return Err(SemanticError::CorruptLedger(format!(
+                    "absence proof failed: {target} is not recorded in the purge registry"
+                )));
+            }
+        }
+        drop(connection);
+        self.set_purge_state(purge_id, "projections_cleaned")
+    }
+
+    /// Invalidates (deletes) every backup this store made that might still
+    /// carry a wrapped key for the purge's targets, then creates and
+    /// independently verifies one fresh backup -- taken after key_revoked
+    /// and live_deleted, so it naturally carries neither the destroyed key
+    /// nor the deleted object. Only backups this store itself created and
+    /// tracks are addressed; an externally copied backup is an operator
+    /// responsibility, matching the ADR's own backup model.
+    fn advance_purge_retention_pending(&self, purge_id: Uuid) -> Result<()> {
+        let paths: Vec<String> = {
+            let connection = open_connection(&self.root)?;
+            let mut statement = connection
+                .prepare("SELECT backup_path FROM purge_backup_sets WHERE invalidated_at IS NULL")
+                .map_err(database_error)?;
+            statement
+                .query_map([], |row| row.get(0))
+                .map_err(database_error)?
+                .collect::<std::result::Result<Vec<String>, _>>()
+                .map_err(database_error)?
+        };
+        for path in &paths {
+            let path_buf = PathBuf::from(path);
+            if path_buf.exists() {
+                fs::remove_dir_all(&path_buf).map_err(io_error)?;
+            }
+            let connection = open_connection(&self.root)?;
+            connection
+                .execute(
+                    "UPDATE purge_backup_sets SET invalidated_at=?1 WHERE backup_path=?2",
+                    params![self.clock.now().to_rfc3339(), path],
+                )
+                .map_err(database_error)?;
+        }
+
+        let backup_path =
+            PathBuf::from(&self.marker.allowed_parent).join(format!("purge-backup-{purge_id}"));
+        self.backup_consistent(&backup_path)?;
+        let verify_config = SemanticConfig::enabled_for(&self.marker.allowed_parent);
+        let verify_store = SemanticStore::open(&backup_path, verify_config)?;
+        drop(verify_store);
+
+        let connection = open_connection(&self.root)?;
+        connection
+            .execute(
+                "UPDATE purge_sagas SET state='retention_pending', new_backup_path=?1 WHERE purge_id=?2",
+                params![backup_path.to_string_lossy(), purge_id.to_string()],
+            )
+            .map_err(database_error)?;
+        Ok(())
+    }
+
+    fn advance_purge_completed(&self, purge_id: Uuid) -> Result<()> {
+        let checksum = self.composite_checksum()?;
+        let connection = open_connection(&self.root)?;
+        connection
+            .execute(
+                "UPDATE purge_sagas SET state='completed', composite_checksum=?1, completed_at=?2 WHERE purge_id=?3",
+                params![checksum, self.clock.now().to_rfc3339(), purge_id.to_string()],
+            )
+            .map_err(database_error)?;
+        Ok(())
+    }
+
+    fn composite_checksum(&self) -> Result<String> {
+        let connection = open_connection(&self.root)?;
+        let ledger_head: i64 = connection
+            .query_row(
+                "SELECT COALESCE(MAX(event_seq),0) FROM events WHERE owner_id=?1",
+                [self.marker.owner_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(database_error)?;
+        let purge_epoch = local_registry_head(&connection)?.map_or(0, |entry| entry.epoch);
+        Ok(sha256(
+            format!("{ledger_head}:{purge_epoch}:{}", self.marker.schema_version).as_bytes(),
+        ))
+    }
+
+    fn purge_receipt(&self, purge_id: Uuid) -> Result<PurgeReceipt> {
+        let saga = self.load_purge_saga(purge_id)?;
+        Ok(PurgeReceipt {
+            purge_id,
+            state: saga.state,
+            registry_epoch: saga.registry_epoch,
+            new_backup_path: saga.new_backup_path,
+            composite_checksum: saga.composite_checksum,
+        })
     }
 }
 
@@ -2404,6 +2886,42 @@ fn initialize_schema(
              CREATE TABLE purge_denied_ids(
                denied_id TEXT PRIMARY KEY,
                purge_epoch INTEGER NOT NULL
+             );
+             -- Hard-purge saga state machine (ADR Decision 7): one row per
+             -- purge attempt, keyed for idempotent replay like the
+             -- ledger's own `operations` table. `state` advances through
+             -- requested -> registry_denied -> key_revoked -> live_deleted
+             -- -> projections_cleaned -> retention_pending -> completed.
+             CREATE TABLE purge_sagas(
+               purge_id TEXT PRIMARY KEY,
+               client_id TEXT NOT NULL,
+               operation_id TEXT NOT NULL,
+               request_hash TEXT NOT NULL,
+               targets_json TEXT NOT NULL,
+               preview_hash TEXT NOT NULL,
+               state TEXT NOT NULL,
+               registry_epoch INTEGER,
+               new_backup_path TEXT,
+               composite_checksum TEXT,
+               created_at TEXT NOT NULL,
+               completed_at TEXT,
+               UNIQUE(client_id,operation_id)
+             );
+             -- Single-use, 60-second preview-hash-bound confirmation nonces.
+             CREATE TABLE purge_nonces(
+               nonce TEXT PRIMARY KEY,
+               preview_hash TEXT NOT NULL,
+               targets_json TEXT NOT NULL,
+               expires_at TEXT NOT NULL,
+               used_at TEXT
+             );
+             -- Backups this store created via backup_consistent, so a
+             -- purge's retention_pending step knows which ones might still
+             -- carry a wrapped key for a just-purged object.
+             CREATE TABLE purge_backup_sets(
+               backup_path TEXT PRIMARY KEY,
+               created_at TEXT NOT NULL,
+               invalidated_at TEXT
              );
              COMMIT;",
         )
