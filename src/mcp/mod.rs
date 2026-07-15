@@ -45,6 +45,16 @@ impl McpServer {
         }
     }
 
+    /// Return a strong reference to the shared engine (Task 3.2). Cloning an
+    /// `McpServer` clones the `Arc`, not the engine — so every session and
+    /// every reconnect observes the same engine state. This accessor makes
+    /// that invariant testable: two server clones must return `Arc` pointers
+    /// to the same underlying `WikiEngine`. (Named `shared_engine` to avoid
+    /// clashing with the existing `engine()` read-guard accessor.)
+    pub fn shared_engine(&self) -> Arc<WikiEngine> {
+        Arc::clone(&self.manager)
+    }
+
     /// Create a new `McpServer` with web-refresh notifications enabled.
     pub fn with_web_refresh(
         manager: Arc<WikiEngine>,

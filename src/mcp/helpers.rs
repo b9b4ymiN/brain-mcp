@@ -133,6 +133,40 @@ pub fn err_text(msg: String) -> Vec<Content> {
     vec![Content::text(format!("error: {msg}"))]
 }
 
+// ── Idempotency + needs-input (Task 3.2) ──────────────────────────────────────
+
+/// Extract a client-supplied `operation_id` from tool arguments (Task 3.2
+/// DoD bullet 2 — disconnect/retry must not duplicate). When a mutation tool
+/// carries `operation_id`, the underlying `SemanticStore` dedups by
+/// `(owner, client, operation_id)`, so a retried call with the same key is a
+/// no-op rather than a duplicate. Returns `None` when no key is present —
+/// read tools and non-idempotent calls proceed normally.
+pub fn extract_operation_id(args: &Map<String, Value>) -> Option<String> {
+    arg_str(args, "operation_id")
+}
+
+/// Build a `needs_input` result (Task 3.2 DoD bullet 3 — `needs-input`
+/// scenario). A tool that cannot proceed without clarification returns this
+/// instead of failing or hanging: `is_error == false` (it is a request for
+/// input, not an error), structured content carries `needs_input`/`prompt`/
+/// `request_id` so a client UI can render an input affordance, and a text
+/// fallback is present for non-structured clients.
+pub fn needs_input(prompt: &str, request_id: &str) -> ToolResult {
+    let structured = serde_json::json!({
+        "needs_input": true,
+        "prompt": prompt,
+        "request_id": request_id,
+    });
+    let text = format!("needs input ({request_id}): {prompt}");
+    ToolResult {
+        content: vec![Content::text(text)],
+        is_error: false,
+        notify_uris: vec![],
+        notify_resources_changed: false,
+        structured_content: Some(structured),
+    }
+}
+
 // ── Argument helpers ──────────────────────────────────────────────────────────
 
 /// Extract an optional string argument by key from tool call arguments.
