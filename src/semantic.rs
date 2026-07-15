@@ -1759,6 +1759,114 @@ impl SemanticStore {
         Ok(result)
     }
 
+    /// Unscoped variant of [`Self::claims_current`]: buckets every confirmed
+    /// claim across every `(domain, subject, predicate)` scope into
+    /// `active`/`future`/`past` as of `ledger_head`/`world_time`. Used by
+    /// external projection adapters (Tantivy/Petgraph/generated Markdown,
+    /// Task 2.1) that need to enumerate the whole current claim set rather
+    /// than look up one scope at a time.
+    pub fn all_claims_current(
+        &self,
+        ledger_head: u64,
+        world_time: DateTime<Utc>,
+    ) -> Result<CurrentClaims> {
+        // Same TOCTOU-safe single-transaction shape as claims_current: scope
+        // resolution and plaintext materialization happen in one explicit
+        // read transaction so a concurrent registry_denied commit cannot
+        // land in between.
+        let mut raw_connection = open_connection(&self.root)?;
+        let transaction = raw_connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(database_error)?;
+        let connection = &transaction;
+        let mut statement = connection
+            .prepare(
+                "SELECT claim_id, confirmed_event_seq, superseded_by_event_seq, retracted_at_event_seq
+                 FROM claim_status
+                 WHERE confirmed_event_seq<=?1",
+            )
+            .map_err(database_error)?;
+        let rows = statement
+            .query_map(params![ledger_head as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            })
+            .map_err(database_error)?;
+
+        let mut result = CurrentClaims::default();
+        for row in rows {
+            let (claim_id, confirmed_event_seq, superseded_by, retracted_at) =
+                row.map_err(database_error)?;
+            let confirmed_event_seq = u64::try_from(confirmed_event_seq)
+                .map_err(|_| SemanticError::CorruptLedger("negative event sequence".to_owned()))?;
+            let is_superseded_as_of = superseded_by
+                .map(|seq| seq as u64 <= ledger_head)
+                .unwrap_or(false);
+            let is_retracted_as_of = retracted_at
+                .map(|seq| seq as u64 <= ledger_head)
+                .unwrap_or(false);
+
+            let object_id: String = connection
+                .query_row(
+                    "SELECT object_id FROM events WHERE owner_id=?1 AND event_seq=?2",
+                    params![self.marker.owner_id.to_string(), confirmed_event_seq as i64],
+                    |row| row.get(0),
+                )
+                .map_err(database_error)?;
+            let object: ConfirmationObject =
+                serde_json::from_slice(&decrypt_object(connection, &self.root, &object_id)?)
+                    .map_err(serialization_error)?;
+            let claim = object.claim;
+            if claim.claim_id.to_string() != claim_id {
+                return Err(SemanticError::CorruptLedger(
+                    "claim_status row does not match confirmation event".to_owned(),
+                ));
+            }
+            let view = ClaimView {
+                claim_id: claim.claim_id,
+                proposal_id: claim.proposal_id,
+                subject: claim.subject,
+                predicate: claim.predicate,
+                value: claim.value,
+                claim_kind: claim.claim_kind,
+                status: claim.status,
+                domain: claim.domain,
+                confidence_basis_points: claim.confidence_basis_points,
+                privacy_label: claim.privacy_label,
+                valid_from: claim.valid_from,
+                valid_to: claim.valid_to,
+                confirmed_event_seq,
+            };
+
+            if is_superseded_as_of || is_retracted_as_of {
+                result.past.push(view);
+                continue;
+            }
+            let started = view.valid_from.is_none_or(|from| from <= world_time);
+            let ended = view.valid_to.is_some_and(|to| world_time >= to);
+            if ended {
+                result.past.push(view);
+            } else if started {
+                result.active.push(view);
+            } else {
+                result.future.push(view);
+            }
+        }
+        Ok(result)
+    }
+
+    /// The schema version this store was created with (currently always 1 —
+    /// no migration path exists yet). Exposed for callers that need to
+    /// reproduce the `ledger_head:purge_epoch:schema_version` composite
+    /// checksum identity outside the purge saga (e.g. projection adapters).
+    pub fn schema_version(&self) -> u8 {
+        self.marker.schema_version
+    }
+
     pub fn recover(&self, _request: ManualRecovery) -> Result<()> {
         #[cfg(feature = "semantic-test-failpoints")]
         self.coordinator

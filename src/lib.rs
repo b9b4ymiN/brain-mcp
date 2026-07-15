@@ -32,6 +32,9 @@ pub mod markdown;
 pub mod mcp;
 /// High-level operations called by CLI and server handlers.
 pub mod ops;
+/// Projection adapters — Tantivy/Petgraph/generated Markdown built from the
+/// canonical semantic layers (event ledger + claim snapshots).
+pub mod projection;
 /// Full-text BM25 search and paginated list operations.
 pub mod search;
 /// Feature-flagged semantic event ledger and application-core boundary.
