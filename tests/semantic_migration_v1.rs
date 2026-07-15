@@ -1,0 +1,361 @@
+//! Task 2.3 — Backfill and cutover (RED stage).
+//!
+//! Encodes GOAL-vNext §13 Task 2.3 DoD:
+//! - migration report แสดง migrated/skipped/ambiguous/error ทุก record
+//! - LLM-backfilled claims เริ่มเป็น proposed ไม่ใช่ confirmed
+//! - old/new read parity ผ่าน acceptance corpus ก่อน cutover
+//! - rollback และ rerun migration idempotent
+//!
+//! Task 2.2 left `claim_status.entity_id` nullable precisely so a legacy
+//! store (or a row that lost its entity binding) could be backfilled without
+//! a destructive migration. This file proves that backfill path.
+
+use std::path::Path;
+
+use chrono::Utc;
+use llm_wiki::semantic::{
+    CaptureCommand, ClaimDraft, ConfirmCommand, PrivacyLabel, ProposeCommand, SemanticConfig,
+    SemanticError, SemanticStore, TrustedContext,
+};
+use serde_json::json;
+use tempfile::TempDir;
+
+fn enabled(parent: &Path) -> SemanticConfig {
+    SemanticConfig::enabled_for(parent)
+}
+
+fn fixture() -> (TempDir, SemanticStore, TrustedContext) {
+    let parent = tempfile::tempdir().expect("fixture parent");
+    let root = parent.path().join("semantic-store");
+    let (store, _admin) = SemanticStore::create(&root, enabled(parent.path())).expect("create");
+    let context = store.trusted_context();
+    (parent, store, context)
+}
+
+fn capture(operation_id: &str, bytes: &[u8]) -> CaptureCommand {
+    CaptureCommand {
+        operation_id: operation_id.to_owned(),
+        bytes: bytes.to_vec(),
+        media_type: "text/plain; charset=utf-8".to_owned(),
+    }
+}
+
+fn stock_draft(subject: &str, value: i64) -> ClaimDraft {
+    ClaimDraft {
+        subject: subject.to_owned(),
+        predicate: "target_price".to_owned(),
+        value: json!(value),
+        claim_kind: "external_fact".to_owned(),
+        domain: "stocks".to_owned(),
+        confidence_basis_points: 8_000,
+        privacy_label: PrivacyLabel::LocalOnly,
+        valid_from: None,
+        valid_to: None,
+    }
+}
+
+/// Confirm one evidence-backed claim, returning the confirm operation id.
+fn confirm_evidence(
+    store: &SemanticStore,
+    context: &TrustedContext,
+    tag: &str,
+    subject: &str,
+    value: i64,
+) -> String {
+    store
+        .capture(
+            context,
+            capture(&format!("cap-{tag}"), format!("evidence {tag}").as_bytes()),
+        )
+        .unwrap();
+    store
+        .propose(
+            context,
+            ProposeCommand {
+                operation_id: format!("prop-{tag}"),
+                capture_operation_id: format!("cap-{tag}"),
+                draft: stock_draft(subject, value),
+            },
+        )
+        .unwrap();
+    let confirm_op = format!("confirm-{tag}");
+    store
+        .confirm(
+            context,
+            ConfirmCommand {
+                operation_id: confirm_op.clone(),
+                proposal_operation_id: format!("prop-{tag}"),
+            },
+        )
+        .unwrap();
+    confirm_op
+}
+
+// =============================================================================
+// DoD bullet 1 — migration report classifies every record
+// =============================================================================
+
+/// A dry run over a store with two confirmed claims (both already bound to
+/// entities by Task 2.2's confirm path) reports zero migrations needed and
+/// classifies both rows as `skipped` (already have an entity_id). Nothing is
+/// mutated.
+#[test]
+fn dry_run_classifies_already_bound_rows_as_skipped() {
+    let (_parent, store, context) = fixture();
+    confirm_evidence(&store, &context, "a", "GULF", 58);
+    confirm_evidence(&store, &context, "b", "PTT", 160);
+
+    let report = store
+        .backfill_entity_ids(&context, true)
+        .expect("dry run backfill");
+
+    assert_eq!(report.migrated, 0, "dry run must not migrate");
+    assert_eq!(report.skipped, 2, "both rows already have entity_id");
+    assert_eq!(report.ambiguous, 0);
+    assert_eq!(report.error, 0);
+    assert_eq!(report.records.len(), 2);
+    for record in &report.records {
+        assert_eq!(
+            record.outcome, "skipped",
+            "every already-bound row is skipped"
+        );
+    }
+}
+
+/// A store with one legacy row whose `entity_id` is NULL (simulated by
+/// clearing it) is migrated on apply, and the report records it as
+/// `migrated`. The row ends up with a non-null entity_id afterwards.
+#[test]
+fn apply_migrates_legacy_null_entity_id_rows() {
+    let (_parent, store, context) = fixture();
+    confirm_evidence(&store, &context, "a", "GULF", 58);
+
+    // Simulate a legacy row by nulling its entity_id directly.
+    store.null_entity_id_for_test("stocks", "GULF", "target_price");
+
+    let report = store
+        .backfill_entity_ids(&context, false)
+        .expect("apply backfill");
+
+    assert_eq!(report.migrated, 1);
+    assert_eq!(report.skipped, 0);
+    assert_eq!(report.error, 0);
+    assert_eq!(report.records.len(), 1);
+    assert_eq!(report.records[0].outcome, "migrated");
+
+    // The row now resolves to a real entity.
+    let view = store
+        .claims_current(
+            store.ledger_head().unwrap(),
+            Utc::now(),
+            "stocks",
+            "GULF",
+            "target_price",
+        )
+        .unwrap();
+    assert_eq!(view.active.len(), 1);
+    assert!(
+        view.active[0].entity_id.is_some(),
+        "entity_id must be populated after backfill"
+    );
+}
+
+/// A row whose subject cannot be resolved to any entity (corrupt/manual
+/// insert with no alias) is classified as `ambiguous`, not `error` — the
+/// migration does not guess, and does not abort the whole run.
+#[test]
+fn unresolvable_row_is_ambiguous_not_error() {
+    let (_parent, store, context) = fixture();
+    confirm_evidence(&store, &context, "a", "GULF", 58);
+
+    // Insert a second claim_status row with a subject that has no entity and
+    // no alias, simulating an orphan from a partial import.
+    store.insert_orphan_claim_status_for_test("stocks", "GHOST", "target_price");
+
+    let report = store
+        .backfill_entity_ids(&context, false)
+        .expect("apply backfill");
+
+    let ghost = report
+        .records
+        .iter()
+        .find(|r| r.subject == "GHOST")
+        .expect("ghost row reported");
+    assert_eq!(ghost.outcome, "ambiguous");
+    // The legitimate row still migrated/skipped fine — one bad row doesn't
+    // abort the batch.
+    assert_eq!(report.error, 0);
+}
+
+// =============================================================================
+// DoD bullet 2 — LLM-backfilled claims start as proposed
+// =============================================================================
+
+/// The backfill path only populates `entity_id` on ALREADY-confirmed claims;
+/// it never creates new confirmed claims. New LLM-derived claims must still
+/// go through `propose_inference`, which emits `claim_proposed` (status
+/// `proposed`), never `claim_confirmed`. This is the §5 Memory Policy rule
+/// "AI inference/reflection → Proposed" enforced at the API surface, and
+/// backfill does not bypass it.
+#[test]
+fn backfill_never_promotes_an_llm_claim_to_confirmed() {
+    let (_parent, store, context) = fixture();
+
+    // An LLM worker proposes an inference (no evidence → unsupported).
+    let outcome = store
+        .propose_inference(
+            &context,
+            llm_wiki::semantic::ProposeInferenceCommand {
+                operation_id: "llm-1".to_owned(),
+                evidence_capture_operation_ids: vec![],
+                method: "llm_extract".to_owned(),
+                model: Some("zai-glm".to_owned()),
+                prompt_version: Some("v1".to_owned()),
+                draft: stock_draft("GULF", 60),
+            },
+        )
+        .expect("propose_inference");
+
+    assert_eq!(outcome.event.event_type, "claim_proposed");
+
+    // The unsupported inference cannot be confirmed (TM-002 gate).
+    assert!(matches!(
+        store.confirm(
+            &context,
+            ConfirmCommand {
+                operation_id: "confirm-llm".to_owned(),
+                proposal_operation_id: "llm-1".to_owned(),
+            },
+        ),
+        Err(SemanticError::UnsupportedInference)
+    ));
+
+    // Backfill operates only on confirmed claims — the unconfirmed LLM
+    // proposal is not in claim_status at all, so it is invisible to
+    // backfill. Nothing gets promoted.
+    let report = store
+        .backfill_entity_ids(&context, false)
+        .expect("backfill");
+    assert_eq!(report.migrated, 0);
+    assert_eq!(report.skipped, 0);
+}
+
+// =============================================================================
+// DoD bullet 3 — old/new read parity
+// =============================================================================
+
+/// Read parity: the claim set returned by `all_claims_current` before and
+/// after a backfill is identical in every field EXCEPT the newly-populated
+/// `entity_id`. The bitemporal bucketing, value, subject, predicate, and
+/// provenance are unchanged — backfill is a metadata fix, not a semantic
+/// mutation.
+#[test]
+fn read_parity_holds_across_backfill() {
+    let (_parent, store, context) = fixture();
+    confirm_evidence(&store, &context, "a", "GULF", 58);
+    confirm_evidence(&store, &context, "b", "PTT", 160);
+
+    let before = store
+        .all_claims_current(store.ledger_head().unwrap(), Utc::now())
+        .unwrap();
+
+    // Wipe entity bindings to force a real migration.
+    store.null_all_entity_ids_for_test();
+    let report = store.backfill_entity_ids(&context, false).unwrap();
+    assert_eq!(report.migrated, 2);
+
+    let after = store
+        .all_claims_current(store.ledger_head().unwrap(), Utc::now())
+        .unwrap();
+
+    assert_eq!(before.active.len(), after.active.len());
+    for (b, a) in before.active.iter().zip(after.active.iter()) {
+        assert_eq!(b.claim_id, a.claim_id);
+        assert_eq!(b.subject, a.subject, "subject unchanged");
+        assert_eq!(b.predicate, a.predicate);
+        assert_eq!(b.value, a.value, "value unchanged");
+        assert_eq!(b.claim_kind, a.claim_kind);
+        assert_eq!(b.provenance_kind, a.provenance_kind);
+        assert_eq!(b.origin, a.origin);
+        // entity_id was None before (nulled) and Some after (migrated).
+        assert!(b.entity_id.is_none() || b.entity_id == a.entity_id);
+        assert!(a.entity_id.is_some(), "entity_id populated after backfill");
+    }
+}
+
+// =============================================================================
+// DoD bullet 4 — rollback + rerun idempotent
+// =============================================================================
+
+/// Rerunning backfill is idempotent: a second run finds every row already
+/// bound and reports them all as `skipped`, with zero new migrations.
+#[test]
+fn rerun_backfill_is_idempotent() {
+    let (_parent, store, context) = fixture();
+    confirm_evidence(&store, &context, "a", "GULF", 58);
+    store.null_entity_id_for_test("stocks", "GULF", "target_price");
+
+    let first = store.backfill_entity_ids(&context, false).unwrap();
+    assert_eq!(first.migrated, 1);
+
+    let second = store.backfill_entity_ids(&context, false).unwrap();
+    assert_eq!(second.migrated, 0, "second run migrates nothing");
+    assert_eq!(second.skipped, 1, "the row is now skipped");
+}
+
+/// Rollback: clearing the entity bindings back to NULL (simulating a revert
+/// of the migration) does not corrupt the store — claims remain queryable by
+/// subject string, and a fresh backfill restores the bindings. The claim
+/// payload (subject/predicate/value/provenance) is never touched by
+/// backfill, so reverting only the entity_id column is lossless.
+#[test]
+fn rollback_to_null_bindings_is_lossless_and_recoverable() {
+    let (_parent, store, context) = fixture();
+    confirm_evidence(&store, &context, "a", "GULF", 58);
+
+    store.backfill_entity_ids(&context, false).unwrap();
+    let populated = store
+        .claims_current(
+            store.ledger_head().unwrap(),
+            Utc::now(),
+            "stocks",
+            "GULF",
+            "target_price",
+        )
+        .unwrap();
+    assert!(populated.active[0].entity_id.is_some());
+
+    // "Roll back" the migration by nulling bindings again.
+    store.null_entity_id_for_test("stocks", "GULF", "target_price");
+    let rolled_back = store
+        .claims_current(
+            store.ledger_head().unwrap(),
+            Utc::now(),
+            "stocks",
+            "GULF",
+            "target_price",
+        )
+        .unwrap();
+    // Claim is still fully readable — only entity_id is None.
+    assert_eq!(rolled_back.active[0].subject, "GULF");
+    assert_eq!(rolled_back.active[0].value, json!(58));
+    assert!(rolled_back.active[0].entity_id.is_none());
+
+    // Re-running backfill recovers the binding.
+    store.backfill_entity_ids(&context, false).unwrap();
+    let recovered = store
+        .claims_current(
+            store.ledger_head().unwrap(),
+            Utc::now(),
+            "stocks",
+            "GULF",
+            "target_price",
+        )
+        .unwrap();
+    assert!(recovered.active[0].entity_id.is_some());
+    // And the entity_id is stable across rollback/recover (same entity).
+    assert_eq!(
+        populated.active[0].entity_id,
+        recovered.active[0].entity_id
+    );
+}
