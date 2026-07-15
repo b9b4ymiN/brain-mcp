@@ -74,7 +74,7 @@ pub fn rebuild_projection(
     let schema_version = store.schema_version();
 
     let mut claims = store.all_claims_current(ledger_head, world_time)?.active;
-    claims.sort_by(|a, b| a.claim_id.cmp(&b.claim_id));
+    claims.sort_by_key(|claim| claim.claim_id);
 
     if generated_wiki_root.exists() {
         fs::remove_dir_all(generated_wiki_root)?;
@@ -87,9 +87,11 @@ pub fn rebuild_projection(
         markdown::write_page(&slug, &content, generated_wiki_root)?;
     }
 
-    let index_report = index_manager.rebuild(generated_wiki_root, repo_root, index_schema, registry)?;
+    let index_report =
+        index_manager.rebuild(generated_wiki_root, repo_root, index_schema, registry)?;
     let searcher = index_manager.searcher()?;
-    let wiki_graph = graph::build_graph(&searcher, index_schema, &GraphFilter::default(), registry)?;
+    let wiki_graph =
+        graph::build_graph(&searcher, index_schema, &GraphFilter::default(), registry)?;
 
     let composite_checksum = composite_checksum(ledger_head, purge_epoch, schema_version, &claims)?;
 
