@@ -196,3 +196,5 @@ Commands (ตามลำดับ):
 | 2026-07-16 | A1 ปิด: hygiene commit `3a21daf` (schema fixtures committed, `.zcode/` ignored); toolchain GNU/MSVC divergence พบ+แก้ (rustup override); CARGO_TARGET_DIR footgun documented |
 | 2026-07-16 | A2 ปิด: gates ทั้งหมดรันซ้ำ — ตรง report เดิมทุกตัว (~803/~810 tests 0 fail, python 63/76/26+2s, eval cases 126/126 แต่ gate exit 1 จาก byte_lock, governance 3 fail root cause เดียวกัน, audit vuln = crossbeam-epoch RUSTSEC-2026-0204) |
 | 2026-07-16 | A3 ปิด + **Phase A Gate: Independent Validator PASS 10/10** — report: `docs/baseline/audit-20260716-report.md`; S1 HIGH ใหม่ (0.0.0.0 bind ไม่มี auth); Phase B re-ordered เป็น B1 bind+deps → B2 eval re-lock → B3 auth wiring |
+| 2026-07-16 | **ผู้ใช้ทำ B1–B2–C1–C2–C3 เอง** (commits `d389e70`..`a544d5f`) |
+| 2026-07-16 | **Review Phase B+C** (`docs/baseline/review-phaseBC-20260716.md`): B1/B2/C1/C2/C3 PASS (verified re-run: audit 0 vuln, eval exit 0, governance 10/10, brain E2E 2/2, regression 0 fail) — **แต่ F1 HIGH: B3 auth gate เขียนแล้วแต่ `serve()` ไม่เปิดใช้ (`with_auth` ไม่ถูกเรียกที่ไหนเลย) → S2 ยังไม่ปิดจริง**. ต้อง reopen B3 |
