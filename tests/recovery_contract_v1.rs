@@ -61,6 +61,10 @@ fn restore_drill_fails_closed_without_registry() {
         !result.purge_registry_synced,
         "registry unavailable = fail closed"
     );
+    assert!(
+        !result.passed(),
+        "restore drill must FAIL (passed=false) when registry is unsynced"
+    );
 }
 
 // =============================================================================
