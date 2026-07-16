@@ -424,6 +424,14 @@ pub async fn serve(
     if let Some(store) = semantic_store {
         mcp_server = mcp_server.with_semantic_store(store);
     }
+    // Activate the auth gate on the serve hot path (Task B3 / F1 fix). Local
+    // stdio/loopback runs as the fully-trusted owner (bootstrap principal), so
+    // the owner is unaffected; the point is that the gate is *on*, so a
+    // restricted principal (a future worker identity) is enforced, not bypassed.
+    mcp_server = mcp_server.with_auth_policy(
+        crate::mcp::auth::AuthPolicy::default(),
+        crate::mcp::owner_principal(),
+    );
 
     // 5. Heartbeat task
     if serve_cfg.heartbeat_secs > 0 {

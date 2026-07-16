@@ -521,3 +521,82 @@ fn mcp_tool_dispatch_smoke_calls_every_registered_tool() {
         assert!(!result.is_error, "MCP tool {name} returned an error");
     }
 }
+
+// ── Auth gate on the real dispatch path (Task B3 / F1 fix) ───────────────────
+// These drive `McpServer::check_capability` — the exact gate `call_tool` runs
+// before dispatch — proving enforcement is on the hot path, not just a
+// standalone `AuthPolicy::allows` unit assertion.
+
+#[test]
+fn auth_gate_denies_restricted_principal_at_dispatch() {
+    use llm_wiki::mcp::auth::{AuthPolicy, AuthPrincipal, Capability};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (config_path, _repo_root) = setup_mcp_smoke_wiki(dir.path());
+    let manager = Arc::new(WikiEngine::build(&config_path).unwrap());
+
+    // A read-only principal (e.g. a proposal-less viewer).
+    let read_only = AuthPrincipal {
+        id: "read-only-worker".to_owned(),
+        capabilities: vec![Capability::Read],
+    };
+    let server = McpServer::new(manager).with_auth_policy(AuthPolicy::default(), read_only);
+
+    // Read-class tool is allowed.
+    assert!(
+        server.check_capability("brain_search").is_ok(),
+        "read-only principal should be allowed a read tool"
+    );
+    // Capture/confirm-class tools are denied at the dispatch gate.
+    let denied = server
+        .check_capability("brain_capture")
+        .expect_err("read-only principal must be denied brain_capture");
+    assert!(
+        denied.contains("capability denied") && denied.contains("brain_capture"),
+        "denial message should name the tool: {denied}"
+    );
+    assert!(
+        server.check_capability("brain_confirm").is_err(),
+        "read-only principal must be denied brain_confirm"
+    );
+    assert!(
+        server.check_capability("wiki_spaces_remove").is_err(),
+        "read-only principal must be denied a purge-class tool"
+    );
+}
+
+#[test]
+fn auth_gate_absent_allows_all_legacy_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config_path, _repo_root) = setup_mcp_smoke_wiki(dir.path());
+    let manager = Arc::new(WikiEngine::build(&config_path).unwrap());
+    // No auth policy → legacy/dev mode, gate is a no-op.
+    let server = McpServer::new(manager);
+    assert!(server.check_capability("brain_capture").is_ok());
+    assert!(server.check_capability("wiki_spaces_remove").is_ok());
+}
+
+#[test]
+fn auth_gate_owner_principal_allows_all_on_serve_path() {
+    use llm_wiki::mcp::auth::AuthPolicy;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (config_path, _repo_root) = setup_mcp_smoke_wiki(dir.path());
+    let manager = Arc::new(WikiEngine::build(&config_path).unwrap());
+    // Mirror what serve() does: gate ON, owner principal has every capability,
+    // so the single-owner local path is enforced-but-permitted (no breakage).
+    let server = McpServer::new(manager)
+        .with_auth_policy(AuthPolicy::default(), llm_wiki::mcp::owner_principal());
+    for tool in [
+        "brain_search",
+        "brain_capture",
+        "brain_confirm",
+        "brain_supersede",
+        "wiki_spaces_remove",
+    ] {
+        assert!(
+            server.check_capability(tool).is_ok(),
+            "owner principal should be allowed {tool}"
+        );
+    }
+}

@@ -62,7 +62,7 @@ impl McpServer {
             web_refresh_tx: None,
             auth_policy: None,
             semantic_store: None,
-            principal: bootstrap_principal(),
+            principal: owner_principal(),
         }
     }
 
@@ -81,6 +81,40 @@ impl McpServer {
             semantic_store: None,
             principal,
         }
+    }
+
+    /// Enable auth enforcement on an already-built server (chainable), without
+    /// dropping other fields such as the web-refresh channel or semantic store.
+    /// This is how `serve()` activates the gate on the hot path (Task B3 / F1).
+    pub fn with_auth_policy(
+        mut self,
+        policy: auth::AuthPolicy,
+        principal: auth::AuthPrincipal,
+    ) -> Self {
+        self.auth_policy = Some(policy);
+        self.principal = principal;
+        self
+    }
+
+    /// The dispatch-time auth gate. Returns `Err(message)` when the current
+    /// principal lacks the capability the tool requires; `Ok(())` when allowed
+    /// or when no auth policy is configured (dev/legacy). `call_tool` calls this
+    /// before every dispatch, so a test that calls it exercises the real gate.
+    pub fn check_capability(&self, tool: &str) -> Result<(), String> {
+        let Some(policy) = &self.auth_policy else {
+            return Ok(());
+        };
+        if policy.allows(&self.principal, tool) {
+            return Ok(());
+        }
+        let required = policy
+            .required_capability(tool)
+            .map(|c| format!("{c:?}"))
+            .unwrap_or_else(|| "unknown".to_owned());
+        Err(format!(
+            "capability denied: tool '{tool}' requires {required} (principal '{}')",
+            self.principal.id
+        ))
     }
 
     /// Return a strong reference to the shared engine (Task 3.2). Cloning an
@@ -110,7 +144,7 @@ impl McpServer {
             web_refresh_tx: Some(web_refresh_tx),
             auth_policy: None,
             semantic_store: None,
-            principal: bootstrap_principal(),
+            principal: owner_principal(),
         }
     }
 
@@ -150,9 +184,11 @@ impl McpServer {
     }
 }
 
-/// The bootstrap principal has all capabilities (dev/local mode). In production
-/// the transport edge replaces this with a validated-token principal.
-fn bootstrap_principal() -> auth::AuthPrincipal {
+/// The owner principal has all capabilities (single-owner local mode). In
+/// production the transport edge replaces this with a validated-token principal
+/// (e.g. a proposal-only worker). `serve()` uses this so the local owner keeps
+/// full access while the auth gate stays active on the hot path.
+pub fn owner_principal() -> auth::AuthPrincipal {
     auth::AuthPrincipal {
         id: "__bootstrap__".to_owned(),
         capabilities: vec![
@@ -204,28 +240,15 @@ impl ServerHandler for McpServer {
         // Task B3: enforce auth policy before dispatch (inside async block
         // so both paths return the same Future type).
         async move {
-            // Auth gate: check before dispatch.
-            if let Some(policy) = &server.auth_policy
-                && !policy.allows(&server.principal, &name)
-            {
-                let required = policy
-                    .required_capability(&name)
-                    .map(|c| format!("{c:?}"))
-                    .unwrap_or_else(|| "unknown".to_owned());
+            // Auth gate: check before dispatch (same method a dispatch-level
+            // test drives — Task B3 / F1 fix).
+            if let Err(msg) = server.check_capability(&name) {
                 tracing::warn!(
                     tool = %name,
                     principal = %server.principal.id,
-                    required = %required,
                     "tool call DENIED by auth policy"
                 );
-                return Err(McpError::internal_error(
-                    format!(
-                        "capability denied: tool '{name}' requires {required} \
-                             (principal '{}')",
-                        server.principal.id
-                    ),
-                    None,
-                ));
+                return Err(McpError::internal_error(msg, None));
             }
 
             let result = tokio::time::timeout(
