@@ -8,6 +8,10 @@ pub mod acp;
 pub mod cli;
 /// Global and per-wiki configuration types and loaders.
 pub mod config;
+/// Smart Console contract (Task 5.1) — review-workflow types, diff preview,
+/// XSS-safe text rendering. The Console is a first-party app calling the same
+/// API as MCP; it never writes SQLite/Git/index directly (§9).
+pub mod console;
 /// Consolidation + domain evals (Task 4.3) — duplicate/contradiction/stale
 /// detection (review queue, never auto-apply), auto-approve policy (off by
 /// default, per-type threshold), domain eval report, and model/prompt

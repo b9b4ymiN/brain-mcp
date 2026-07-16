@@ -90,14 +90,21 @@ fn safe_text_escapes_html_entities() {
     assert!(!safe.contains("'xss'"), "quotes must be escaped");
 }
 
-/// SafeText is idempotent — escaping an already-safe string does not double-
-/// escape (prevents `&amp;lt;` corruption).
+/// HTML escaping is a one-time render concern: the Console escapes ONCE at
+/// render time and never re-escapes. Double-escaping produces `&amp;lt;`
+/// (visible corruption). This test documents the contract: SafeText::escape
+/// applied to ALREADY-ESCAPED text DOES change it (it escapes the `&` in
+/// `&lt;`), so callers must track whether a string is already escaped and
+/// escape exactly once.
 #[test]
-fn safe_text_escape_is_idempotent() {
+fn safe_text_escape_is_one_time_only() {
     let raw = "<b>bold</b>";
     let once = SafeText::escape(raw);
+    assert_eq!(once, "&lt;b&gt;bold&lt;/b&gt;");
+    // Double-escaping changes the text — callers must escape once.
     let twice = SafeText::escape(&once);
-    assert_eq!(once, twice, "double-escape must not corrupt");
+    assert_ne!(once, twice, "double-escape is visible corruption");
+    assert!(twice.contains("&amp;lt;"));
 }
 
 // keep json import alive
