@@ -10,9 +10,7 @@
 //! - token ไม่อยู่ URL/log/repo
 //! - ทุก HTTP path มี auth policy ชัด
 
-use llm_wiki::mcp::auth::{
-    AuthPolicy, AuthPolicyEntry, AuthPrincipal, Capability, TokenRedaction,
-};
+use llm_wiki::mcp::auth::{AuthPolicy, AuthPolicyEntry, AuthPrincipal, Capability, TokenRedaction};
 use serde_json::json;
 
 // =============================================================================
@@ -36,11 +34,8 @@ fn every_tool_has_a_required_capability() {
 }
 
 /// Read tools require `brain.read`. A proposal-only worker (capabilities =
-/// `[brain.propose]`) must be denied read... no, read is the baseline — a
-/// proposal-only worker CAN read (it needs context to propose). Correct:
-/// read tools require `brain.read`, and a proposal-only worker does NOT have
-/// `brain.read` unless granted. The negative test is: a worker with ONLY
-/// `brain.propose` is denied `brain.confirm`.
+/// `[brain.propose]`) must be denied confirm-class tools. The negative test:
+/// a worker with ONLY `brain.propose` is denied `wiki_config` (Confirm-class).
 #[test]
 fn proposal_only_worker_is_denied_confirm() {
     let policy = AuthPolicy::default();
@@ -48,18 +43,22 @@ fn proposal_only_worker_is_denied_confirm() {
         id: "worker-1".to_owned(),
         capabilities: vec![Capability::Propose],
     };
-    // A confirm-class tool (e.g. wiki_content_commit, or a future brain_confirm)
-    // requires brain.confirm.
+    // wiki_config is a Confirm-class tool (idempotent config mutation).
     let confirm_tool = policy
-        .required_capability("wiki_content_commit")
-        .unwrap_or(Capability::Confirm);
+        .required_capability("wiki_config")
+        .expect("wiki_config has a capability");
+    assert_eq!(
+        confirm_tool,
+        Capability::Confirm,
+        "wiki_config should be Confirm-class"
+    );
     assert!(
         !worker.has(confirm_tool),
         "proposal-only worker must not satisfy the confirm capability"
     );
     assert!(
-        policy.allows(&worker, "wiki_content_commit") == false,
-        "proposal-only worker must be DENIED wiki_content_commit"
+        !policy.allows(&worker, "wiki_config"),
+        "proposal-only worker must be DENIED wiki_config"
     );
 }
 
@@ -73,11 +72,11 @@ fn proposal_only_worker_is_allowed_propose_tools() {
         id: "worker-1".to_owned(),
         capabilities: vec![Capability::Propose],
     };
-    // Find a tool that requires brain.propose (e.g. wiki_ingest — additive).
-    let allowed = policy.allows(&worker, "wiki_ingest");
+    // wiki_content_write is a Propose-class tool (additive write).
+    let allowed = policy.allows(&worker, "wiki_content_write");
     assert!(
         allowed,
-        "proposal-only worker should be allowed tools it has the capability for"
+        "proposal-only worker should be allowed Propose-class tools"
     );
 }
 
@@ -91,8 +90,8 @@ fn admin_capability_alone_does_not_grant_confirm_or_purge() {
         capabilities: vec![Capability::Admin],
     };
     let confirm_tool = policy
-        .required_capability("wiki_content_commit")
-        .unwrap_or(Capability::Confirm);
+        .required_capability("wiki_config")
+        .expect("wiki_config has a capability");
     assert!(
         !admin_only.has(confirm_tool),
         "admin-only must not implicitly satisfy confirm"
@@ -152,7 +151,7 @@ fn auth_policy_covers_every_http_path() {
         "auth policy must cover /mcp"
     );
     // Every entry must name a required capability (not "open").
-    for entry in &entries {
+    for entry in entries {
         assert!(
             !entry.requires.is_empty(),
             "path {} has an empty requires list (implicitly open)",

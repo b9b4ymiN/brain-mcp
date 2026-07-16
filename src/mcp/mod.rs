@@ -1,3 +1,8 @@
+/// Production auth boundary — capabilities, auth policy, token redaction
+/// (Task 3.3). Contract-level: real TLS/OAuth termination is Phase 6
+/// deployment; this module defines the policy framework and capability
+/// enforcement that the deployment layer plugs into.
+pub mod auth;
 /// MCP tool handler functions.
 pub mod handlers;
 /// MCP helper utilities — argument extraction and tool result types.
