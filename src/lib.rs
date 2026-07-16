@@ -17,8 +17,10 @@ pub mod console;
 /// default, per-type threshold), domain eval report, and model/prompt
 /// regression report.
 pub mod consolidation;
-/// Embedded default JSON schemas and body templates.
 pub mod default_schemas;
+/// Reproducible deployment contract (Task 6.1) — Docker Compose manifest,
+/// health/readiness gates, secret references, platform targets.
+pub mod deployment;
 /// Central wiki engine — mounts spaces and manages indexes.
 pub mod engine;
 /// Evidence-linked extraction pipeline (Task 4.2) — source→spans→typed

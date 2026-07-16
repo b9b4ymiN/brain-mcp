@@ -33,7 +33,10 @@ fn manifest_targets_both_platforms() {
 fn manifest_declares_brain_service_and_deps() {
     let manifest = DeploymentManifest::default_brain();
     let names: Vec<&str> = manifest.services.iter().map(|s| s.name.as_str()).collect();
-    assert!(names.contains(&"brain"), "manifest must declare the brain service");
+    assert!(
+        names.contains(&"brain"),
+        "manifest must declare the brain service"
+    );
 }
 
 // =============================================================================
