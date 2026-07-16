@@ -221,6 +221,16 @@ pub struct ServeConfig {
     /// Hostnames accepted by the HTTP server (default: localhost variants).
     #[serde(default = "default_http_allowed_hosts")]
     pub http_allowed_hosts: Vec<String>,
+    /// Bind address for the HTTP server (default: `127.0.0.1` — loopback only).
+    /// **Security:** the default is loopback to prevent unauthenticated exposure.
+    /// Set `http_bind_all_interfaces: true` to bind `0.0.0.0` instead — only do
+    /// this behind a reverse proxy with authentication (S1 finding, Task B1).
+    #[serde(default = "default_http_bind_address")]
+    pub http_bind_address: String,
+    /// Explicit opt-in to bind all interfaces (`0.0.0.0`). Default: false.
+    /// When true, emits a startup warning about unauthenticated exposure.
+    #[serde(default)]
+    pub http_bind_all_interfaces: bool,
     /// Enable the ACP transport by default (default: false).
     #[serde(default)]
     pub acp: bool,
@@ -265,6 +275,8 @@ impl Default for ServeConfig {
             http: false,
             http_port: 8080,
             http_allowed_hosts: default_http_allowed_hosts(),
+            http_bind_address: default_http_bind_address(),
+            http_bind_all_interfaces: false,
             acp: false,
             max_restarts: 10,
             restart_backoff: 1,
@@ -640,6 +652,9 @@ fn default_http_port() -> u16 {
 }
 fn default_http_allowed_hosts() -> Vec<String> {
     vec!["localhost".into(), "127.0.0.1".into(), "::1".into()]
+}
+fn default_http_bind_address() -> String {
+    "127.0.0.1".to_owned()
 }
 fn default_max_restarts() -> u32 {
     10

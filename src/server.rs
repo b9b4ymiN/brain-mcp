@@ -82,7 +82,24 @@ async fn serve_http(
     cancel: CancellationToken,
     engine: Arc<WikiEngine>,
 ) -> Result<()> {
-    let addr: SocketAddr = ([0, 0, 0, 0], port).into();
+    // Security (S1 finding, Task B1): default bind is loopback (127.0.0.1).
+    // Binding all interfaces requires explicit opt-in and emits a warning.
+    let bind_addr: String = if serve_cfg.http_bind_all_interfaces {
+        tracing::warn!(
+            "HTTP server binding 0.0.0.0 (all interfaces) — this is UNAUTHENTICATED. \
+             Only safe behind a reverse proxy with auth. Do NOT expose directly."
+        );
+        "0.0.0.0".to_owned()
+    } else {
+        serve_cfg.http_bind_address.clone()
+    };
+    let addr: SocketAddr = match bind_addr.parse::<std::net::IpAddr>() {
+        Ok(ip) => (ip, port).into(),
+        Err(_) => {
+            tracing::error!(bind_addr = %bind_addr, "invalid http_bind_address, falling back to 127.0.0.1");
+            ([127, 0, 0, 1], port).into()
+        }
+    };
 
     let config = StreamableHttpServerConfig::default()
         .with_cancellation_token(cancel.child_token())
