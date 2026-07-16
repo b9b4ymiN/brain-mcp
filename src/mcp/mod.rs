@@ -39,14 +39,41 @@ pub struct McpServer {
     pub manager: Arc<WikiEngine>,
     /// Optional channel used by `serve --web` to refresh the Hugo server after writes.
     web_refresh_tx: Option<mpsc::Sender<String>>,
+    /// Auth policy enforced before every tool dispatch (Task B3). When None,
+    /// no auth enforcement (legacy/dev mode). When Some, every call_tool
+    /// checks AuthPolicy::allows(principal, tool_name) before dispatch.
+    auth_policy: Option<auth::AuthPolicy>,
+    /// The authenticated principal for this server instance. In production
+    /// this comes from a validated token at the transport edge; in dev the
+    /// bootstrap principal has all capabilities.
+    principal: auth::AuthPrincipal,
 }
 
 impl McpServer {
-    /// Create a new `McpServer` wrapping `manager`.
+    /// Create a new `McpServer` wrapping `manager` with NO auth enforcement
+    /// (dev/legacy mode). The bootstrap principal has all capabilities.
     pub fn new(manager: Arc<WikiEngine>) -> Self {
         Self {
             manager,
             web_refresh_tx: None,
+            auth_policy: None,
+            principal: bootstrap_principal(),
+        }
+    }
+
+    /// Create a new `McpServer` with auth enforcement enabled (Task B3).
+    /// Every `call_tool` checks `policy.allows(principal, tool_name)` before
+    /// dispatch; a denied tool returns a structured capability-denied error.
+    pub fn with_auth(
+        manager: Arc<WikiEngine>,
+        policy: auth::AuthPolicy,
+        principal: auth::AuthPrincipal,
+    ) -> Self {
+        Self {
+            manager,
+            web_refresh_tx: None,
+            auth_policy: Some(policy),
+            principal,
         }
     }
 
@@ -68,6 +95,8 @@ impl McpServer {
         Self {
             manager,
             web_refresh_tx: Some(web_refresh_tx),
+            auth_policy: None,
+            principal: bootstrap_principal(),
         }
     }
 
@@ -107,6 +136,22 @@ impl McpServer {
     }
 }
 
+/// The bootstrap principal has all capabilities (dev/local mode). In production
+/// the transport edge replaces this with a validated-token principal.
+fn bootstrap_principal() -> auth::AuthPrincipal {
+    auth::AuthPrincipal {
+        id: "__bootstrap__".to_owned(),
+        capabilities: vec![
+            auth::Capability::Read,
+            auth::Capability::Capture,
+            auth::Capability::Propose,
+            auth::Capability::Confirm,
+            auth::Capability::Purge,
+            auth::Capability::Admin,
+        ],
+    }
+}
+
 // ── ServerHandler impl ────────────────────────────────────────────────────────
 
 impl ServerHandler for McpServer {
@@ -142,7 +187,33 @@ impl ServerHandler for McpServer {
         let name = request.name.to_string();
         let server = self.clone();
 
+        // Task B3: enforce auth policy before dispatch (inside async block
+        // so both paths return the same Future type).
         async move {
+            // Auth gate: check before dispatch.
+            if let Some(policy) = &server.auth_policy
+                && !policy.allows(&server.principal, &name)
+            {
+                let required = policy
+                    .required_capability(&name)
+                    .map(|c| format!("{c:?}"))
+                    .unwrap_or_else(|| "unknown".to_owned());
+                tracing::warn!(
+                    tool = %name,
+                    principal = %server.principal.id,
+                    required = %required,
+                    "tool call DENIED by auth policy"
+                );
+                return Err(McpError::internal_error(
+                    format!(
+                        "capability denied: tool '{name}' requires {required} \
+                             (principal '{}')",
+                        server.principal.id
+                    ),
+                    None,
+                ));
+            }
+
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(30),
                 tokio::task::spawn_blocking(move || tools::call(&server, &name, &args)),
