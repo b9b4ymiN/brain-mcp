@@ -82,6 +82,8 @@ fn proposal_only_worker_is_allowed_propose_tools() {
 
 /// An admin-only capability does NOT grant confirm/purge (no implicit
 /// escalation). §7.1: "admin capability อย่างเดียวไม่พอ" for destructive ops.
+/// This covers BOTH arms of the DoD negative-test triad: Confirm-class AND
+/// Purge-class tools must be denied to an admin-only principal.
 #[test]
 fn admin_capability_alone_does_not_grant_confirm_or_purge() {
     let policy = AuthPolicy::default();
@@ -89,12 +91,36 @@ fn admin_capability_alone_does_not_grant_confirm_or_purge() {
         id: "admin-1".to_owned(),
         capabilities: vec![Capability::Admin],
     };
-    let confirm_tool = policy
-        .required_capability("wiki_config")
-        .expect("wiki_config has a capability");
+    // Confirm-class: admin-only must not satisfy confirm.
     assert!(
-        !admin_only.has(confirm_tool),
-        "admin-only must not implicitly satisfy confirm"
+        !policy.allows(&admin_only, "wiki_config"),
+        "admin-only must be DENIED wiki_config (Confirm-class)"
+    );
+    // Purge-class: admin-only must not satisfy purge either.
+    assert!(
+        !policy.allows(&admin_only, "wiki_spaces_remove"),
+        "admin-only must be DENIED wiki_spaces_remove (Purge-class)"
+    );
+}
+
+/// A proposal-only worker is denied Purge-class tools (DoD bullet 1: "proposal-
+/// only worker เรียก confirm/purge/admin ไม่ได้"). This closes the Purge arm of
+/// the negative-test triad alongside the Confirm arm in
+/// `proposal_only_worker_is_denied_confirm`.
+#[test]
+fn proposal_only_worker_is_denied_purge() {
+    let policy = AuthPolicy::default();
+    let worker = AuthPrincipal {
+        id: "worker-1".to_owned(),
+        capabilities: vec![Capability::Propose],
+    };
+    assert!(
+        !policy.allows(&worker, "wiki_spaces_remove"),
+        "proposal-only worker must be DENIED wiki_spaces_remove (Purge-class)"
+    );
+    assert!(
+        !policy.allows(&worker, "wiki_schema"),
+        "proposal-only worker must be DENIED wiki_schema (Purge-class)"
     );
 }
 
@@ -183,6 +209,42 @@ fn capability_enum_covers_the_7_2_set() {
     let _ = Capability::Confirm;
     let _ = Capability::Purge;
     let _ = Capability::Admin;
+}
+
+/// Cross-map consistency (LOW-1 from the first Validator pass): the Task 3.1
+/// annotation profile and the Task 3.3 capability map must agree at the
+/// coarse level. A read-only-annotated tool must map to `brain.read`; a
+/// destructive-annotated tool must map to `brain.purge`. This catches the two
+/// maps drifting apart (they are "in sync by convention" with no compile-time
+/// link).
+#[test]
+fn annotation_profile_and_capability_map_agree() {
+    let policy = AuthPolicy::default();
+    for tool in llm_wiki::mcp::tools::tool_list() {
+        let ann = tool
+            .annotations
+            .as_ref()
+            .unwrap_or_else(|| panic!("tool {} missing annotations", tool.name));
+        let cap = policy
+            .required_capability(&tool.name)
+            .unwrap_or_else(|| panic!("tool {} missing capability", tool.name));
+        if ann.read_only_hint == Some(true) {
+            assert_eq!(
+                cap,
+                Capability::Read,
+                "read-only-annotated tool {} must map to brain.read",
+                tool.name
+            );
+        }
+        if ann.destructive_hint == Some(true) {
+            assert_eq!(
+                cap,
+                Capability::Purge,
+                "destructive-annotated tool {} must map to brain.purge",
+                tool.name
+            );
+        }
+    }
 }
 
 // keep json import used for future expansion without warning
