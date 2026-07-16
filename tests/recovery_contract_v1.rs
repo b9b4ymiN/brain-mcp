@@ -39,7 +39,10 @@ fn restore_drill_passes_with_registry_sync() {
         purge_registry_synced: true,
         composite_checksum_matches: true,
     };
-    assert!(result.purge_registry_synced, "must sync purge registry before read");
+    assert!(
+        result.purge_registry_synced,
+        "must sync purge registry before read"
+    );
     assert!(
         result.composite_checksum_matches,
         "restore checksum must match source"
@@ -78,7 +81,10 @@ fn upgrade_plan_has_forward_and_rollback_steps() {
             },
         ],
     };
-    assert!(plan.steps.iter().all(|s| s.reversible), "every step must be reversible");
+    assert!(
+        plan.steps.iter().all(|s| s.reversible),
+        "every step must be reversible"
+    );
 }
 
 // =============================================================================
@@ -88,8 +94,8 @@ fn upgrade_plan_has_forward_and_rollback_steps() {
 #[test]
 fn rpo_rto_is_recorded() {
     let rpo_rto = RpoRto {
-        rpo_minutes: 1440,    // daily backup = 24h RPO
-        rto_minutes: 60,      // 1-hour restore target
+        rpo_minutes: 1440, // daily backup = 24h RPO
+        rto_minutes: 60,   // 1-hour restore target
         last_met: true,
     };
     assert!(rpo_rto.rpo_minutes > 0);

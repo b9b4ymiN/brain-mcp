@@ -61,6 +61,9 @@ pub mod projection;
 /// coverage (Task 4.1). Provider-agnostic: no Z.ai-specific field in the
 /// domain core. Real HTTP termination is a deployment adapter.
 pub mod provider;
+/// Backup, restore, upgrade, rollback contract (Task 6.3) — encrypted backup
+/// report, clean-host restore drill, schema-upgrade plan, RPO/RTO.
+pub mod recovery;
 /// Full-text BM25 search and paginated list operations.
 pub mod search;
 /// Feature-flagged semantic event ledger and application-core boundary.
