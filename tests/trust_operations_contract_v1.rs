@@ -124,19 +124,14 @@ fn hard_purge_warning_is_irreversible_and_requires_nonce() {
         warning.requires_two_step_nonce,
         "hard purge requires a two-step nonce"
     );
+    // The warning must state there is NO undo (it warns the user, not claims one exists).
     assert!(
-        warning.message.contains("undo").not(),
-        "warning must state NO undo"
+        warning.message.to_lowercase().contains("no undo")
+            || warning
+                .message
+                .to_lowercase()
+                .contains("cannot be recovered"),
+        "warning must state there is no undo / cannot be recovered: got {}",
+        warning.message
     );
-}
-
-// helper trait for the `.not()` assertion above (std doesn't have Bool::not
-// as a top-level method; use a free function instead to keep it simple)
-trait BoolExt {
-    fn not(self) -> bool;
-}
-impl BoolExt for bool {
-    fn not(self) -> bool {
-        !self
-    }
 }

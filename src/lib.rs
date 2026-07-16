@@ -68,6 +68,10 @@ pub mod slug;
 pub mod space_builder;
 /// Wiki space creation, registration, and management.
 pub mod spaces;
+/// Trust + operations views contract (Task 5.3) — trust flags, retrieval
+/// trace, provenance answers, job/backup summaries, destructive-action
+/// warnings. §5.3 + §10.
+pub mod trust;
 /// Per-wiki type registry — schema compilation and validation.
 pub mod type_registry;
 /// Filesystem watcher for auto-ingest on file save.
