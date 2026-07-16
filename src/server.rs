@@ -378,11 +378,52 @@ pub async fn serve(
     } else {
         (None, None)
     };
-    let mcp_server = if let Some(tx) = web_refresh_tx.clone() {
+
+    // Phase C: attach a SemanticStore for brain_* tools. Create if absent,
+    // open if present. Path: state_dir/semantic-store.
+    let state_dir = {
+        let engine = manager.state.read();
+        engine.state_dir.clone()
+    };
+    let semantic_root = state_dir.join("semantic-store");
+    let semantic_store = if semantic_root.join("store.marker.json").exists() {
+        match crate::semantic::SemanticStore::open(
+            &semantic_root,
+            crate::semantic::SemanticConfig::enabled_for(&state_dir),
+        ) {
+            Ok(store) => {
+                tracing::info!(path = %semantic_root.display(), "semantic store opened");
+                Some(Arc::new(store))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to open semantic store; brain_* tools disabled");
+                None
+            }
+        }
+    } else {
+        match crate::semantic::SemanticStore::create(
+            &semantic_root,
+            crate::semantic::SemanticConfig::enabled_for(&state_dir),
+        ) {
+            Ok((store, _admin)) => {
+                tracing::info!(path = %semantic_root.display(), "semantic store created");
+                Some(Arc::new(store))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to create semantic store; brain_* tools disabled");
+                None
+            }
+        }
+    };
+
+    let mut mcp_server = if let Some(tx) = web_refresh_tx.clone() {
         McpServer::with_web_refresh(manager.clone(), tx)
     } else {
         McpServer::new(manager.clone())
     };
+    if let Some(store) = semantic_store {
+        mcp_server = mcp_server.with_semantic_store(store);
+    }
 
     // 5. Heartbeat task
     if serve_cfg.heartbeat_secs > 0 {
