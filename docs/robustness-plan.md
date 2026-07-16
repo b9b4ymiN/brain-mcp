@@ -40,7 +40,10 @@
 
 ---
 
-## 3. Phase A — Verification Audit ⏳ IN PROGRESS
+## 3. Phase A — Verification Audit ✅ CLOSED 2026-07-16
+
+> ผลลัพธ์: `docs/baseline/audit-20260716-report.md` — Independent Validator **PASS 10/10 checks, 0 corrections**
+> ข้อค้นพบหลัก: ตัวเลขใน evidence packets เดิมตรงความจริงทั้งหมด; พบ environment divergence 2 (GNU toolchain resolution — แก้ด้วย rustup override, CARGO_TARGET_DIR redirect — stale binary ถูกลบ); **S1 HIGH ใหม่: MCP HTTP bind `0.0.0.0` ไม่มี auth (server.rs:85)** — หักล้างสมมติฐานเดิมใน §9 ของแผนนี้ที่ว่า config เป็น loopback-only
 
 > เป้าหมาย: ได้ health report ที่พิสูจน์ด้วยการรันจริง ไม่ใช่เชื่อตัวเลขใน report เก่า
 
@@ -92,22 +95,23 @@ Commands (ตามลำดับ):
 
 ---
 
-## 4. Phase B — Security Hardening ⬜ pending
+## 4. Phase B — Security Hardening ⬜ pending (ลำดับปรับตามผล audit)
 
-> ลำดับตั้งต้น: ก่อน Phase C เสมอ — เปิด transport โดย auth ไม่ enforce = ช่องโหว่จริง (D2)
+> ก่อน Phase C เสมอ — เปิด transport โดย auth ไม่ enforce = ช่องโหว่จริง (S1+S2)
 
-### Task B1 — ปิด `cargo audit` findings (D6)
-- upgrade/patch dependency ที่มี vuln หรือบันทึก accepted-risk พร้อมเหตุผล
-- **DoD:** `cargo audit` clean หรือทุก finding มี written acceptance; full regression เขียว
+### Task B1 — Quick wins: loopback bind guard + dependency bumps (S1 + S4/S5)
+- แก้ MCP HTTP bind default `0.0.0.0` → `127.0.0.1` (`src/server.rs:85`); non-loopback ต้อง explicit opt-in + คำเตือน
+- `cargo update -p crossbeam-epoch` ปิด RUSTSEC-2026-0204; bump anyhow/memmap2 ถ้าเวอร์ชัน fix มี
+- **DoD:** test พิสูจน์ default bind = loopback; `cargo audit` เหลือ 0 vuln (warnings มี written acceptance); full regression เขียว
 
-### Task B2 — Wire auth enforcement เข้า hot path (D2)
+### Task B2 — Eval contract re-lock (S3 / D7)
+- ตรวจ git history ว่าการแก้ 9 locked files หลัง Task 0.2 ผ่าน validator จริง → regenerate manifest hashes → governance เขียว
+- **DoD:** eval runner exit 0 (byte_lock ผ่าน); governance 10/10; rationale บันทึกใน decision history
+
+### Task B3 — Wire auth enforcement เข้า hot path (S2 / D2)
 - `AuthPolicy::allows(principal, tool)` enforce จริงใน `call_tool` dispatch
 - ปิด per-handle capability HIGH: code ที่ถือ `&SemanticStore` ต้องไม่ bypass capability check ได้
 - **DoD:** negative tests (proposal-only worker เรียก confirm/purge/admin) fail ที่ dispatch จริง ไม่ใช่แค่ policy unit test; per-handle exploit path ปิดพร้อม test พิสูจน์; full regression เขียว
-
-### Task B3 — governance/byte_lock integrity (D7)
-- หาสาเหตุ 9 files mismatched + governance 3 fail → แก้หรือ re-lock พร้อมบันทึก
-- **DoD:** governance suite เขียวครบ; eval byte_lock ผ่าน; ถ้า re-lock ต้องมี rationale บันทึกใน decision history
 
 **Phase B Gate:** security reviewer agent (session แยก) ไม่มี CRITICAL/HIGH unresolved
 
@@ -178,7 +182,7 @@ Commands (ตามลำดับ):
 |---|---|---|
 | per-handle capability + auth ไม่ enforce บน hot path | **HIGH** | Phase B ก่อน Phase C เสมอ — ห้ามเปิด transport ก่อน B2 ปิด |
 | `cargo audit` vuln ยังไม่รู้ severity | ? → รู้ที่ A2 | ถ้า CRITICAL/HIGH บน attack path จริง → เลื่อน B1 ขึ้นทันที |
-| wiki HTTP server เดิม bind ได้ทุก interface โดยไม่มี auth | HIGH ถ้า exposed | A3 ยืนยัน config ปัจจุบัน loopback-only; §7.1 ห้าม unauthenticated internet จนกว่า auth ปิด |
+| MCP HTTP bind `0.0.0.0` ไม่มี auth (**ยืนยันแล้วโดย A3** — server.rs:85, Host-header allowlist อย่างเดียวซึ่ง spoof ได้) | **HIGH (S1)** | ห้ามรัน `serve --http` บนเครื่องที่ expose ต่อ network จนกว่า B1 ปิด; B1 = loopback default |
 | eval byte_lock mismatch → eval ที่รันอาจไม่ใช่ contract ที่ hash-lock ไว้ | MEDIUM | B3 ก่อนใช้ eval เป็น promotion gate ใน Phase D+ |
 | Z.ai Coding Plan terms risk (GOAL §2.3) | KNOWN | compliance record + kill switch + ถามก่อนยิงทุกครั้ง |
 
@@ -189,3 +193,6 @@ Commands (ตามลำดับ):
 | วันที่ | เหตุการณ์ |
 |---|---|
 | 2026-07-16 | แผนอนุมัติ; เริ่ม Phase A Task A1 |
+| 2026-07-16 | A1 ปิด: hygiene commit `3a21daf` (schema fixtures committed, `.zcode/` ignored); toolchain GNU/MSVC divergence พบ+แก้ (rustup override); CARGO_TARGET_DIR footgun documented |
+| 2026-07-16 | A2 ปิด: gates ทั้งหมดรันซ้ำ — ตรง report เดิมทุกตัว (~803/~810 tests 0 fail, python 63/76/26+2s, eval cases 126/126 แต่ gate exit 1 จาก byte_lock, governance 3 fail root cause เดียวกัน, audit vuln = crossbeam-epoch RUSTSEC-2026-0204) |
+| 2026-07-16 | A3 ปิด + **Phase A Gate: Independent Validator PASS 10/10** — report: `docs/baseline/audit-20260716-report.md`; S1 HIGH ใหม่ (0.0.0.0 bind ไม่มี auth); Phase B re-ordered เป็น B1 bind+deps → B2 eval re-lock → B3 auth wiring |
