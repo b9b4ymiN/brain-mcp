@@ -9,11 +9,11 @@
 //! Contract-level: no real LLM run. Detectors are deterministic stubs the
 //! integration layer swaps for LLM-backed ones.
 
+use chrono::Utc;
 use llm_wiki::consolidation::{
-    AutoApprovePolicy, ConsolidationCandidate, ConsolidationReport, ConsolidationKind,
+    AutoApprovePolicy, ConsolidationCandidate, ConsolidationKind, ConsolidationReport,
     DomainEvalReport, RegressionDelta, RegressionReport,
 };
-use chrono::Utc;
 
 // =============================================================================
 // DoD: duplicate/contradiction/stale detection → review queue
@@ -52,7 +52,10 @@ fn consolidation_report_classifies_candidates_without_auto_applying() {
 /// a duplicate with a contradiction.
 #[test]
 fn consolidation_kinds_are_distinct() {
-    assert_ne!(ConsolidationKind::Duplicate, ConsolidationKind::Contradiction);
+    assert_ne!(
+        ConsolidationKind::Duplicate,
+        ConsolidationKind::Contradiction
+    );
     assert_ne!(ConsolidationKind::Contradiction, ConsolidationKind::Stale);
     assert_ne!(ConsolidationKind::Duplicate, ConsolidationKind::Stale);
 }
@@ -182,10 +185,7 @@ fn regression_report_allows_promotion_on_improvement() {
         deltas: vec![delta],
         max_allowed_regression: 0.02,
     };
-    assert!(
-        report.is_promotable(),
-        "all-positive deltas → promotable"
-    );
+    assert!(report.is_promotable(), "all-positive deltas → promotable");
 }
 
 // keep Utc import alive

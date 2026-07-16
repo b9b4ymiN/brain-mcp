@@ -8,6 +8,11 @@ pub mod acp;
 pub mod cli;
 /// Global and per-wiki configuration types and loaders.
 pub mod config;
+/// Consolidation + domain evals (Task 4.3) — duplicate/contradiction/stale
+/// detection (review queue, never auto-apply), auto-approve policy (off by
+/// default, per-type threshold), domain eval report, and model/prompt
+/// regression report.
+pub mod consolidation;
 /// Embedded default JSON schemas and body templates.
 pub mod default_schemas;
 /// Central wiki engine — mounts spaces and manages indexes.
