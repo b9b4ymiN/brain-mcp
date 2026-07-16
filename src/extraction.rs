@@ -151,22 +151,25 @@ impl ExtractionPolicy {
     /// This is the prompt-injection-resistant entry point: the source text
     /// becomes the PROMPT DATA, never an instruction. The worker has no tools
     /// to execute; it only yields proposals the policy then validates.
+    ///
+    /// The gate runs BEFORE the source text is copied into the request struct
+    /// (check-then-build, not build-then-check) so a denied secret never lands
+    /// in a `ProviderRequest.prompt` even momentarily (Task 4.2 Validator F3).
     pub fn build_provider_request(
         &self,
         source_text: &str,
         local_only: bool,
     ) -> Option<ProviderRequest> {
-        let request = ProviderRequest {
+        let decision = self.outbound.check_text(source_text, local_only);
+        if decision.denied {
+            return None;
+        }
+        Some(ProviderRequest {
             prompt: source_text.to_owned(),
             max_tokens: 2048,
             temperature: 0.0,
             local_only,
-        };
-        let decision = self.outbound.check(&request);
-        if decision.denied {
-            return None;
-        }
-        Some(request)
+        })
     }
 }
 

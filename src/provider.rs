@@ -113,16 +113,20 @@ impl OutboundPolicy {
 }
 
 impl OutboundPolicy {
-    /// Check a request against the policy. Returns a decision the adapter
-    /// honors before constructing the outbound HTTP call.
-    pub fn check(&self, request: &ProviderRequest) -> OutboundDecision {
-        if request.local_only {
+    /// Check raw text + a local_only flag WITHOUT first allocating a
+    /// `ProviderRequest`. This is the preferred entry point for callers that
+    /// build a request from untrusted source text: it gates BEFORE the source
+    /// is copied into a heap `String`, so a denied secret never lands in a
+    /// `ProviderRequest.prompt` even momentarily (defense-in-depth, Task 4.2
+    /// Validator F3).
+    pub fn check_text(&self, text: &str, local_only: bool) -> OutboundDecision {
+        if local_only {
             return OutboundDecision {
                 denied: true,
                 reason: "request is marked local_only".to_owned(),
             };
         }
-        if let Some(kind) = detect_secret(&request.prompt) {
+        if let Some(kind) = detect_secret(text) {
             return OutboundDecision {
                 denied: true,
                 reason: format!("request contains a detected secret ({kind})"),
@@ -132,6 +136,14 @@ impl OutboundPolicy {
             denied: false,
             reason: "allowed".to_owned(),
         }
+    }
+
+    /// Check a request against the policy. Returns a decision the adapter
+    /// honors before constructing the outbound HTTP call. Prefer
+    /// [`Self::check_text`] when building a request from untrusted text (it
+    /// gates before the source is copied into the request struct).
+    pub fn check(&self, request: &ProviderRequest) -> OutboundDecision {
+        self.check_text(&request.prompt, request.local_only)
     }
 }
 
