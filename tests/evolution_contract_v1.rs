@@ -29,7 +29,10 @@ fn candidate_promotion_requires_threshold() {
     };
     // ≥0.03 improvement on recall + no metric regression >0.01 + latency <20%
     let decision = PromoteDecision::evaluate(&candidate, 0.03, 0.01, 20.0);
-    assert!(decision.promote, "0.04 recall gain ≥0.03 threshold → promote");
+    assert!(
+        decision.promote,
+        "0.04 recall gain ≥0.03 threshold → promote"
+    );
 }
 
 #[test]

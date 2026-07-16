@@ -23,6 +23,9 @@ pub mod default_schemas;
 pub mod deployment;
 /// Central wiki engine — mounts spaces and manages indexes.
 pub mod engine;
+/// Eval-driven evolution contract (Task 7.1+7.2) — retrieval experiments,
+// promotion thresholds, safe automation budget + kill switch, drift report.
+pub mod evolution;
 /// Evidence-linked extraction pipeline (Task 4.2) — source→spans→typed
 /// proposals with provenance, prompt-injection resistance, and a
 /// local-only/secret egress gate. The worker yields proposals only; it has
