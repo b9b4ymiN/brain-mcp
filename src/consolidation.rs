@@ -71,8 +71,12 @@ impl AutoApprovePolicy {
             .insert((memory_type.to_owned(), source.to_owned()), threshold);
     }
 
-    /// True if `(type, source)` is enabled (regardless of confidence). Used by
-    /// callers that don't have a confidence value yet.
+    /// True if `(type, source)` is enabled in the policy (regardless of
+    /// confidence). This is a PRE-CHECK only — it is NOT an approval. The
+    /// actual auto-approve gate is [`Self::is_auto_approved_with_confidence`],
+    /// which additionally requires the claim's confidence to meet the
+    /// configured threshold. Do not treat a `true` here as permission to
+    /// auto-approve.
     pub fn is_auto_approved(&self, memory_type: &str, source: &str) -> bool {
         self.enabled
             .contains_key(&(memory_type.to_owned(), source.to_owned()))
