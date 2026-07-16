@@ -28,6 +28,9 @@ pub mod engine;
 pub mod extraction;
 /// Frontmatter parsing, scaffolding, and serialization helpers.
 pub mod frontmatter;
+/// Galaxy 3D graph contract (Task 5.2) — bounded subgraph data model, LOD
+/// (semantic zoom), renderer-fallback chain. §9.2.
+pub mod galaxy;
 /// Git commit, history, and change-detection helpers.
 pub mod git;
 /// Concept graph construction, community detection, and renderers.
