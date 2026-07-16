@@ -43,6 +43,10 @@ pub struct McpServer {
     /// no auth enforcement (legacy/dev mode). When Some, every call_tool
     /// checks AuthPolicy::allows(principal, tool_name) before dispatch.
     auth_policy: Option<auth::AuthPolicy>,
+    /// Optional SemanticStore for brain_* tools (Phase C). When None, brain_*
+    /// tools return "brain not initialized". When Some, brain_search/get/status
+    /// query the semantic ledger.
+    pub semantic_store: Option<Arc<crate::semantic::SemanticStore>>,
     /// The authenticated principal for this server instance. In production
     /// this comes from a validated token at the transport edge; in dev the
     /// bootstrap principal has all capabilities.
@@ -57,6 +61,7 @@ impl McpServer {
             manager,
             web_refresh_tx: None,
             auth_policy: None,
+            semantic_store: None,
             principal: bootstrap_principal(),
         }
     }
@@ -73,6 +78,7 @@ impl McpServer {
             manager,
             web_refresh_tx: None,
             auth_policy: Some(policy),
+            semantic_store: None,
             principal,
         }
     }
@@ -87,6 +93,13 @@ impl McpServer {
         Arc::clone(&self.manager)
     }
 
+    /// Attach a SemanticStore so brain_* tools can query the semantic ledger.
+    /// (Phase C Task C1.)
+    pub fn with_semantic_store(mut self, store: Arc<crate::semantic::SemanticStore>) -> Self {
+        self.semantic_store = Some(store);
+        self
+    }
+
     /// Create a new `McpServer` with web-refresh notifications enabled.
     pub fn with_web_refresh(
         manager: Arc<WikiEngine>,
@@ -96,6 +109,7 @@ impl McpServer {
             manager,
             web_refresh_tx: Some(web_refresh_tx),
             auth_policy: None,
+            semantic_store: None,
             principal: bootstrap_principal(),
         }
     }

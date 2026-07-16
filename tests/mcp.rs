@@ -10,9 +10,9 @@ use llm_wiki::web;
 use serde_json::{Map, Value, json};
 
 #[test]
-fn tool_list_returns_30_tools() {
+fn tool_list_returns_33_tools() {
     let tools = tools::tool_list();
-    assert_eq!(tools.len(), 30);
+    assert_eq!(tools.len(), 33);
 }
 
 #[test]
@@ -326,7 +326,14 @@ fn mcp_tool_dispatch_smoke_calls_every_registered_tool() {
     let dir = tempfile::tempdir().unwrap();
     let (config_path, _repo_root) = setup_mcp_smoke_wiki(dir.path());
     let manager = Arc::new(WikiEngine::build(&config_path).unwrap());
-    let server = McpServer::new(manager);
+    // Attach a SemanticStore so brain_* tools work.
+    let semantic_root = dir.path().join("semantic-store");
+    let (semantic_store, _admin) = llm_wiki::semantic::SemanticStore::create(
+        &semantic_root,
+        llm_wiki::semantic::SemanticConfig::enabled_for(dir.path()),
+    )
+    .unwrap();
+    let server = McpServer::new(manager).with_semantic_store(Arc::new(semantic_store));
 
     let create_path = dir.path().join("created-space");
     let register_path = dir.path().join("registered-space");
@@ -453,6 +460,9 @@ fn mcp_tool_dispatch_smoke_calls_every_registered_tool() {
             "audit_history",
             args(json!({"wiki": "test", "path": "concepts/moe", "limit": 5})),
         ),
+        ("brain_status", args(json!({}))),
+        ("brain_search", args(json!({"query": "test"}))),
+        ("brain_get", args(json!({"subject": "test"}))),
     ];
 
     let registered_names: Vec<String> = tools::tool_list()

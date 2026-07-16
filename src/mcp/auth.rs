@@ -148,7 +148,8 @@ fn default_capability_for(name: &str) -> Capability {
         "wiki_search" | "wiki_list" | "wiki_content_read" | "wiki_history" | "wiki_stats"
         | "wiki_graph" | "wiki_resolve" | "wiki_lint" | "wiki_suggest" | "profile_get"
         | "semantic_search" | "semantic_get" | "procedural_find" | "procedural_get"
-        | "graph_neighbors" | "audit_history" | "wiki_index_status" => Capability::Read,
+        | "graph_neighbors" | "audit_history" | "wiki_index_status" | "brain_status"
+        | "brain_search" | "brain_get" => Capability::Read,
         // Capture-class (raw source ingest into quarantine).
         "wiki_ingest" => Capability::Capture,
         // Propose-class (additive writes — content write/new/commit, spaces

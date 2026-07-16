@@ -88,7 +88,8 @@ fn annotations_for(name: &str) -> ToolAnnotations {
         "wiki_search" | "wiki_list" | "wiki_content_read" | "wiki_history" | "wiki_stats"
         | "wiki_graph" | "wiki_resolve" | "wiki_lint" | "wiki_suggest" | "profile_get"
         | "semantic_search" | "semantic_get" | "procedural_find" | "procedural_get"
-        | "graph_neighbors" | "audit_history" | "wiki_index_status" => read_only(),
+        | "graph_neighbors" | "audit_history" | "wiki_index_status" | "brain_status"
+        | "brain_search" | "brain_get" => read_only(),
         // Destructive — removes data. `wiki_schema` is a multi-action tool
         // whose `action: remove` path can delete a schema file AND page files
         // from disk (`delete_pages: true`), so it is classified by its most
@@ -502,6 +503,35 @@ pub fn tool_list() -> Vec<Tool> {
                 &["path"],
             ),
         ),
+        // ── brain_* semantic tools (Phase C Task C1) ──────────────────────
+        Tool::new(
+            "brain_status",
+            "Brain health: ledger head, claim count, schema version",
+            schema(json!({}), &[]),
+        ),
+        Tool::new(
+            "brain_search",
+            "Search confirmed claims in the semantic brain",
+            schema(
+                json!({
+                    "query": str_prop("Search query (subject or predicate substring)"),
+                    "domain": opt_str("Filter by domain (e.g. stocks, projects)"),
+                    "top_k": opt_int("Max results (default 10)"),
+                }),
+                &["query"],
+            ),
+        ),
+        Tool::new(
+            "brain_get",
+            "Read claims for a subject from the semantic brain",
+            schema(
+                json!({
+                    "subject": str_prop("Subject to look up"),
+                    "domain": opt_str("Filter by domain"),
+                }),
+                &["subject"],
+            ),
+        ),
     ];
     // Task 3.1: attach the §7.2 annotation profile to every tool in a single
     // pass. This keeps the declarations above readable (3-arg Tool::new) and
@@ -551,6 +581,10 @@ pub fn call(server: &McpServer, name: &str, args: &Map<String, Value>) -> ToolRe
         "procedural_get" => handlers::handle_procedural_get(server, args),
         "graph_neighbors" => handlers::handle_graph_neighbors(server, args),
         "audit_history" => handlers::handle_audit_history(server, args),
+        // brain_* semantic tools (Phase C)
+        "brain_status" => handlers::handle_brain_status(server, args),
+        "brain_search" => handlers::handle_brain_search(server, args),
+        "brain_get" => handlers::handle_brain_get(server, args),
         _ => Err(format!("unknown tool: {name}")),
     }));
     match result {

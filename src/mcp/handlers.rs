@@ -779,3 +779,119 @@ pub fn handle_export(server: &McpServer, args: &Map<String, Value>) -> ToolHandl
     let s = serde_json::to_string_pretty(&report).map_err(|e| format!("{e}"))?;
     ok_text(s)
 }
+
+// ── brain_* semantic tool handlers (Phase C Task C1) ─────────────────────────
+
+pub fn handle_brain_status(server: &McpServer, _args: &Map<String, Value>) -> ToolHandlerResult {
+    let Some(store) = &server.semantic_store else {
+        return Err("brain not initialized — no SemanticStore attached".to_owned());
+    };
+    let head = store.ledger_head().map_err(|e| format!("{e}"))?;
+    let claims = store
+        .all_claims_current(head, chrono::Utc::now())
+        .map_err(|e| format!("{e}"))?;
+    let payload = serde_json::json!({
+        "ledger_head": head,
+        "active_claims": claims.active.len(),
+        "schema_version": store.schema_version(),
+        "status": "healthy",
+    });
+    let s = serde_json::to_string_pretty(&payload).map_err(|e| format!("{e}"))?;
+    ok_text(s)
+}
+
+pub fn handle_brain_search(server: &McpServer, args: &Map<String, Value>) -> ToolHandlerResult {
+    let Some(store) = &server.semantic_store else {
+        return Err("brain not initialized".to_owned());
+    };
+    let query = arg_str_req(args, "query")?.to_lowercase();
+    let domain_filter = arg_str(args, "domain");
+    let top_k = arg_usize(args, "top_k").unwrap_or(10);
+
+    let head = store.ledger_head().map_err(|e| format!("{e}"))?;
+    let claims = store
+        .all_claims_current(head, chrono::Utc::now())
+        .map_err(|e| format!("{e}"))?;
+
+    let results: Vec<serde_json::Value> = claims
+        .active
+        .iter()
+        .filter(|c| {
+            if let Some(ref d) = domain_filter
+                && c.domain != *d
+            {
+                return false;
+            }
+            c.subject.to_lowercase().contains(&query) || c.predicate.to_lowercase().contains(&query)
+        })
+        .take(top_k)
+        .map(|c| {
+            serde_json::json!({
+                "claim_id": c.claim_id,
+                "subject": c.subject,
+                "predicate": c.predicate,
+                "value": c.value,
+                "domain": c.domain,
+                "origin": format!("{:?}", c.origin),
+                "provenance": c.provenance_kind,
+                "entity_id": c.entity_id,
+            })
+        })
+        .collect();
+
+    let payload = serde_json::json!({
+        "query": query,
+        "count": results.len(),
+        "results": results,
+    });
+    let s = serde_json::to_string_pretty(&payload).map_err(|e| format!("{e}"))?;
+    ok_text(s)
+}
+
+pub fn handle_brain_get(server: &McpServer, args: &Map<String, Value>) -> ToolHandlerResult {
+    let Some(store) = &server.semantic_store else {
+        return Err("brain not initialized".to_owned());
+    };
+    let subject = arg_str_req(args, "subject")?;
+    let domain_filter = arg_str(args, "domain");
+
+    let head = store.ledger_head().map_err(|e| format!("{e}"))?;
+    let claims = store
+        .all_claims_current(head, chrono::Utc::now())
+        .map_err(|e| format!("{e}"))?;
+
+    let results: Vec<serde_json::Value> = claims
+        .active
+        .iter()
+        .filter(|c| {
+            if let Some(ref d) = domain_filter
+                && c.domain != *d
+            {
+                return false;
+            }
+            c.subject == subject
+        })
+        .map(|c| {
+            serde_json::json!({
+                "claim_id": c.claim_id,
+                "subject": c.subject,
+                "predicate": c.predicate,
+                "value": c.value,
+                "domain": c.domain,
+                "kind": c.claim_kind,
+                "origin": format!("{:?}", c.origin),
+                "provenance": c.provenance_kind,
+                "entity_id": c.entity_id,
+                "confidence": c.confidence_basis_points as f64 / 10_000.0,
+            })
+        })
+        .collect();
+
+    let payload = serde_json::json!({
+        "subject": subject,
+        "count": results.len(),
+        "claims": results,
+    });
+    let s = serde_json::to_string_pretty(&payload).map_err(|e| format!("{e}"))?;
+    ok_text(s)
+}
