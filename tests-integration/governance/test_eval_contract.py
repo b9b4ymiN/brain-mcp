@@ -329,8 +329,15 @@ def test_restore_fails_closed_when_registry_is_unavailable_or_invalid():
 
 
 def test_strict_environment_is_truthful_and_report_hashes_match():
+    # The eval manifest pins CPython 3.14.4; the governance suite may run
+    # under a different Python via uv. Invoke the eval runner through uv so
+    # the exact pinned Python is used, matching the manifest contract.
     completed = subprocess.run(
-        [sys.executable, str(EVAL_RUNNER), "--manifest", str(MANIFEST), "--strict-environment"],
+        [
+            "uv", "run", "--no-project", "--python", "3.14.4",
+            "python", str(EVAL_RUNNER), "--manifest", str(MANIFEST),
+            "--strict-environment",
+        ],
         cwd=REPO_ROOT,
         check=False,
         capture_output=True,

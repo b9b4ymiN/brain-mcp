@@ -72,10 +72,10 @@ The separate-suite command exited 0 in 164.6 seconds.
 
 | Corpus | Cases | SHA-256 |
 |---|---:|---|
-| Stocks | 30 | `68be5e04fb8fec9627259f69781e9c685eb77d221000e3c532e07d156ff5eb77` |
-| Projects | 30 | `7e5c9c98cfc623ded6f5f83497ab916e4b08982608eac9016aa3fb84461cb7bb` |
-| Knowledge | 30 | `21902c69f02893789f4e63e834afea75c05699c6afb1544f3f94fbee1c1758b3` |
-| Adversarial | 36 | `97d44b6dd000db24b403c6cdc4c4ff7ade3f9db2c03b224b2e3fffddfab00ae7` |
+| Stocks | 30 | `41023b6a9c1720bafbb723851432bb4cd0723c5a4e8e3bbe3d9ad0f83db84d82` |
+| Projects | 30 | `66363b2fda0a71a9869cd3e187af4c223ed3d713666e9e3ec0f45dfe53ef8f92` |
+| Knowledge | 30 | `b483e2b4e4e0e365d90159c7951295f95acdf003082061ca495abec0ba9ae0a9` |
+| Adversarial | 36 | `3dc1e03aae18519331c64df1776d2922734bc0f2bc857597a22179c424d93ccc` |
 
 The adversarial corpus retains the six original risk groups and adds concrete executable cases for purge-registry denial during cleanup, stale restore after a newer purge epoch, attempted public bind without authentication, revoked-key cleanup retry, restore while the registry is unavailable, and restore with an invalid registry checksum.
 

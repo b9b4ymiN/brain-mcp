@@ -29,7 +29,14 @@
     "random_seed": 20260713
   },
   "case_contract": {
-    "required_fields": ["id", "domain", "category", "input", "expected.answer_mode", "expected.invariants"],
+    "required_fields": [
+      "id",
+      "domain",
+      "category",
+      "input",
+      "expected.answer_mode",
+      "expected.invariants"
+    ],
     "id_uniqueness": "global across all corpora",
     "expected_output_location": "Each case's expected object; run.py emits a complete actual decision and compares every expected key for every case",
     "hard_invariant_policy": "Every named invariant must pass; missing execution is incomplete, not pass."
@@ -38,25 +45,25 @@
     "stocks": {
       "path": "evals/v1/cases/stocks.jsonl",
       "count": 30,
-      "sha256": "68be5e04fb8fec9627259f69781e9c685eb77d221000e3c532e07d156ff5eb77",
+      "sha256": "41023b6a9c1720bafbb723851432bb4cd0723c5a4e8e3bbe3d9ad0f83db84d82",
       "minimum": 30
     },
     "projects": {
       "path": "evals/v1/cases/projects.jsonl",
       "count": 30,
-      "sha256": "7e5c9c98cfc623ded6f5f83497ab916e4b08982608eac9016aa3fb84461cb7bb",
+      "sha256": "66363b2fda0a71a9869cd3e187af4c223ed3d713666e9e3ec0f45dfe53ef8f92",
       "minimum": 30
     },
     "knowledge": {
       "path": "evals/v1/cases/knowledge.jsonl",
       "count": 30,
-      "sha256": "21902c69f02893789f4e63e834afea75c05699c6afb1544f3f94fbee1c1758b3",
+      "sha256": "b483e2b4e4e0e365d90159c7951295f95acdf003082061ca495abec0ba9ae0a9",
       "minimum": 30
     },
     "adversarial": {
       "path": "evals/v1/cases/adversarial.jsonl",
       "count": 36,
-      "sha256": "97d44b6dd000db24b403c6cdc4c4ff7ade3f9db2c03b224b2e3fffddfab00ae7",
+      "sha256": "3dc1e03aae18519331c64df1776d2922734bc0f2bc857597a22179c424d93ccc",
       "minimum": 30,
       "minimum_per_required_category": 5
     }
@@ -66,8 +73,17 @@
     "sha256": "52cf853e13b1945a8f5fbe250b48b580d1a10dc3746c59a8853d2fae022a44e5",
     "formulas": "The locked metrics artifact defines denominators and formulas for Recall@10, nDCG@10, schema validity, evidence-span exactness, supported-claim precision, and confirmed unsupported claims.",
     "hard_invariants_pass_rate": 1.0,
-    "retrieval_thresholds": {"recall_at_10": 0.9, "ndcg_at_10": 0.8, "maximum_absolute_regression": 0.02},
-    "extraction_thresholds": {"schema_valid_after_bounded_repair": 0.99, "evidence_span_exactness": 1.0, "supported_claim_precision": 0.95, "confirmed_unsupported_claims": 0}
+    "retrieval_thresholds": {
+      "recall_at_10": 0.9,
+      "ndcg_at_10": 0.8,
+      "maximum_absolute_regression": 0.02
+    },
+    "extraction_thresholds": {
+      "schema_valid_after_bounded_repair": 0.99,
+      "evidence_span_exactness": 1.0,
+      "supported_claim_precision": 0.95,
+      "confirmed_unsupported_claims": 0
+    }
   },
   "promoted_baseline": {
     "source": "Task 0.2 evals/v1 reference corpus at promotion",
@@ -79,14 +95,50 @@
   "critical_regression": "Any hard-invariant failure; confirmed unsupported claim; unauthorized mutation/read; purged-data read/decrypt/resurrection; secret/local_only egress; silent overwrite; lost/duplicate event; evidence hash mismatch; or retrieval metric drop greater than 0.02 absolute from the promoted baseline.",
   "promotion_policy": "A candidate is promotable only when every hard invariant passes, every threshold is met, no metric regresses by more than 0.02 absolute, artifacts match this byte lock, and the run emits failure samples and environment metadata.",
   "locked_artifacts": [
-    {"path":"docs/adr/0001-semantic-authority-time-privacy.md","sha256":"f6135c610ae6c6aa4265af76654cfb2fe434de6c3b9fc564d079795b3998336f","bytes":18812},
-    {"path":"docs/security/threat-model-v1.md","sha256":"bb3de7ce973982fa71f5d7b5fd0f8a53d6a8e85cbec0657035d592f317083125","bytes":7516},
-    {"path":"evals/v1/contracts/event-schema-v1.json","sha256":"4c1c604bc0b8f08e5431b7e413b5d6f1c9775cf07af1bfb0339a97ea2da11fb9","bytes":3355},
-    {"path":"evals/v1/metrics.json","sha256":"52cf853e13b1945a8f5fbe250b48b580d1a10dc3746c59a8853d2fae022a44e5","bytes":2995},
-    {"path":"evals/v1/run.py","sha256":"ae1049a9838bd8615943c330792d4d1813d8b6a57bf306e6bfa96c8b59311062","bytes":56905},
-    {"path":"evals/v1/cases/stocks.jsonl","sha256":"68be5e04fb8fec9627259f69781e9c685eb77d221000e3c532e07d156ff5eb77","bytes":10583},
-    {"path":"evals/v1/cases/projects.jsonl","sha256":"7e5c9c98cfc623ded6f5f83497ab916e4b08982608eac9016aa3fb84461cb7bb","bytes":9174},
-    {"path":"evals/v1/cases/knowledge.jsonl","sha256":"21902c69f02893789f4e63e834afea75c05699c6afb1544f3f94fbee1c1758b3","bytes":9335},
-    {"path":"evals/v1/cases/adversarial.jsonl","sha256":"97d44b6dd000db24b403c6cdc4c4ff7ade3f9db2c03b224b2e3fffddfab00ae7","bytes":10210}
+    {
+      "path": "docs/adr/0001-semantic-authority-time-privacy.md",
+      "sha256": "7eb311a941c1a50b6c1e9981104f13731804ed8b53d312d7ba7f8a5911ee7604",
+      "bytes": 19046
+    },
+    {
+      "path": "docs/security/threat-model-v1.md",
+      "sha256": "b9f0fa4439344d15f375b7f61fdb869a03dc03926bd97e1e4f0e129dfeaed5bd",
+      "bytes": 7562
+    },
+    {
+      "path": "evals/v1/contracts/event-schema-v1.json",
+      "sha256": "5469c443d9f70f68301e1f267ad0173b236b95482061e1b94932854fc95132c7",
+      "bytes": 3466
+    },
+    {
+      "path": "evals/v1/metrics.json",
+      "sha256": "bc87a47aa24d3658356d065c9aa1cef5ed5bea5e1db284846910eb0a7e925714",
+      "bytes": 3072
+    },
+    {
+      "path": "evals/v1/run.py",
+      "sha256": "6bca0b2c376ee8abcd46dcbd6a599d828eccd3a19bb13b61a5f599eaadb7b5dd",
+      "bytes": 57986
+    },
+    {
+      "path": "evals/v1/cases/stocks.jsonl",
+      "sha256": "41023b6a9c1720bafbb723851432bb4cd0723c5a4e8e3bbe3d9ad0f83db84d82",
+      "bytes": 10613
+    },
+    {
+      "path": "evals/v1/cases/projects.jsonl",
+      "sha256": "66363b2fda0a71a9869cd3e187af4c223ed3d713666e9e3ec0f45dfe53ef8f92",
+      "bytes": 9204
+    },
+    {
+      "path": "evals/v1/cases/knowledge.jsonl",
+      "sha256": "b483e2b4e4e0e365d90159c7951295f95acdf003082061ca495abec0ba9ae0a9",
+      "bytes": 9365
+    },
+    {
+      "path": "evals/v1/cases/adversarial.jsonl",
+      "sha256": "3dc1e03aae18519331c64df1776d2922734bc0f2bc857597a22179c424d93ccc",
+      "bytes": 10246
+    }
   ]
 }
