@@ -112,6 +112,36 @@ pub struct BackupHealth {
     pub last_restore_drill_ok: bool,
 }
 
+/// Client/token activity audit for the operations dashboard (Task 5.3 F1).
+/// §9.1 Operations item 7: "clients/tokens". Records which clients are
+/// registered, their last activity, and token grant counts — NOT person
+/// inference (TM-024).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientActivity {
+    pub client_id: String,
+    pub label: String,
+    /// Capabilities granted to this client.
+    pub capabilities: Vec<String>,
+    /// ISO-8601 UTC of the client's last mutation.
+    pub last_active_at: String,
+    /// Total mutations this client has committed (audit counter).
+    pub mutation_count: u64,
+}
+
+/// Eval health for the operations dashboard (Task 5.3 F1). §9.1 Operations
+/// item 7: "evals". Summarizes the last domain-eval run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvalSummary {
+    /// Total cases in the last run.
+    pub case_count: u32,
+    /// Cases that passed.
+    pub passed: u32,
+    /// True if the hard abstention invariant passed 100%.
+    pub abstention_passed: bool,
+    /// ISO-8601 UTC of the run.
+    pub run_at: String,
+}
+
 // ── Destructive-action warning ───────────────────────────────────────────────
 
 /// The destructive actions that require a warning + nonce.
@@ -123,26 +153,50 @@ pub enum DestructiveAction {
     EntitySplit,
 }
 
+/// One item that a destructive action will affect (Task 5.3 F2). The preview
+/// enumerates the exact targets so the user sees what will be lost/changed
+/// before confirming — not just a warning string.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DestructivePreviewItem {
+    /// The kind of target (claim, entity, object, etc.).
+    pub target_kind: String,
+    /// The target id.
+    pub target_id: String,
+    /// Human-readable description of the effect.
+    pub effect: String,
+}
+
 /// A warning the UI MUST display before a destructive action. §5.3 "hard purge
 /// มี preview, recent re-auth, two-step nonce และคำเตือนว่า irreversible โดยไม่มี
-/// undo".
+/// undo". `requires_recent_reauth` (F3) and `requires_two_step_nonce` are
+/// SEPARATE controls: re-auth = authentication-freshness gate; nonce =
+/// operation-confirmation token. `preview` (F2) enumerates the exact targets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DestructiveWarning {
     pub action: DestructiveAction,
     pub irreversible: bool,
+    /// True if the user must have re-authenticated recently (freshness gate).
+    pub requires_recent_reauth: bool,
+    /// True if the action requires a single-use confirmation nonce.
     pub requires_two_step_nonce: bool,
+    /// The exact targets the action will affect (F2 structured preview).
+    pub preview: Vec<DestructivePreviewItem>,
     /// The human-readable warning message (must state "no undo" for hard purge).
     pub message: String,
 }
 
 impl DestructiveWarning {
-    /// Build the warning for a given action.
+    /// Build the warning for a given action. The `preview` list is empty by
+    /// default — the caller populates it with the actual targets before
+    /// showing the warning to the user.
     pub fn for_action(action: DestructiveAction) -> Self {
         match action {
             DestructiveAction::HardPurge => Self {
                 action,
                 irreversible: true,
+                requires_recent_reauth: true,
                 requires_two_step_nonce: true,
+                preview: Vec::new(),
                 message: "Hard purge is IRREVERSIBLE: the content key is destroyed and \
                           the data cannot be recovered. There is no undo."
                     .to_owned(),
@@ -150,7 +204,9 @@ impl DestructiveWarning {
             DestructiveAction::EntityMerge | DestructiveAction::EntitySplit => Self {
                 action,
                 irreversible: false, // merge/split are audited events with undo via retract
+                requires_recent_reauth: false,
                 requires_two_step_nonce: false,
+                preview: Vec::new(),
                 message: "This operation is an audited event; it can be reversed via \
                           retract."
                     .to_owned(),

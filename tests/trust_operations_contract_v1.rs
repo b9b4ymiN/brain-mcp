@@ -5,8 +5,9 @@
 //! ops carry preview + irreversible warnings.
 
 use llm_wiki::trust::{
-    BackupHealth, DestructiveAction, DestructiveWarning, JobSummary, ProvenanceAnswer,
-    ProvenanceQuestion, RetrievalTrace, TrustFlag, TrustView,
+    BackupHealth, ClientActivity, DestructiveAction, DestructivePreviewItem, DestructiveWarning,
+    EvalSummary, JobSummary, ProvenanceAnswer, ProvenanceQuestion, RetrievalTrace, TrustFlag,
+    TrustView,
 };
 
 // =============================================================================
@@ -134,4 +135,68 @@ fn hard_purge_warning_is_irreversible_and_requires_nonce() {
         "warning must state there is no undo / cannot be recovered: got {}",
         warning.message
     );
+}
+
+/// Hard purge requires BOTH recent re-auth AND a two-step nonce — they are
+/// separate controls (F3). Re-auth = authentication freshness; nonce =
+/// operation-confirmation token. §5.3 + §10 SELECTED PURGE POLICY.
+#[test]
+fn hard_purge_requires_recent_reauth_distinct_from_nonce() {
+    let warning = DestructiveWarning::for_action(DestructiveAction::HardPurge);
+    assert!(
+        warning.requires_recent_reauth,
+        "hard purge must require recent re-auth (freshness gate)"
+    );
+    assert!(
+        warning.requires_two_step_nonce,
+        "hard purge must require a two-step nonce (confirmation token)"
+    );
+    // Merge/split do NOT require re-auth (they are reversible audited events).
+    let merge = DestructiveWarning::for_action(DestructiveAction::EntityMerge);
+    assert!(!merge.requires_recent_reauth);
+    assert!(!merge.requires_two_step_nonce);
+}
+
+/// The destructive warning carries a structured `preview` list of affected
+/// targets (F2), not just a message string. The Console populates it before
+/// showing the warning so the user sees exactly what will be lost.
+#[test]
+fn destructive_warning_carries_structured_preview() {
+    let mut warning = DestructiveWarning::for_action(DestructiveAction::HardPurge);
+    warning.preview.push(DestructivePreviewItem {
+        target_kind: "object".to_owned(),
+        target_id: "sha256:abc123".to_owned(),
+        effect: "content key destroyed — bytes unreadable".to_owned(),
+    });
+    assert_eq!(warning.preview.len(), 1);
+    assert_eq!(warning.preview[0].target_id, "sha256:abc123");
+}
+
+/// `ClientActivity` surfaces client/token audit (F1 — DoD bullet 1 "client
+/// activity"). §9.1 Operations item 7. NOT person inference (TM-024).
+#[test]
+fn client_activity_surfaces_audit_not_person() {
+    let activity = ClientActivity {
+        client_id: "cli-1".to_owned(),
+        label: "claude-desktop".to_owned(),
+        capabilities: vec!["brain.read".into(), "brain.confirm".into()],
+        last_active_at: "2026-07-16T00:00:00Z".to_owned(),
+        mutation_count: 42,
+    };
+    assert_eq!(activity.label, "claude-desktop");
+    assert_eq!(activity.mutation_count, 42);
+    // No person field — only client/channel audit.
+}
+
+/// `EvalSummary` surfaces eval health (F1 — DoD bullet 1 "evals").
+#[test]
+fn eval_summary_reports_health() {
+    let eval = EvalSummary {
+        case_count: 126,
+        passed: 126,
+        abstention_passed: true,
+        run_at: "2026-07-16T00:00:00Z".to_owned(),
+    };
+    assert_eq!(eval.passed, 126);
+    assert!(eval.abstention_passed);
 }
