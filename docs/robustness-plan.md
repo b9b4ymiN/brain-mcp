@@ -117,7 +117,17 @@ Commands (ตามลำดับ):
 
 ---
 
-## 5. Phase C — `brain_*` Semantic Wiring ⬜ pending
+## 4b. Phase B — สถานะ ✅ CLOSED 2026-07-16
+
+B1 (`d389e70`) loopback bind + dep bumps (audit 0 vuln), B2 (`261c4a8`) eval re-lock (governance 10/10, byte_lock ผ่าน), B3 (`cbe3182`) auth gate wiring — **B3 มี F1 gap** (gate เขียนแต่ `serve()` ไม่เปิด) → แก้ที่ `a9cec81` (F1 fix: `serve()` เรียก `with_auth_policy`, dispatch-level tests). Review: `docs/baseline/review-phaseBC-20260716.md`. **เปิดค้าง: F2** (brain_* ใช้ owner context เสมอ → privilege separation ยังไม่ end-to-end) → ยกไป **Phase D Task D2**; **F3** (search substring in-memory) → ยกไป Phase E/retrieval.
+
+---
+
+## 5. Phase C — `brain_*` Semantic Wiring ✅ CLOSED 2026-07-16
+
+C1 (`dec92a3`) read tools + SemanticStore wiring, C2 (`208fed1`) capture/confirm/supersede, C3 (`a544d5f`) serve auto-creates store + E2E stdio. brain_* ใช้ได้จริงจาก Claude Code ผ่าน stdio. **หมายเหตุ:** read tools ที่ wire จริงคือ status/search/get (timeline/evidence/explain ยังไม่ wire — ยกไป Phase E retrieval); brain_ingest_source/merge/split/purge ยกไป Phase D/E ตามที่ต้องใช้
+
+<details><summary>รายละเอียด Phase C เดิม (outline)</summary>
 
 > ทำให้ contract กลายเป็นระบบจริง: Claude Code เรียก `brain_search` ได้จริง (D1)
 
@@ -135,44 +145,153 @@ Commands (ตามลำดับ):
 - **DoD:** §13 Task 3.2 DoD ปิดด้วย runtime evidence: read/write/as-of/needs-input scenarios ผ่านจาก client จริงอย่างน้อย 2 ตัว; disconnect/retry ไม่ duplicate mutation
 
 **Phase C Gate:** GULF temporal scenario (§11) ตอบถูกจาก Claude Code จริง end-to-end
+</details>
 
 ---
 
-## 6. Phase D — Z.ai Adapter จริง ⬜ pending
+## 6. Phase D — Z.ai Adapter จริง (AI Ingestion end-to-end) ⬜ NEXT
 
-> ยิง network ไป api.z.ai ต้องถามผู้ใช้ก่อนทุกครั้ง; API key ผ่าน secret manager/env เท่านั้น ห้ามลง repo
+> เป้าหมาย: ปิด Phase 4 Gate แบบ **runtime** — AI สร้าง proposal ที่ตรวจย้อนได้จริงผ่าน adapter จริง โดย worker ไม่มีสิทธิ์ confirm
+> **Decision (2026-07-16): NO MOCK** — adapter ทดสอบกับ endpoint จริง `https://api.z.ai/api/coding/paas/v4/chat/completions`
+> **Network policy:** live test gate ด้วย `ZAI_API_KEY` env present; ยิง batch แรกต้องขออนุมัติ; response จริงที่ได้ถูกเก็บเป็น **golden fixtures (bytes จริง)** เพื่อ replay ใน CI/regression โดยไม่ยิงซ้ำ (ไม่ใช่ mock — เป็นการบันทึก real bytes). ไม่มี key → live tests `skip` (ไม่ fabricate)
+> **Secret:** API key ผ่าน env/Docker secret เท่านั้น; grep-gate กัน key เข้า repo/log
 
-### Task D1 — Concrete HTTP adapter
-- implement `AiProvider` สำหรับ Z.ai OpenAI-compatible endpoint หลัง `ProviderConfig` + kill switch
-- **DoD:** timeout/quota/429/5xx/invalid-JSON/partial-stream tests ผ่านกับ mock server; live smoke test (ขออนุมัติก่อน) ผ่าน
+### Task D1 — ZaiHttpAdapter จริง + golden replay *(ต่อจาก RED `babda7d`)*
+- `ZaiHttpAdapter` implement `AiProvider` — ยิง HTTP จริงผ่าน `reqwest` (หรือ client ที่มีใน tree); **ลบ mock-transport `Box<dyn Fn>`** ที่ค้างใน `provider.rs:312` (ปิด clippy `type_complexity` ในตัว)
+- Map `ProviderError` ครบ 8 modes (timeout/quota/429/5xx/invalid-JSON/partial-stream/outage/disabled) + bounded retry/backoff + kill switch
+- ทุก request ผ่าน `OutboundPolicy` **check-then-send ครบทั้ง normal + retry + dead-letter path**
+- Live smoke: chat completion + `json_object` round-trip → validate JSON schema ฝั่งเราเอง → บันทึก golden response
+- `ComplianceRecord` เขียนจริง: user decision, endpoint, workload, known-terms risk, retention/region, `acknowledged_at` timestamp
 
-### Task D2 — Extraction round-trip + adversarial corpus
-- source → spans → typed proposals กับ adapter จริง; รัน §11 adversarial corpus (30 cases)
-- **DoD:** prompt-injection corpus ไม่ทำให้ worker ข้าม policy; local-only/secret negative corpus ผ่าน 100% ทุก path (normal/repair/retry/failure); intercepted outbound ยืนยันไม่มี secret egress
+**DoD:**
+1. Live smoke (ขออนุมัติ): real chat completion สำเร็จ, JSON schema-valid หลัง bounded repair, golden fixture บันทึก
+2. Error-mode tests ครบ 8 (ใช้ golden/real error responses ที่ capture ได้ + timeout/disabled ที่ trigger ได้จริง) + retry bounded + kill switch block
+3. Intercepted-outbound: `local_only`/detected secret **ไม่ปรากฏ**ใน request/retry/dead-letter/telemetry/log — 100%
+4. `ComplianceRecord` ครบทุก field + persisted
+5. ไม่มี key ใน repo/log (grep gate); fmt/clippy clean (รวม provider.rs); full regression เขียว
 
-**Phase D Gate:** §13 Phase 4 Gate ปิดแบบ runtime (ไม่ใช่ contract-only) + compliance record ครบ
+### Task D2 — Worker identity + privilege separation *(ปิด F2 ค้างจาก review)*
+- brain_* handlers เลิก hardcode `trusted_context()` → derive context จาก MCP principal: owner (full) หรือ registered worker (`register_client_scoped(label, [Propose])`)
+- เพิ่ม `brain_propose` (worker → `propose_inference`, status `proposed` เสมอ)
+- Enforcement 2 ชั้น: MCP dispatch (`check_capability` — มีแล้วจาก F1) + store layer (propose-only context เรียก confirm → fail-closed)
+
+**DoD:**
+1. Worker context เรียก `brain_confirm`/`brain_supersede`/`brain_purge` → denied **ทั้งชั้น dispatch และชั้น store** (negative tests แยก 2 ชั้น)
+2. Worker เรียก `brain_propose` ได้; proposal เป็น `proposed` เสมอ ไม่มีทาง auto-confirm
+3. Owner path ไม่พัง: brain E2E stdio เขียวเหมือนเดิม
+
+### Task D3 — Extraction pipeline live: source → spans → typed proposals
+- `brain_ingest_source` (URL/file/text → quarantine ใน object store) + **SSRF guard**: URL allow/deny, private-IP block, redirect cap, size/MIME limits
+- Worker: quarantined source → `ExtractionProposal` + **exact evidence span** (slice bytes จาก rendition → hash ต้องตรง `quote_sha256` — ปิด F1/F2 informational ของ Task 4.2 เดิม)
+- JSON schema validation + bounded repair; partial stream = ทิ้ง
+- Adversarial corpus §11 (30 cases) รันกับ adapter จริง (golden replay สำหรับ regression)
+
+**DoD:**
+1. Evidence-span exactness **100%** บน annotated fixtures
+2. Prompt-injection corpus: worker ไม่ execute instruction/side effect — 100%
+3. `local_only`/secret negative corpus 100% ครบ normal/repair/retry/failure
+4. Schema-valid after bounded repair ≥99%; audit ครบ prompt/model/schema version
+5. SSRF tests (private IP, redirect-to-internal, oversized, bad MIME) — denied ทั้งหมด
+
+**Phase D Gate:** eval domain (stocks/projects/knowledge) ผ่าน adapter จริง + adversarial 100% + ไม่มี direct truth mutation + compliance record ครบ → **Independent Validator PASS**
 
 ---
 
-## 7. Phase E — Console + Galaxy จริง ⬜ pending
+## 7. Phase E — React Console + Galaxy Graph ⬜ pending
 
-### Task E1 — React Console shell + review workflow (Home/Search/Inbox/Entity/Operations)
-- **DoD:** §13 Task 5.1 DoD เดิมทั้งหมด — API จริงไม่มี mock path, E2E states, XSS/CSP tests ผ่าน
-### Task E2 — Galaxy 3D + LOD + fallback
-- **DoD:** §13 Task 5.2 DoD เดิม — benchmark fixtures 1k/5k/20k, FPS/latency targets, no-WebGL fallback
+> เป้าหมาย: ปิด Phase 5 Gate — Console เรียก application API จริง ไม่มี mock/TODO path + Galaxy 3D + browser/security/a11y/perf gates
+> **Decision (2026-07-16): มี Task E0 HTTP JSON/SSE API layer** (ตัวเลือกที่ดีที่สุด — Console ต้องการ session cookie/CSRF/browser auth ที่ MCP protocol ให้ไม่ได้; §9 = application service เดียวกับ MCP expose เป็น HTTPS; decouple UI จาก MCP evolution)
+> **Deps ใหม่ (ขออนุมัติก่อน install):** React + Vite + `react-force-graph-3d@1.29.1` + `react-force-graph-2d` + Playwright
+
+### Task E0 — Console HTTP JSON/SSE API layer
+- HTTP endpoint เรียก application service เดียวกับ MCP (ไม่แตะ SQLite/Git/index ตรง) — reuse handler layer ของ brain_*
+- Auth: session cookie (HttpOnly/SameSite) + CSRF token; dev = local bootstrap, production = OAuth (Phase F)
+- SSE stream สำหรับ jobs/updates
+
+**DoD:**
+1. endpoint ครอบ read + review actions (search/get/timeline/evidence/inbox/approve/reject/supersede)
+2. auth + CSRF negative tests ผ่าน (no-session → 401, bad-CSRF → 403)
+3. ไม่มี direct storage write (ทุกอย่างผ่าน application service); audit link ครบ
+
+### Task E1 — Console shell + review workflow (Home/Search/Inbox/Entity/Operations)
+- React+Vite; 5 หน้าเรียก E0 API จริง (mock-first ตอน dev แต่ integrate ก่อนปิด)
+- Inbox: approve/reject/edit/supersede แสดง evidence + diff ก่อน commit; SafeText render (contract Task 5.1)
+
+**DoD (§13 Task 5.1):**
+1. 5 หน้าเรียก API จริง ไม่มี mock/TODO path (grep gate ใน production build)
+2. approve/reject/edit/supersede แสดง evidence/diff ก่อน commit — Playwright E2E
+3. loading/empty/error/permission states + keyboard nav — E2E pass
+4. XSS/CSP: inject payload ใน claim/source → escaped, CSP block inline
+
+### Task E2 — Galaxy 3D graph + LOD + fallback
+- `react-force-graph-3d` หลัง `GraphRenderer` interface (contract Task 5.2); 2D/list fallback
+- Server ส่ง bounded subgraph/ego network; semantic zoom Far/Mid/Close (≤300/≤2000/ego)
+- Label/tooltip ผ่าน escaped textContent
+
+**DoD (§13 Task 5.2 verbatim):**
+1. cluster/zoom/click/focus/filter/expand ทำงาน; side panel = current claim/source/timeline/connections
+2. edit/add จาก graph ผ่าน API + audit event
+3. Benchmark (pinned Playwright Chromium, 1920×1080/DPR1, warm-up 10s, 5 runs, median/p95, baseline 4-core/8GB/iGPU): **1k ≥45 FPS, 5k ≥30 FPS, click p95 <100ms, search-to-focus <300ms**
+4. cluster counts/aggregated edges = raw fixture 100%; heap โต ≤10% หลัง mount/filter 20 รอบ
+5. no-WebGL/reduced-motion/keyboard/list-2D fallback ใช้งานได้
+6. `bench/environment.json` บันทึก OS/browser/Playwright/GPU/CPU/RAM/seed
+
 ### Task E3 — Trust/ops views + UAT
-- **DoD:** §13 Task 5.3 DoD เดิม + **Phase 5 Gate ปิด**: UAT หุ้น/โปรเจกต์/ความรู้ + browser/security/a11y/perf gates
+- Contradictions/staleness/retrieval-trace/client-activity/jobs/evals/backup-health (contract Task 5.3)
+- Entity merge/split + retract = preview/undo; hard purge = preview + recent re-auth + two-step nonce + คำเตือน irreversible
+- UAT 3 โดเมน (หุ้น/โปรเจกต์/ความรู้)
+
+**DoD (§13 Task 5.3):**
+1. ตอบ "รู้อะไร/มาจากไหน/จริงเมื่อไร/เชื่อมอะไร/client ใดแก้" ได้จาก UI
+2. destructive actions มี guard ครบ (preview/reauth/nonce/undo-where-reversible)
+3. UAT 3 โดเมน pass; a11y (keyboard/contrast/screen-reader labels) pass
+
+**Phase E Gate = Phase 5 Gate ปิด:** UAT + browser/security/a11y/perf gates ผ่าน → **Independent Validator PASS**
 
 ---
 
-## 8. Phase F — Production Closure ⬜ pending
+## 8. Phase F — Production Deployment (Docker) + Recovery ⬜ pending
 
-### Task F1 — `docker compose up` จริงบน clean host (amd64; arm64 ตาม availability)
-- **DoD:** §13 Task 6.1 DoD — smoke/health/MCP/Console checks ผ่าน; secrets ไม่ bake ใน image/repo
-### Task F2 — Clean-host restore drill จริง + upgrade/rollback rehearsal
-- **DoD:** §13 Task 6.3 DoD — restore drill ผ่านพร้อม composite checksum + purge registry sync fail-closed; RPO/RTO บันทึก
-### Task F3 — External security review
-- **DoD:** **Phase 6 Gate ปิด**: ไม่มี critical/high unresolved
+> เป้าหมาย: ปิด Phase 6 Gate — `docker compose up` จริงบน clean host + restore drill จริง + external security review
+> **Decision (2026-07-16): Docker ต้องรันได้ทั้ง 2 arch จริง** — `docker buildx` multi-arch + QEMU emulation รัน arm64 container smoke บนเครื่องนี้ (ไม่ carry ไป Oracle)
+
+### Task F1 — Reproducible deployment (Docker Compose, multi-arch)
+- Dockerfile multi-stage (pinned base + toolchain) + `docker-compose.yml` (contract `DeploymentManifest` Task 6.1)
+- `docker buildx build --platform linux/amd64,linux/arm64`; รัน arm64 smoke ผ่าน QEMU
+- Secrets ผ่าน Docker secrets/secret files — ไม่ bake ใน image/compose/repo
+- Health/readiness: ไม่ ready ก่อน DB+migration+index checks ผ่าน (contract `ReadinessCheck`)
+- TLS + bind: default loopback (F1 fix); production 0.0.0.0 เฉพาะหลัง reverse proxy + auth (ผูก D2)
+
+**DoD (§13 Task 6.1):**
+1. `docker compose up` บน clean host ผ่าน smoke/health/MCP/Console checks — **amd64 และ arm64 (QEMU)**
+2. images build+test ทั้ง `linux/amd64` + `linux/arm64`; deps/toolchain/base pinned
+3. HTTPS/domain/secrets/volumes/migrations/backup จาก runbook บน clean host ได้
+4. health ไม่รายงาน ready ก่อน checks ผ่าน (negative test)
+5. ไม่มี secret ใน image layers (scan gate)
+
+### Task F2 — Observability + operations wiring *(ปิด contract-only Task 6.2)*
+- Wire `LogRedactor` เข้า log path จริง; structured logs/metrics/traces/queue-depth/projection-lag/auth-failures/storage alerts
+- Rate/size/time limits บังคับ runaway ingest + provider cost/quota จริง
+
+**DoD (§13 Task 6.2):**
+1. Log redaction: token/source secret ไม่รั่วใน log จริง (integration test ยิง log แล้ว grep)
+2. Metrics endpoint expose ครบ; projection lag/auth failure นับได้จริง
+3. Ingest limits บังคับจริง (เกิน limit → reject)
+
+### Task F3 — Backup/restore/upgrade + external security review
+- Encrypted automated backup (objects/ledger/Git/config); **clean-host restore drill จริงใน Docker**
+- Restore sync PurgeRegistry + key revocations ก่อน decrypt; registry stale/unavailable → **fail closed**
+- Composite checksum (`ledger_head+purge_epoch+schema_version`) + event/object/Git/referential/projection manifests ตรง
+- Schema upgrade + app rollback rehearsal; RPO/RTO บันทึก + monitor
+- External security review (security-reviewer agent แยก — เทียบเท่า external)
+
+**DoD (§13 Task 6.3):**
+1. Restore drill บน clean Docker host ผ่าน + composite checksum ตรง + registry fail-closed พิสูจน์
+2. Upgrade + rollback rehearsal ผ่านโดยข้อมูลไม่หาย
+3. RPO/RTO บันทึกและ monitor ได้
+4. Security review ไม่มี critical/high unresolved
+
+**Phase F Gate = Phase 6 Gate ปิด:** production acceptance + external review clear + restore ได้จริง → **Independent Validator PASS** → **ระบบ production-ready**
 
 ---
 
@@ -198,3 +317,5 @@ Commands (ตามลำดับ):
 | 2026-07-16 | A3 ปิด + **Phase A Gate: Independent Validator PASS 10/10** — report: `docs/baseline/audit-20260716-report.md`; S1 HIGH ใหม่ (0.0.0.0 bind ไม่มี auth); Phase B re-ordered เป็น B1 bind+deps → B2 eval re-lock → B3 auth wiring |
 | 2026-07-16 | **ผู้ใช้ทำ B1–B2–C1–C2–C3 เอง** (commits `d389e70`..`a544d5f`) |
 | 2026-07-16 | **Review Phase B+C** (`docs/baseline/review-phaseBC-20260716.md`): B1/B2/C1/C2/C3 PASS (verified re-run: audit 0 vuln, eval exit 0, governance 10/10, brain E2E 2/2, regression 0 fail) — **แต่ F1 HIGH: B3 auth gate เขียนแล้วแต่ `serve()` ไม่เปิดใช้ (`with_auth` ไม่ถูกเรียกที่ไหนเลย) → S2 ยังไม่ปิดจริง**. ต้อง reopen B3 |
+| 2026-07-16 | **F1 fix `a9cec81`**: `serve()` เปิด auth gate (`with_auth_policy` + owner_principal), extract `check_capability`, 3 dispatch-level tests. S2 ปิดจริง. F2/F3 ยกไป Phase D/E |
+| 2026-07-16 | **Phase D/E/F detailed plan** เขียนครบ + 3 decisions ล็อค: (1) Phase D no-mock ยิง Z.ai จริง + golden replay; (2) Phase E มี E0 HTTP JSON/SSE API layer; (3) Phase F docker buildx multi-arch รัน arm64 ผ่าน QEMU. Phase D = next |
