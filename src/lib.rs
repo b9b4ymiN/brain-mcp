@@ -49,6 +49,9 @@ pub mod links;
 pub mod markdown;
 /// MCP server and tool handlers.
 pub mod mcp;
+/// Observability contract (Task 6.2) — structured metrics, log redaction,
+/// ingest rate/size/time limits.
+pub mod observability;
 /// High-level operations called by CLI and server handlers.
 pub mod ops;
 /// Projection adapters — Tantivy/Petgraph/generated Markdown built from the

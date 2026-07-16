@@ -138,6 +138,14 @@ impl OutboundPolicy {
         }
     }
 
+    /// Redact known secret patterns from `text`, replacing values with
+    /// `[REDACTED]`. Used by the observability log redactor (Task 6.2) and
+    /// anywhere a string carrying untrusted content is about to enter a log
+    /// or URL. Reuses `detect_secret`'s patterns.
+    pub fn check_text_redact(text: &str) -> String {
+        redact_secrets(text)
+    }
+
     /// Check a request against the policy. Returns a decision the adapter
     /// honors before constructing the outbound HTTP call. Prefer
     /// [`Self::check_text`] when building a request from untrusted text (it
@@ -175,6 +183,47 @@ fn detect_secret(text: &str) -> Option<&'static str> {
         return Some("access_token");
     }
     None
+}
+
+/// Redact known secret patterns from `text`, replacing the secret VALUE with
+/// `[REDACTED]` (keeping the marker/prefix visible for debuggability). Used
+/// by log redaction (Task 6.2). Conservative — over-redaction is safe.
+fn redact_secrets(text: &str) -> String {
+    let mut out = text.to_owned();
+    out = redact_value_after_marker(&out, "Bearer ");
+    out = redact_value_after_marker(&out, "access_token=");
+    out = redact_value_after_marker(&out, "api_key=");
+    // Redact sk-<key> (case-insensitive find, replace key material).
+    let lower = out.to_ascii_lowercase();
+    if let Some(idx) = lower.find("sk-") {
+        let key_len = out[idx + 3..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+            .count();
+        if key_len >= 16 {
+            out.replace_range(idx..idx + 3 + key_len, "sk-[REDACTED]");
+        }
+    }
+    out
+}
+
+/// Replace the value following `marker` (case-insensitive, up to whitespace/
+/// `&`/`#`/end) with `[REDACTED]`.
+fn redact_value_after_marker(input: &str, marker: &str) -> String {
+    let marker_lower = marker.to_ascii_lowercase();
+    let lower = input.to_ascii_lowercase();
+    match lower.find(&marker_lower) {
+        None => input.to_owned(),
+        Some(idx) => {
+            let before = &input[..idx];
+            let after = &input[idx + marker.len()..];
+            let end = after
+                .find(|c: char| c.is_whitespace() || c == '&' || c == '#')
+                .unwrap_or(after.len());
+            let rest = &after[end..];
+            format!("{before}{marker}[REDACTED]{rest}")
+        }
+    }
 }
 
 // ── ProviderError (§8.1 failure modes) ───────────────────────────────────────
