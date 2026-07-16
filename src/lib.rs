@@ -12,6 +12,11 @@ pub mod config;
 pub mod default_schemas;
 /// Central wiki engine — mounts spaces and manages indexes.
 pub mod engine;
+/// Evidence-linked extraction pipeline (Task 4.2) — source→spans→typed
+/// proposals with provenance, prompt-injection resistance, and a
+/// local-only/secret egress gate. The worker yields proposals only; it has
+/// no commit capability (§4 rule 5: AI proposes, policy commits).
+pub mod extraction;
 /// Frontmatter parsing, scaffolding, and serialization helpers.
 pub mod frontmatter;
 /// Git commit, history, and change-detection helpers.
