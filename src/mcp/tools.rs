@@ -90,6 +90,8 @@ fn annotations_for(name: &str) -> ToolAnnotations {
         | "semantic_search" | "semantic_get" | "procedural_find" | "procedural_get"
         | "graph_neighbors" | "audit_history" | "wiki_index_status" | "brain_status"
         | "brain_search" | "brain_get" => read_only(),
+        // brain_* mutations (Phase C C2)
+        "brain_capture" | "brain_confirm" | "brain_supersede" => write_additive(),
         // Destructive — removes data. `wiki_schema` is a multi-action tool
         // whose `action: remove` path can delete a schema file AND page files
         // from disk (`delete_pages: true`), so it is classified by its most
@@ -532,6 +534,57 @@ pub fn tool_list() -> Vec<Tool> {
                 &["subject"],
             ),
         ),
+        // brain_* mutation tools (Phase C Task C2)
+        Tool::new(
+            "brain_capture",
+            "Capture a user utterance as a proposed claim in the semantic brain",
+            schema(
+                json!({
+                    "operation_id": str_prop("Unique operation id (for idempotency)"),
+                    "utterance": str_prop("The user's exact utterance text"),
+                    "subject": str_prop("Claim subject"),
+                    "predicate": str_prop("Claim predicate"),
+                    "value": str_prop("Claim value"),
+                    "domain": str_prop("Domain (e.g. stocks, projects)"),
+                    "claim_kind": opt_str("Claim kind (default: user_assertion)"),
+                }),
+                &[
+                    "operation_id",
+                    "utterance",
+                    "subject",
+                    "predicate",
+                    "value",
+                    "domain",
+                ],
+            ),
+        ),
+        Tool::new(
+            "brain_confirm",
+            "Confirm a proposed claim in the semantic brain",
+            schema(
+                json!({
+                    "operation_id": str_prop("Unique operation id"),
+                    "proposal_operation_id": str_prop("The capture operation id to confirm"),
+                }),
+                &["operation_id", "proposal_operation_id"],
+            ),
+        ),
+        Tool::new(
+            "brain_supersede",
+            "Supersede an existing confirmed claim with a new one",
+            schema(
+                json!({
+                    "operation_id": str_prop("Unique operation id"),
+                    "proposal_operation_id": str_prop("The propose operation id for the new claim"),
+                    "superseded_claim_operation_ids": str_prop("Comma-separated confirm operation ids to supersede"),
+                }),
+                &[
+                    "operation_id",
+                    "proposal_operation_id",
+                    "superseded_claim_operation_ids",
+                ],
+            ),
+        ),
     ];
     // Task 3.1: attach the §7.2 annotation profile to every tool in a single
     // pass. This keeps the declarations above readable (3-arg Tool::new) and
@@ -585,6 +638,9 @@ pub fn call(server: &McpServer, name: &str, args: &Map<String, Value>) -> ToolRe
         "brain_status" => handlers::handle_brain_status(server, args),
         "brain_search" => handlers::handle_brain_search(server, args),
         "brain_get" => handlers::handle_brain_get(server, args),
+        "brain_capture" => handlers::handle_brain_capture(server, args),
+        "brain_confirm" => handlers::handle_brain_confirm(server, args),
+        "brain_supersede" => handlers::handle_brain_supersede(server, args),
         _ => Err(format!("unknown tool: {name}")),
     }));
     match result {

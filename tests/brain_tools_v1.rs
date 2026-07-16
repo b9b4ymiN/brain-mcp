@@ -152,3 +152,74 @@ fn brain_get_reads_single_claim() {
         .expect("found");
     assert_eq!(gulf.value, json!("58"));
 }
+
+// =============================================================================
+// Phase C Task C2 — brain_* mutation tools
+// =============================================================================
+
+#[test]
+fn brain_capture_tool_exists() {
+    let tools = tool_list();
+    assert!(tools.iter().any(|t| t.name == "brain_capture"));
+}
+
+#[test]
+fn brain_confirm_tool_exists() {
+    let tools = tool_list();
+    assert!(tools.iter().any(|t| t.name == "brain_confirm"));
+}
+
+#[test]
+fn brain_supersede_tool_exists() {
+    let tools = tool_list();
+    assert!(tools.iter().any(|t| t.name == "brain_supersede"));
+}
+
+#[test]
+fn brain_capture_and_confirm_round_trip() {
+    let (_parent, store) = store_fixture();
+    let ctx = store.trusted_context();
+
+    // brain_capture: user utterance
+    store
+        .propose_user_assertion(
+            &ctx,
+            ProposeUserAssertionCommand {
+                operation_id: "cap-1".to_owned(),
+                utterance: b"use docker compose".to_vec(),
+                draft: ClaimDraft {
+                    subject: "project:brain".to_owned(),
+                    predicate: "preference".to_owned(),
+                    value: json!("docker-compose"),
+                    claim_kind: "preference".to_owned(),
+                    domain: "projects".to_owned(),
+                    confidence_basis_points: 9_000,
+                    privacy_label: PrivacyLabel::LocalOnly,
+                    valid_from: None,
+                    valid_to: None,
+                },
+            },
+        )
+        .unwrap();
+
+    // brain_confirm: promote proposal to confirmed claim
+    store
+        .confirm(
+            &ctx,
+            ConfirmCommand {
+                operation_id: "confirm-1".to_owned(),
+                proposal_operation_id: "cap-1".to_owned(),
+            },
+        )
+        .unwrap();
+
+    // Verify the claim is now searchable
+    let head = store.ledger_head().unwrap();
+    let claims = store.all_claims_current(head, chrono::Utc::now()).unwrap();
+    assert_eq!(claims.active.len(), 1);
+    assert_eq!(claims.active[0].subject, "project:brain");
+    assert_eq!(
+        claims.active[0].origin,
+        llm_wiki::semantic::OriginClass::HumanAuthored
+    );
+}

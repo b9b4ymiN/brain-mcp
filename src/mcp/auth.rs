@@ -150,6 +150,9 @@ fn default_capability_for(name: &str) -> Capability {
         | "semantic_search" | "semantic_get" | "procedural_find" | "procedural_get"
         | "graph_neighbors" | "audit_history" | "wiki_index_status" | "brain_status"
         | "brain_search" | "brain_get" => Capability::Read,
+        // brain_* mutations (Phase C C2)
+        "brain_capture" => Capability::Capture,
+        "brain_confirm" | "brain_supersede" => Capability::Confirm,
         // Capture-class (raw source ingest into quarantine).
         "wiki_ingest" => Capability::Capture,
         // Propose-class (additive writes — content write/new/commit, spaces

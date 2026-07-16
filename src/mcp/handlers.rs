@@ -895,3 +895,112 @@ pub fn handle_brain_get(server: &McpServer, args: &Map<String, Value>) -> ToolHa
     let s = serde_json::to_string_pretty(&payload).map_err(|e| format!("{e}"))?;
     ok_text(s)
 }
+
+// ── brain_* mutation handlers (Phase C Task C2) ──────────────────────────────
+
+pub fn handle_brain_capture(server: &McpServer, args: &Map<String, Value>) -> ToolHandlerResult {
+    let Some(store) = &server.semantic_store else {
+        return Err("brain not initialized".to_owned());
+    };
+    let operation_id = arg_str_req(args, "operation_id")?;
+    let utterance = arg_str_req(args, "utterance")?;
+    let subject = arg_str_req(args, "subject")?;
+    let predicate = arg_str_req(args, "predicate")?;
+    let value_str = arg_str_req(args, "value")?;
+    let domain = arg_str_req(args, "domain")?;
+    let claim_kind = arg_str(args, "claim_kind").unwrap_or_else(|| "user_assertion".to_owned());
+
+    let value: serde_json::Value =
+        serde_json::from_str(&value_str).unwrap_or(serde_json::Value::String(value_str));
+
+    let ctx = store.trusted_context();
+    let outcome = store
+        .propose_user_assertion(
+            &ctx,
+            crate::semantic::ProposeUserAssertionCommand {
+                operation_id,
+                utterance: utterance.into_bytes(),
+                draft: crate::semantic::ClaimDraft {
+                    subject,
+                    predicate,
+                    value,
+                    claim_kind,
+                    domain,
+                    confidence_basis_points: 9_000,
+                    privacy_label: crate::semantic::PrivacyLabel::LocalOnly,
+                    valid_from: None,
+                    valid_to: None,
+                },
+            },
+        )
+        .map_err(|e| format!("{e}"))?;
+
+    let payload = serde_json::json!({
+        "event_seq": outcome.event.event_seq,
+        "proposal_id": outcome.generated.proposal_id,
+        "status": "proposed",
+    });
+    let s = serde_json::to_string_pretty(&payload).map_err(|e| format!("{e}"))?;
+    ok_text(s)
+}
+
+pub fn handle_brain_confirm(server: &McpServer, args: &Map<String, Value>) -> ToolHandlerResult {
+    let Some(store) = &server.semantic_store else {
+        return Err("brain not initialized".to_owned());
+    };
+    let operation_id = arg_str_req(args, "operation_id")?;
+    let proposal_operation_id = arg_str_req(args, "proposal_operation_id")?;
+
+    let ctx = store.trusted_context();
+    let outcome = store
+        .confirm(
+            &ctx,
+            crate::semantic::ConfirmCommand {
+                operation_id,
+                proposal_operation_id,
+            },
+        )
+        .map_err(|e| format!("{e}"))?;
+
+    let payload = serde_json::json!({
+        "event_seq": outcome.event.event_seq,
+        "claim_id": outcome.generated.claim_id,
+        "status": "confirmed",
+    });
+    let s = serde_json::to_string_pretty(&payload).map_err(|e| format!("{e}"))?;
+    ok_text(s)
+}
+
+pub fn handle_brain_supersede(server: &McpServer, args: &Map<String, Value>) -> ToolHandlerResult {
+    let Some(store) = &server.semantic_store else {
+        return Err("brain not initialized".to_owned());
+    };
+    let operation_id = arg_str_req(args, "operation_id")?;
+    let proposal_operation_id = arg_str_req(args, "proposal_operation_id")?;
+    let superseded_str = arg_str_req(args, "superseded_claim_operation_ids")?;
+    let superseded: Vec<String> = superseded_str
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let ctx = store.trusted_context();
+    let outcome = store
+        .supersede(
+            &ctx,
+            crate::semantic::SupersedeCommand {
+                operation_id,
+                proposal_operation_id,
+                superseded_claim_operation_ids: superseded,
+            },
+        )
+        .map_err(|e| format!("{e}"))?;
+
+    let payload = serde_json::json!({
+        "event_seq": outcome.event.event_seq,
+        "claim_id": outcome.generated.claim_id,
+        "status": "confirmed (superseded prior)",
+    });
+    let s = serde_json::to_string_pretty(&payload).map_err(|e| format!("{e}"))?;
+    ok_text(s)
+}

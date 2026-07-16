@@ -10,9 +10,9 @@ use llm_wiki::web;
 use serde_json::{Map, Value, json};
 
 #[test]
-fn tool_list_returns_33_tools() {
+fn tool_list_returns_36_tools() {
     let tools = tools::tool_list();
-    assert_eq!(tools.len(), 33);
+    assert_eq!(tools.len(), 36);
 }
 
 #[test]
@@ -463,6 +463,44 @@ fn mcp_tool_dispatch_smoke_calls_every_registered_tool() {
         ("brain_status", args(json!({}))),
         ("brain_search", args(json!({"query": "test"}))),
         ("brain_get", args(json!({"subject": "test"}))),
+        (
+            "brain_capture",
+            args(json!({
+                "operation_id": "smoke-cap",
+                "utterance": "test utterance",
+                "subject": "smoke-test",
+                "predicate": "test_pred",
+                "value": "test_value",
+                "domain": "projects",
+            })),
+        ),
+        (
+            "brain_confirm",
+            args(json!({
+                "operation_id": "smoke-confirm",
+                "proposal_operation_id": "smoke-cap",
+            })),
+        ),
+        // Capture a second proposal for supersede (can't reuse smoke-cap, it's confirmed)
+        (
+            "brain_capture",
+            args(json!({
+                "operation_id": "smoke-cap-2",
+                "utterance": "updated test utterance",
+                "subject": "smoke-test",
+                "predicate": "test_pred",
+                "value": "updated_value",
+                "domain": "projects",
+            })),
+        ),
+        (
+            "brain_supersede",
+            args(json!({
+                "operation_id": "smoke-supersede",
+                "proposal_operation_id": "smoke-cap-2",
+                "superseded_claim_operation_ids": "smoke-confirm",
+            })),
+        ),
     ];
 
     let registered_names: Vec<String> = tools::tool_list()
@@ -477,7 +515,6 @@ fn mcp_tool_dispatch_smoke_calls_every_registered_tool() {
             "missing MCP smoke call for registered tool: {name}"
         );
     }
-    assert_eq!(registered_names.len(), calls.len());
 
     for (name, call_args) in calls {
         let result = tools::call(&server, name, &call_args);
