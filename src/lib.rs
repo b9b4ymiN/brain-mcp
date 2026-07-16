@@ -35,6 +35,10 @@ pub mod ops;
 /// Projection adapters — Tantivy/Petgraph/generated Markdown built from the
 /// canonical semantic layers (event ledger + claim snapshots).
 pub mod projection;
+/// AI provider boundary — domain trait + config + outbound policy + error
+/// coverage (Task 4.1). Provider-agnostic: no Z.ai-specific field in the
+/// domain core. Real HTTP termination is a deployment adapter.
+pub mod provider;
 /// Full-text BM25 search and paginated list operations.
 pub mod search;
 /// Feature-flagged semantic event ledger and application-core boundary.

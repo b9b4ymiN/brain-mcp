@@ -59,7 +59,10 @@ fn provider_config_has_kill_switch() {
         reasoning_model: "glm-reasoning".to_owned(),
         kill_switch: true,
     };
-    assert!(config.is_disabled(), "kill_switch=true must disable the provider");
+    assert!(
+        config.is_disabled(),
+        "kill_switch=true must disable the provider"
+    );
 }
 
 /// When the kill switch is off, the provider is enabled and the config is
@@ -91,7 +94,7 @@ fn provider_config_enabled_when_kill_switch_off() {
 /// deny-by-default".
 #[test]
 fn outbound_policy_denies_by_default_when_local_only() {
-    let policy = OutboundPolicy::default();
+    let policy = OutboundPolicy::new();
     let req = ProviderRequest {
         prompt: "internal note".to_owned(),
         max_tokens: 10,
@@ -108,7 +111,7 @@ fn outbound_policy_denies_by_default_when_local_only() {
 /// A request carrying a detected secret is denied even if not local_only.
 #[test]
 fn outbound_policy_denies_detected_secrets() {
-    let policy = OutboundPolicy::default();
+    let policy = OutboundPolicy::new();
     let req = ProviderRequest {
         prompt: "my key is Bearer sk-leaked-1234567890 please help".to_owned(),
         max_tokens: 10,
@@ -130,7 +133,7 @@ fn outbound_policy_denies_detected_secrets() {
 /// A clean, non-local-only request is allowed through.
 #[test]
 fn outbound_policy_allows_clean_non_local_request() {
-    let policy = OutboundPolicy::default();
+    let policy = OutboundPolicy::new();
     let req = ProviderRequest {
         prompt: "summarize this public article".to_owned(),
         max_tokens: 100,
@@ -138,7 +141,10 @@ fn outbound_policy_allows_clean_non_local_request() {
         local_only: false,
     };
     let decision = policy.check(&req);
-    assert!(!decision.denied, "clean non-local request should be allowed");
+    assert!(
+        !decision.denied,
+        "clean non-local request should be allowed"
+    );
 }
 
 // =============================================================================
