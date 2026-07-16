@@ -138,13 +138,26 @@ impl OutboundPolicy {
 /// Detect a known secret pattern in a string. Returns the kind label
 /// (`bearer`, `sk-key`, `access_token`) or `None`. Conservative — over-
 /// detection is the safe direction for an egress filter.
+///
+/// `sk-` detection looks for the prefix followed by ≥16 chars of key material
+/// (alphanumeric/`-`/`_`), matching realistic OpenAI/Z.ai key shapes
+/// (`sk-proj-...`, `sk-1234...`). The previous length-arithmetic here was
+/// inverted (it counted substring occurrences, not key length) and missed a
+/// single real key — caught by the Task 4.1 Independent Validator.
 fn detect_secret(text: &str) -> Option<&'static str> {
     let lower = text.to_ascii_lowercase();
     if lower.contains("bearer ") {
         return Some("bearer");
     }
-    if lower.contains("sk-") && lower.len() > lower.replace("sk-", "").len() + 10 {
-        return Some("sk-key");
+    if let Some(idx) = lower.find("sk-") {
+        let after = &lower[idx + 3..];
+        let key_len = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+            .count();
+        if key_len >= 16 {
+            return Some("sk-key");
+        }
     }
     if lower.contains("access_token=") || lower.contains("api_key=") {
         return Some("access_token");

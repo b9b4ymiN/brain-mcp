@@ -130,6 +130,56 @@ fn outbound_policy_denies_detected_secrets() {
     );
 }
 
+/// A SINGLE realistic `sk-...` API key (not four repeats) must be denied.
+/// This is the regression test for the Task 4.1 Validator finding: the
+/// previous `sk-` length-arithmetic counted substring occurrences and missed
+/// a single key. Realistic OpenAI/Z.ai shapes: `sk-proj-...`, `sk-<48 hex>`.
+#[test]
+fn outbound_policy_denies_a_single_realistic_sk_key() {
+    let policy = OutboundPolicy::new();
+    for key in [
+        "sk-proj-1234567890abcdefghijklmnop",
+        "sk-1234567890abcdef1234567890abcdef",
+        "key=sk-deadbeefcafef00dbaadf00dcafe1234f00d",
+    ] {
+        let req = ProviderRequest {
+            prompt: format!("please use {key}"),
+            max_tokens: 10,
+            temperature: 0.0,
+            local_only: false,
+        };
+        let decision = policy.check(&req);
+        assert!(
+            decision.denied,
+            "a single realistic sk- key must be denied: prompt was {:?}",
+            req.prompt
+        );
+    }
+}
+
+/// The denial reason must NEVER contain the secret substring itself — only a
+/// label. Otherwise the audit log/redacted payload would re-leak the secret
+/// it caught. (Validator secondary observation: this invariant was correct
+/// but untested.)
+#[test]
+fn denial_reason_never_contains_the_secret() {
+    let policy = OutboundPolicy::new();
+    let secret = "sk-1234567890abcdef1234567890abcdef";
+    let req = ProviderRequest {
+        prompt: format!("here is my key {secret}"),
+        max_tokens: 10,
+        temperature: 0.0,
+        local_only: false,
+    };
+    let decision = policy.check(&req);
+    assert!(decision.denied);
+    assert!(
+        !decision.reason.contains(secret),
+        "denial reason must not echo the secret: got {}",
+        decision.reason
+    );
+}
+
 /// A clean, non-local-only request is allowed through.
 #[test]
 fn outbound_policy_allows_clean_non_local_request() {
