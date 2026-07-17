@@ -25,6 +25,14 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+// Phase E Task E3.1: trust/operations producers surface the contract types
+// defined in `crate::trust` (TrustFlag, RetrievalTrace, JobSummary, BackupHealth,
+// ClientActivity, EvalSummary). Imported here so the SemanticStore producers
+// below return the contract types directly.
+use crate::trust::{
+    BackupHealth, ClientActivity, EvalSummary, JobSummary, RetrievalTrace, TrustFlag,
+};
+
 const DATABASE_FILE: &str = "semantic.sqlite3";
 const MARKER_FILE: &str = "store.marker.json";
 const PROJECTION_FILE: &str = "projection.json";
@@ -419,6 +427,63 @@ pub struct MergeEntitiesCommand {
     pub target_entity_id: Uuid,
 }
 
+/// One predicate → target assignment inside a [`SplitCommand`] (Phase E Task
+/// E3.1). Claims on the source entity whose predicate matches `predicate` are
+/// rewritten onto `target_entity_id`. Predicates not listed stay on the source.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PredicateAssignment {
+    pub predicate: String,
+    pub target_entity_id: Uuid,
+}
+
+/// Split the source entity by predicate (Phase E Task E3.1 — the mirror of
+/// [`SemanticStore::merge_entities`]). For each claim attached to the source
+/// entity whose predicate matches one in `assignments`, the claim's
+/// `entity_id` is rewritten onto that assignment's target. Predicates not in
+/// `assignments` stay on the source. The source entity is NOT deleted: it
+/// retains the residual claims, and the operation is fully reversible via
+/// `retract` on the emitted `entity_split` event.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SplitCommand {
+    pub operation_id: String,
+    pub source_entity_id: Uuid,
+    pub assignments: Vec<PredicateAssignment>,
+}
+
+/// One claim moved from source to a target during a split.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MovedClaim {
+    pub claim_id: Uuid,
+    pub predicate: String,
+    pub from_entity_id: Uuid,
+    pub to_entity_id: Uuid,
+}
+
+/// Result of [`SemanticStore::split_entities`]. `source_remaining_claim_count`
+/// is the number of claims still attached to the source after the split;
+/// `moved_claims` enumerates every rewritten claim; `event` is the emitted
+/// `entity_split` audit event (reversible via retract).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct SplitOutcome {
+    pub source_remaining_claim_count: u64,
+    pub moved_claims: Vec<MovedClaim>,
+    pub event: EventEnvelope,
+}
+
+/// Status of an in-process async job tracked by [`SemanticStore::register_job`]
+/// (Phase E Task E3.1). The registry is in-memory and per-store-instance: it
+/// exists so [`SemanticStore::job_summary`] can surface a non-zero queue once
+/// Phase E publishers wire in. For E3.1 itself there are no callers.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobRecord {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub started_at: DateTime<Utc>,
+}
+
 /// One row of the `entities` table (Task 2.2). Stable UUIDv7 identity that
 /// survives rename/merge; `canonical_subject` is the current display name.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -760,6 +825,13 @@ pub struct SemanticStore {
     clock: Arc<dyn SemanticClock>,
     max_object_bytes: u64,
     purge_registry_targets: Vec<PathBuf>,
+    /// In-process async-job registry (Phase E Task E3.1). Holds every job
+    /// registered via [`Self::register_job`] until it is completed or failed.
+    /// Empty by default — no Phase E publisher wires into it yet, so
+    /// [`Self::job_summary`] reports `{active:0, queued:0, failed:0}` until
+    /// they do. Per-instance (not persisted): a restart forgets in-flight
+    /// jobs, matching the dashboard's "current queue" semantics.
+    jobs: Arc<Mutex<HashMap<String, JobRecord>>>,
     #[cfg(feature = "semantic-test-failpoints")]
     pause_after_commit: Arc<PauseState>,
 }
@@ -1075,6 +1147,7 @@ impl SemanticStore {
             clock: config.clock,
             max_object_bytes: config.max_object_bytes,
             purge_registry_targets: config.purge_registry_targets,
+            jobs: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(feature = "semantic-test-failpoints")]
             pause_after_commit: Arc::default(),
         };
@@ -1120,6 +1193,7 @@ impl SemanticStore {
             clock: config.clock,
             max_object_bytes: config.max_object_bytes,
             purge_registry_targets: config.purge_registry_targets,
+            jobs: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(feature = "semantic-test-failpoints")]
             pause_after_commit: Arc::default(),
         })
@@ -3962,6 +4036,759 @@ impl SemanticStore {
             new_backup_path: saga.new_backup_path,
             composite_checksum: saga.composite_checksum,
         })
+    }
+
+    // ── Phase E Task E3.1: trust + operations producers ──────────────────────
+    //
+    // These methods return the contract types defined in `crate::trust`
+    // (TrustFlag, RetrievalTrace, JobSummary, BackupHealth, ClientActivity,
+    // EvalSummary). They are the producers that turn the previously-dead-code
+    // contract types into live surfaces the Console API (E3.2) will expose.
+
+    /// Detect contradiction flags: groups of active confirmed claims sharing
+    /// the same `(domain, subject, predicate)` scope but carrying DISTINCT
+    /// values. "Distinct" is deep `serde_json::Value` equality — `[1]` vs `1`
+    /// vs `"1"` are three distinct values. Idempotent + deterministic: each
+    /// flag's `claim_ids` are sorted, and the resulting flag list is sorted by
+    /// the first claim_id in each group.
+    pub fn contradictions(&self, head: u64, now: DateTime<Utc>) -> Result<Vec<TrustFlag>> {
+        let current = self.all_claims_current(head, now)?;
+        // Group active confirmed claims by their semantic scope.
+        let mut groups: HashMap<(String, String, String), Vec<&ClaimView>> = HashMap::new();
+        for claim in &current.active {
+            if claim.status != "confirmed" {
+                continue;
+            }
+            groups
+                .entry((
+                    claim.domain.clone(),
+                    claim.subject.clone(),
+                    claim.predicate.clone(),
+                ))
+                .or_default()
+                .push(claim);
+        }
+        let mut flags = Vec::new();
+        for (_, members) in groups {
+            if members.len() < 2 {
+                continue;
+            }
+            // Collect the set of distinct values seen in this scope. Uses deep
+            // serde_json equality so structural differences count.
+            let mut distinct_values: Vec<&Value> = Vec::new();
+            for member in &members {
+                if !distinct_values.contains(&&member.value) {
+                    distinct_values.push(&member.value);
+                }
+            }
+            if distinct_values.len() < 2 {
+                continue;
+            }
+            let mut claim_ids: Vec<String> = members
+                .iter()
+                .map(|claim| claim.claim_id.to_string())
+                .collect();
+            claim_ids.sort();
+            flags.push(TrustFlag::Contradiction { claim_ids });
+        }
+        // Stable output ordering: sort by the first claim_id in each flag.
+        flags.sort_by(|a, b| {
+            let key = |flag: &TrustFlag| match flag {
+                TrustFlag::Contradiction { claim_ids } => {
+                    claim_ids.first().cloned().unwrap_or_default()
+                }
+                _ => String::new(),
+            };
+            key(a).cmp(&key(b))
+        });
+        Ok(flags)
+    }
+
+    /// Detect stale flags: active confirmed claims whose recorded `recorded_at`
+    /// timestamp on their confirm event is older than `threshold_days`. The
+    /// timestamp is read from the `events` table's `event_json` BLOB (the full
+    /// `EventEnvelope.recorded_at` of the `claim_confirmed` event pointed at by
+    /// `ClaimView.confirmed_event_seq`) — the only authoritative source of
+    /// transaction-time truth in the ledger. Supersede/retract events on the
+    /// same claim also refresh staleness, since they represent a more-recent
+    /// audit touch on the same row.
+    pub fn staleness(
+        &self,
+        head: u64,
+        threshold_days: u32,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<TrustFlag>> {
+        let current = self.all_claims_current(head, now)?;
+        if current.active.is_empty() {
+            return Ok(Vec::new());
+        }
+        // One read transaction for the whole timestamp lookup pass — same
+        // TOCTOU-safe shape as all_claims_current.
+        let mut raw_connection = open_connection(&self.root)?;
+        let transaction = raw_connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(database_error)?;
+        let connection = &transaction;
+        let mut statement = connection
+            .prepare(
+                "SELECT event_json FROM events \
+                 WHERE owner_id=?1 AND event_seq=?2",
+            )
+            .map_err(database_error)?;
+        let mut flags = Vec::new();
+        for claim in &current.active {
+            if claim.status != "confirmed" {
+                continue;
+            }
+            // Decode the confirm event's recorded_at from its event_json BLOB.
+            // claim.confirmed_event_seq is the authoritative "this claim's last
+            // audit touch" pointer; supersede/retract point at later sequences
+            // but apply to a DIFFERENT active claim, so the active view's own
+            // confirmed_event_seq is what matters here.
+            let event_bytes: Option<Vec<u8>> = statement
+                .query_row(
+                    params![
+                        self.marker.owner_id.to_string(),
+                        claim.confirmed_event_seq as i64
+                    ],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(database_error)?;
+            let Some(event_bytes) = event_bytes else {
+                // No event row for this confirmed_event_seq — ledger is
+                // inconsistent; skip rather than fabricate a timestamp.
+                continue;
+            };
+            let event: EventEnvelope =
+                serde_json::from_slice(&event_bytes).map_err(serialization_error)?;
+            let elapsed = now.signed_duration_since(event.recorded_at);
+            let days_since = elapsed.num_days().max(0) as u32;
+            if days_since > threshold_days {
+                flags.push(TrustFlag::Stale {
+                    claim_id: claim.claim_id.to_string(),
+                    days_since_modified: days_since,
+                });
+            }
+        }
+        // Stable ordering by claim_id.
+        flags.sort_by(|a, b| {
+            let key = |flag: &TrustFlag| match flag {
+                TrustFlag::Stale { claim_id, .. } => claim_id.clone(),
+                _ => String::new(),
+            };
+            key(a).cmp(&key(b))
+        });
+        Ok(flags)
+    }
+
+    /// Explain a retrieval: which active claim_ids match `query` (substring on
+    /// subject|predicate, case-insensitive — same rule as the Console `/search`
+    /// handler) and are returned in the top_k, and which were excluded because
+    /// they were beyond top_k. `reason` is a stable audit string. Deterministic
+    /// ordering: matches preserve `all_claims_current`'s iteration order, which
+    /// is itself stable on the (claim_status PK, event_seq) read order.
+    pub fn retrieval_trace(
+        &self,
+        query: &str,
+        top_k: usize,
+        head: u64,
+        now: DateTime<Utc>,
+    ) -> Result<RetrievalTrace> {
+        let current = self.all_claims_current(head, now)?;
+        let needle = query.to_lowercase();
+        let mut matched: Vec<String> = Vec::new();
+        for claim in &current.active {
+            if claim.subject.to_lowercase().contains(&needle)
+                || claim.predicate.to_lowercase().contains(&needle)
+            {
+                matched.push(claim.claim_id.to_string());
+            }
+        }
+        let cutoff = top_k.min(matched.len());
+        let included_claim_ids: Vec<String> = matched[..cutoff].to_vec();
+        let excluded_claim_ids: Vec<String> = matched[cutoff..].to_vec();
+        Ok(RetrievalTrace {
+            included_claim_ids,
+            excluded_claim_ids,
+            reason: format!(
+                "top_k={top_k} substring match on subject|predicate (matched {})",
+                matched.len()
+            ),
+        })
+    }
+
+    /// List every registered client with their last-activity timestamp and
+    /// mutation count. `last_active_at` is the MAX(recorded_at) of any event
+    /// attributed to that client; `mutation_count` counts the event types that
+    /// change ledger state (claim lifecycle + entity rewrite + purge). NEVER
+    /// infers person identity (TM-024) — only client_id + label.
+    pub fn list_clients(&self) -> Result<Vec<ClientActivity>> {
+        let _maintenance = self.coordinator.maintenance.read();
+        let connection = open_connection(&self.root)?;
+        // Mutation event types: every event_type that changes ledger state
+        // (the same set the operations dashboard counts as "mutations").
+        const MUTATION_EVENT_TYPES: &[&str] = &[
+            "claim_confirmed",
+            "claim_rejected",
+            "claim_superseded",
+            "claim_retracted",
+            "entity_merged",
+            "entity_renamed",
+            "entity_split",
+            "registry_denied",
+        ];
+        let placeholders = std::iter::repeat_n("?", MUTATION_EVENT_TYPES.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut clients_statement = connection
+            .prepare("SELECT client_id, label FROM clients ORDER BY label ASC")
+            .map_err(database_error)?;
+        let client_rows = clients_statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(database_error)?;
+        let mut clients: Vec<(String, String)> = Vec::new();
+        for row in client_rows {
+            clients.push(row.map_err(database_error)?);
+        }
+        drop(clients_statement);
+
+        // Capabilities: best-effort read from client_capabilities. Stored as
+        // one row per (client_id, capability); collected into a Vec<String>.
+        let mut caps_statement = connection
+            .prepare("SELECT capability FROM client_capabilities WHERE client_id=?1 ORDER BY capability ASC")
+            .map_err(database_error)?;
+        // last_active_at = MAX(recorded_at) of any event for this client.
+        // Returns NULL when the client has no events (e.g. the bootstrap
+        // client before any mutation), so we read into Option<String> and
+        // fall back to "never".
+        let mut last_active_statement = connection
+            .prepare(
+                "SELECT MAX(recorded_at) FROM ( \
+                   SELECT json_extract(event_json, '$.recorded_at') AS recorded_at \
+                   FROM events WHERE json_extract(event_json, '$.client_id')=?1 \
+                 )",
+            )
+            .map_err(database_error)?;
+        // mutation_count = COUNT(*) of mutation events for this client.
+        let mutation_sql = format!(
+            "SELECT COUNT(*) FROM events \
+             WHERE json_extract(event_json, '$.client_id')=?1 \
+             AND event_type IN ({placeholders})"
+        );
+        let mut mutation_statement = connection.prepare(&mutation_sql).map_err(database_error)?;
+
+        let mut out = Vec::with_capacity(clients.len());
+        for (client_id, label) in clients {
+            let capabilities: Vec<String> = caps_statement
+                .query_map([client_id.clone()], |row| row.get::<_, String>(0))
+                .map_err(database_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(database_error)?;
+            let last_active_at: Option<Option<String>> = last_active_statement
+                .query_row([client_id.clone()], |row| row.get::<_, Option<String>>(0))
+                .optional()
+                .map_err(database_error)?;
+            let last_active_at = last_active_at.flatten();
+            let mutation_count: i64 = mutation_statement
+                .query_row(
+                    rusqlite::params_from_iter(
+                        std::iter::once(client_id.as_str())
+                            .chain(MUTATION_EVENT_TYPES.iter().copied()),
+                    ),
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            let mutation_count = u64::try_from(mutation_count).unwrap_or(0);
+            out.push(ClientActivity {
+                client_id,
+                label,
+                capabilities,
+                last_active_at: last_active_at.unwrap_or_else(|| "never".to_owned()),
+                mutation_count,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Register an in-process async job (Phase E Task E3.1). The job starts in
+    /// status "queued"; callers transition it via [`Self::complete_job`] /
+    /// [`Self::fail_job`]. Returns the new job id. Per-instance (not persisted):
+    /// the dashboard reports current queue depth, not historical runs.
+    pub fn register_job(&self, kind: &str) -> Result<String> {
+        let id = format!("job-{}", Uuid::now_v7().simple());
+        let record = JobRecord {
+            id: id.clone(),
+            kind: kind.to_owned(),
+            status: "queued".to_owned(),
+            started_at: self.clock.now(),
+        };
+        self.jobs.lock().insert(id.clone(), record);
+        Ok(id)
+    }
+
+    /// Transition a registered job to "active" (optional intermediate state).
+    pub fn activate_job(&self, job_id: &str) -> Result<()> {
+        let mut jobs = self.jobs.lock();
+        if let Some(record) = jobs.get_mut(job_id) {
+            record.status = "active".to_owned();
+        }
+        Ok(())
+    }
+
+    /// Mark a registered job as completed (removes it from the active queue).
+    pub fn complete_job(&self, job_id: &str) -> Result<()> {
+        let mut jobs = self.jobs.lock();
+        if let Some(record) = jobs.get_mut(job_id) {
+            record.status = "completed".to_owned();
+            jobs.remove(job_id);
+        }
+        Ok(())
+    }
+
+    /// Mark a registered job as failed. Failed jobs are retained in the
+    /// registry (status="failed") so the dashboard can surface them until an
+    /// operator clears the registry by restarting the process.
+    pub fn fail_job(&self, job_id: &str) -> Result<()> {
+        let mut jobs = self.jobs.lock();
+        if let Some(record) = jobs.get_mut(job_id) {
+            record.status = "failed".to_owned();
+        }
+        Ok(())
+    }
+
+    /// Summarize the in-process async-job queue. With no Phase E publisher
+    /// wiring in yet (E3.1 ships the registry only), a fresh store reports
+    /// `{active:0, queued:0, failed:0}` — the contract's "no jobs running"
+    /// state. Once publishers register jobs, this surface reflects live depth.
+    pub fn job_summary(&self) -> Result<JobSummary> {
+        let jobs = self.jobs.lock();
+        let mut active = 0u32;
+        let mut queued = 0u32;
+        let mut failed = 0u32;
+        for record in jobs.values() {
+            match record.status.as_str() {
+                "active" => active += 1,
+                "queued" => queued += 1,
+                "failed" => failed += 1,
+                _ => {}
+            }
+        }
+        Ok(JobSummary {
+            active,
+            queued,
+            failed,
+        })
+    }
+
+    /// Backup health for the operations dashboard. `last_backup_at` is the
+    /// creation time of the most recent non-invalidated row in
+    /// `purge_backup_sets` (every `backup_consistent` call inserts one); if no
+    /// backup has ever been made, returns `"never"`. `last_restore_drill_ok`
+    /// reads `<state_dir>/restore-drill.json` if present (Phase F3 populates
+    /// this file); absent the file, returns `false`. For E3.1 no drill has ever
+    /// run, so the field is `false` until F3 wires it in.
+    pub fn backup_health(&self) -> Result<BackupHealth> {
+        let connection = open_connection(&self.root)?;
+        let last_backup_at: Option<String> = connection
+            .query_row(
+                "SELECT MAX(created_at) FROM purge_backup_sets WHERE invalidated_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(database_error)?
+            .flatten();
+        let last_backup_at = last_backup_at.unwrap_or_else(|| "never".to_owned());
+
+        // Phase F3 dependency: restore-drill state file. The store's root
+        // doubles as the state dir for operator-managed artifacts. Absent the
+        // file, no drill has run → false.
+        let drill_path = self.root.join("restore-drill.json");
+        let last_restore_drill_ok = if drill_path.is_file() {
+            let body = fs::read_to_string(&drill_path).map_err(io_error)?;
+            serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|value| value.get("last_ok").and_then(|flag| flag.as_bool()))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        Ok(BackupHealth {
+            last_backup_at,
+            last_restore_drill_ok,
+        })
+    }
+
+    /// Summarize the last domain-eval run for `domain`. Phase E Task E3.1
+    /// introduces an in-DB `domain_eval_runs` table so future Phase 4.3
+    /// publishers can record runs; for E3.1 no publisher exists yet, so a fresh
+    /// store returns `{case_count:0, passed:0, abstention_passed:false,
+    /// run_at:"never"}`. The schema is created lazily (idempotent `CREATE TABLE
+    /// IF NOT EXISTS`) so older stores upgrade transparently on first read.
+    pub fn eval_summary(&self, domain: &str) -> Result<EvalSummary> {
+        let connection = open_connection(&self.root)?;
+        connection
+            .execute(
+                "CREATE TABLE IF NOT EXISTS domain_eval_runs(\
+                   run_id TEXT PRIMARY KEY,\
+                   domain TEXT NOT NULL,\
+                   case_count INTEGER NOT NULL,\
+                   passed INTEGER NOT NULL,\
+                   abstention_passed INTEGER NOT NULL,\
+                   run_at TEXT NOT NULL\
+                 )",
+                [],
+            )
+            .map_err(database_error)?;
+        let row: Option<(i64, i64, i64, String)> = connection
+            .query_row(
+                "SELECT case_count, passed, abstention_passed, run_at \
+                 FROM domain_eval_runs WHERE domain=?1 \
+                 ORDER BY run_at DESC LIMIT 1",
+                [domain],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(database_error)?;
+        match row {
+            Some((case_count, passed, abstention_passed, run_at)) => Ok(EvalSummary {
+                case_count: u32::try_from(case_count).unwrap_or(0),
+                passed: u32::try_from(passed).unwrap_or(0),
+                abstention_passed: abstention_passed != 0,
+                run_at,
+            }),
+            None => Ok(EvalSummary {
+                case_count: 0,
+                passed: 0,
+                abstention_passed: false,
+                run_at: "never".to_owned(),
+            }),
+        }
+    }
+
+    /// Record a domain-eval run (publisher helper for Phase 4.3 eval drivers).
+    /// Provided in E3.1 so future publishers can write through the same store
+    /// surface that [`Self::eval_summary`] reads; no internal caller yet.
+    pub fn record_eval_run(
+        &self,
+        domain: &str,
+        case_count: u32,
+        passed: u32,
+        abstention_passed: bool,
+        run_at: DateTime<Utc>,
+    ) -> Result<()> {
+        let _maintenance = self.coordinator.maintenance.read();
+        let _writer = self.coordinator.writer.lock();
+        let connection = open_connection(&self.root)?;
+        connection
+            .execute(
+                "CREATE TABLE IF NOT EXISTS domain_eval_runs(\
+                   run_id TEXT PRIMARY KEY,\
+                   domain TEXT NOT NULL,\
+                   case_count INTEGER NOT NULL,\
+                   passed INTEGER NOT NULL,\
+                   abstention_passed INTEGER NOT NULL,\
+                   run_at TEXT NOT NULL\
+                 )",
+                [],
+            )
+            .map_err(database_error)?;
+        let run_id = format!("eval-{}", Uuid::now_v7().simple());
+        connection
+            .execute(
+                "INSERT INTO domain_eval_runs(run_id,domain,case_count,passed,abstention_passed,run_at) \
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                params![
+                    run_id,
+                    domain,
+                    case_count as i64,
+                    passed as i64,
+                    if abstention_passed { 1 } else { 0 },
+                    run_at.to_rfc3339(),
+                ],
+            )
+            .map_err(database_error)?;
+        Ok(())
+    }
+
+    /// Split an entity by predicate (Phase E Task E3.1 — the mirror of
+    /// [`Self::merge_entities`]). For each `PredicateAssignment` in `command`,
+    /// every claim currently attached to `source_entity_id` whose predicate
+    /// matches is rewritten onto that assignment's `target_entity_id`.
+    /// Predicates NOT listed in any assignment stay on the source. The source
+    /// entity is preserved (NOT deleted) — it retains its residual claims and
+    /// remains addressable, so the operation is fully reversible via retract on
+    /// the emitted `entity_split` event. Idempotent on `operation_id` via the
+    /// same `operations`-table reservation merge_entities uses.
+    pub fn split_entities(
+        &self,
+        context: &TrustedContext,
+        command: SplitCommand,
+    ) -> Result<MutationOutcome> {
+        // Reject the degenerate "self-assignment" early — same shape as
+        // merge_entities' self-merge guard.
+        for assignment in &command.assignments {
+            if assignment.target_entity_id == command.source_entity_id {
+                return Err(SemanticError::InvalidTransition(format!(
+                    "cannot split entity {} onto itself (predicate {})",
+                    command.source_entity_id, assignment.predicate
+                )));
+            }
+        }
+        let request_hash = request_hash("split_entities", &command)?;
+        let source = command.source_entity_id;
+        // Snapshot the assignments into the closure (FnOnce-equivalent through
+        // the &F the mutate helper expects).
+        let assignments = command.assignments.clone();
+        let outcome = self.mutate(
+            context,
+            &command.operation_id,
+            &request_hash,
+            Some("confirm"),
+            move |transaction, _identity| {
+                // Load source row to confirm it exists and capture its domain.
+                let source_row: Option<(String, String)> = transaction
+                    .query_row(
+                        "SELECT domain, canonical_subject FROM entities WHERE entity_id=?1",
+                        [source.to_string()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(database_error)?;
+                let (source_domain, _source_subject) = source_row.ok_or_else(|| {
+                    SemanticError::MissingDependency(format!("entity {source}"))
+                })?;
+
+                // Validate every target exists AND lives in the same domain as
+                // the source — cross-domain split is rejected just like
+                // cross-domain merge.
+                let mut target_domains: HashMap<Uuid, String> = HashMap::new();
+                for assignment in &assignments {
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        target_domains.entry(assignment.target_entity_id)
+                    {
+                        let target_domain: String = transaction
+                            .query_row(
+                                "SELECT domain FROM entities WHERE entity_id=?1",
+                                [assignment.target_entity_id.to_string()],
+                                |row| row.get(0),
+                            )
+                            .optional()
+                            .map_err(database_error)?
+                            .ok_or_else(|| {
+                                SemanticError::MissingDependency(format!(
+                                    "entity {}",
+                                    assignment.target_entity_id
+                                ))
+                            })?;
+                        if target_domain != source_domain {
+                            return Err(SemanticError::InvalidTransition(format!(
+                                "cannot split across domains: source={source_domain}, target={target_domain}"
+                            )));
+                        }
+                        entry.insert(target_domain);
+                    }
+                }
+
+                // Pull every claim currently on the source so we can both
+                // decide which to move AND count the residual set. predicate is
+                // stored on claim_status so we do not need to decrypt payloads.
+                let mut claim_statement = transaction
+                    .prepare(
+                        "SELECT claim_id, predicate FROM claim_status WHERE entity_id=?1",
+                    )
+                    .map_err(database_error)?;
+                let claim_rows = claim_statement
+                    .query_map([source.to_string()], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(database_error)?;
+                let mut source_claims: Vec<(String, String)> = Vec::new();
+                for row in claim_rows {
+                    source_claims.push(row.map_err(database_error)?);
+                }
+                drop(claim_statement);
+
+                // Apply each rewrite. We track moved_claims for the event
+                // payload + the SplitOutcome-shaped audit (the outcome is
+                // reconstructed from the event payload by callers that want
+                // the structured view; the MutationOutcome here carries the
+                // raw event per the merge_entities precedent).
+                let mut moved_claims: Vec<MovedClaim> = Vec::new();
+                for (claim_id_text, predicate) in &source_claims {
+                    let Some(assignment) = assignments
+                        .iter()
+                        .find(|assignment| assignment.predicate == *predicate)
+                    else {
+                        continue;
+                    };
+                    let moved = transaction
+                        .execute(
+                            "UPDATE claim_status SET entity_id=?2 WHERE claim_id=?1",
+                            params![claim_id_text, assignment.target_entity_id.to_string()],
+                        )
+                        .map_err(database_error)?;
+                    if moved > 0 {
+                        let claim_id = Uuid::parse_str(claim_id_text).map_err(|_| {
+                            SemanticError::CorruptLedger(
+                                "claim_status.claim_id is not a UUID".to_owned(),
+                            )
+                        })?;
+                        moved_claims.push(MovedClaim {
+                            claim_id,
+                            predicate: predicate.clone(),
+                            from_entity_id: source,
+                            to_entity_id: assignment.target_entity_id,
+                        });
+                    }
+                }
+
+                let source_remaining_claim_count = source_claims
+                    .iter()
+                    .filter(|(_, predicate)| {
+                        !assignments.iter().any(|assignment| assignment.predicate == *predicate)
+                    })
+                    .count() as u64;
+
+                let payload = serde_json::json!({
+                    "kind": "entity_split",
+                    "domain": source_domain,
+                    "source_entity_id": source,
+                    "assignments": assignments.iter().map(|a| serde_json::json!({
+                        "predicate": a.predicate,
+                        "target_entity_id": a.target_entity_id,
+                    })).collect::<Vec<_>>(),
+                    "moved_claims": moved_claims.iter().map(|m| serde_json::json!({
+                        "claim_id": m.claim_id,
+                        "predicate": m.predicate,
+                        "from_entity_id": m.from_entity_id,
+                        "to_entity_id": m.to_entity_id,
+                    })).collect::<Vec<_>>(),
+                    "source_remaining_claim_count": source_remaining_claim_count,
+                });
+                Ok(MutationMaterial {
+                    event_type: "entity_split",
+                    object_bytes: canonical_bytes(&payload)?,
+                    media_type: OBJECT_MEDIA_TYPE.to_owned(),
+                    generated: GeneratedIds::default(),
+                })
+            },
+        )?;
+        Ok(outcome)
+    }
+
+    /// Structured view over the most recent `entity_split` event for a source
+    /// entity (helper for the Console preview surface). Re-derives the
+    /// `SplitOutcome` shape from the persisted event payload. Returns `None`
+    /// if no split event references this source.
+    pub fn last_split_outcome_for(
+        &self,
+        context: &TrustedContext,
+        source_entity_id: Uuid,
+    ) -> Result<Option<SplitOutcome>> {
+        validate_context(&self.marker, context)?;
+        let _maintenance = self.coordinator.maintenance.read();
+        let connection = open_connection(&self.root)?;
+        // Scan entity_split events in descending seq order; decrypt + parse
+        // each payload until one references the requested source. Splits are
+        // rare administrative events, so the bounded scan stays cheap.
+        let mut statement = connection
+            .prepare(
+                "SELECT event_seq, object_id FROM events \
+                 WHERE owner_id=?1 AND event_type='entity_split' \
+                 ORDER BY event_seq DESC",
+            )
+            .map_err(database_error)?;
+        let rows = statement
+            .query_map(params![self.marker.owner_id.to_string()], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(database_error)?;
+        for row in rows {
+            let (event_seq, object_id) = row.map_err(database_error)?;
+            let object_bytes = decrypt_object(&connection, &self.root, &object_id)?;
+            let value: Value =
+                serde_json::from_slice(&object_bytes).map_err(serialization_error)?;
+            let payload_source = value
+                .get("source_entity_id")
+                .and_then(|value| value.as_str())
+                .and_then(|text| Uuid::parse_str(text).ok());
+            if payload_source != Some(source_entity_id) {
+                continue;
+            }
+            let event = self.event_at(u64::try_from(event_seq).map_err(|_| {
+                SemanticError::CorruptLedger("negative event sequence".to_owned())
+            })?)?;
+            let Some(event) = event else { continue };
+            let source_remaining_claim_count = value
+                .get("source_remaining_claim_count")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let moved_claims = value
+                .get("moved_claims")
+                .and_then(|value| value.as_array())
+                .map(|array| {
+                    array
+                        .iter()
+                        .filter_map(|item| {
+                            let claim_id = item
+                                .get("claim_id")
+                                .and_then(|value| value.as_str())
+                                .and_then(|text| Uuid::parse_str(text).ok())?;
+                            let predicate = item
+                                .get("predicate")
+                                .and_then(|value| value.as_str())?
+                                .to_owned();
+                            let from_entity_id = item
+                                .get("from_entity_id")
+                                .and_then(|value| value.as_str())
+                                .and_then(|text| Uuid::parse_str(text).ok())?;
+                            let to_entity_id = item
+                                .get("to_entity_id")
+                                .and_then(|value| value.as_str())
+                                .and_then(|text| Uuid::parse_str(text).ok())?;
+                            Some(MovedClaim {
+                                claim_id,
+                                predicate,
+                                from_entity_id,
+                                to_entity_id,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            return Ok(Some(SplitOutcome {
+                source_remaining_claim_count,
+                moved_claims,
+                event,
+            }));
+        }
+        Ok(None)
+    }
+
+    /// Look up the persisted `EventEnvelope` at a specific event_seq. Used by
+    /// the structured split-outcome view to attach the raw audit event.
+    fn event_at(&self, event_seq: u64) -> Result<Option<EventEnvelope>> {
+        let connection = open_connection(&self.root)?;
+        let bytes: Option<Vec<u8>> = connection
+            .query_row(
+                "SELECT event_json FROM events WHERE owner_id=?1 AND event_seq=?2",
+                params![self.marker.owner_id.to_string(), event_seq as i64],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(database_error)?;
+        match bytes {
+            Some(bytes) => {
+                let event: EventEnvelope =
+                    serde_json::from_slice(&bytes).map_err(serialization_error)?;
+                Ok(Some(event))
+            }
+            None => Ok(None),
+        }
     }
 }
 
