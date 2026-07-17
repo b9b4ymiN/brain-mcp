@@ -144,10 +144,11 @@ function buildTriangle() {
 const TARGETS = [
   { file: 'graph-1k.json', count: 1000, seed: 1 },
   { file: 'graph-5k.json', count: 5000, seed: 2 },
-  // Stretch: 20k for headroom above the DoD's 5k threshold. The DoD itself
-  // doesn't require it, but having a deterministic stress fixture on hand
-  // avoids regenerating it later. Committed alongside the others.
-  { file: 'graph-20k.json', count: 20000, seed: 3 },
+  // 20k target is available for on-demand stress generation
+  // (`node scripts/gen-graph-fixtures.mjs`) but not committed — see Phase F
+  // baseline re-bench. The DoD only requires 1k + 5k; committing a ~5 MB JSON
+  // for a fixture no live spec loads is repo bloat. To regenerate, append
+  // `{ file: 'graph-20k.json', count: 20000, seed: 3 }` here and re-run.
   // Triangle — fixture for the parity spec.
   { file: 'graph-triangle.json', count: 0, seed: 0, triangle: true },
 ]
@@ -157,8 +158,9 @@ mkdirSync(FIXTURES_DIR, { recursive: true })
 for (const t of TARGETS) {
   const payload = t.triangle ? buildTriangle() : buildPayload(t.count, t.seed)
   const outPath = join(FIXTURES_DIR, t.file)
-  // Pretty-printed 2-space JSON — large fixtures stay reviewable in a diff
-  // (the 20k file is ~600KB, fine for git; reviewers can collapse it).
+  // Pretty-printed 2-space JSON — keeps the committed fixtures (1k ~240KB,
+  // 5k ~1.2MB) reviewable in a diff; reviewers can collapse them. The 20k
+  // stress fixture (~5MB) is intentionally NOT in TARGETS — see above.
   writeFileSync(outPath, JSON.stringify(payload, null, 2) + '\n', 'utf8')
   console.log(
     `[gen-graph-fixtures] wrote ${t.file} — ${payload.nodes.length} nodes / ${payload.edges.length} edges`,

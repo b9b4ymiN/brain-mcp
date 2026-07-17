@@ -61,7 +61,7 @@ export interface GalaxyFixture {
  * Throws if the file is missing — the spec can't run without fixtures. The
  * fix is `node scripts/gen-graph-fixtures.mjs`.
  */
-export function loadFixture(name: 'graph-1k' | 'graph-5k' | 'graph-20k' | 'graph-triangle'): GalaxyFixture {
+export function loadFixture(name: 'graph-1k' | 'graph-5k' | 'graph-triangle'): GalaxyFixture {
   const path = join(FIXTURES_DIR, `${name}.json`)
   return JSON.parse(readFileSync(path, 'utf8')) as GalaxyFixture
 }
@@ -213,7 +213,7 @@ export async function captureEnvironment(page: Page): Promise<BenchEnvironment> 
         }
         // Explicit loss to free the GL context — the real galaxy graph will
         // create its own.
-        const lose = gl.getExtension?.('WEBGL_lose_texture') as
+        const lose = gl.getExtension?.('WEBGL_lose_context') as
           | { loseContext?: () => void }
           | undefined
         lose?.loseContext?.()
