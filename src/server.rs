@@ -176,6 +176,18 @@ async fn serve_http(
         None => router,
     };
 
+    // Console static assets (Task E0.3). Served at `/` as a fallback — after the
+    // `/mcp`, `/health`, and `/api/v1` mounts have had their chance to match — so
+    // it never shadows an API route. NOT an auth gate: the login page/bundle must
+    // load before a session exists. `None`/empty ⇒ nothing mounted.
+    let router = match &serve_cfg.console_static_dir {
+        Some(dir) if !dir.as_os_str().is_empty() => {
+            tracing::info!(dir = %dir.display(), "Console static assets served at / (fallback, strict CSP)");
+            router.fallback_service(crate::api::static_router(dir.clone()))
+        }
+        _ => router,
+    };
+
     let max_attempts = if serve_cfg.max_restarts == 0 {
         1
     } else {

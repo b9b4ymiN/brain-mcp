@@ -273,6 +273,13 @@ pub struct ServeConfig {
     /// dev; production auth is OAuth (Phase F).
     #[serde(default)]
     pub console_dev_bootstrap_secret: Option<String>,
+    /// Directory of built Console static assets, served at `/` as a fallback
+    /// with a strict CSP and path-traversal protection (Phase E Task E0.3).
+    /// `None` (default) = no static serving. Points at the Task E1 Svelte build
+    /// output (e.g. `web/console/dist`); unlike the API router this is not an
+    /// auth gate — the login page must load before a session exists.
+    #[serde(default)]
+    pub console_static_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for ServeConfig {
@@ -295,6 +302,7 @@ impl Default for ServeConfig {
             mcp_stateful_mode: default_mcp_stateful_mode(),
             mcp_json_response: default_mcp_json_response(),
             console_dev_bootstrap_secret: None,
+            console_static_dir: None,
         }
     }
 }

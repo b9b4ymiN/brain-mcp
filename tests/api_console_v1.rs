@@ -510,3 +510,71 @@ async fn logout_clears_session() {
         .unwrap();
     assert_eq!(after.status(), 401);
 }
+
+// ── SSE events ──────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn sse_receives_published_event() {
+    let (_parent, store, _ctx) = make_store();
+    let state = ConsoleApiState::new(store, SECRET.to_owned(), false);
+    // Keep a publisher handle before the state is moved into the router. In
+    // production anything in-process could hold this and push job/update events.
+    let events = state.events_sender();
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+    let (cookie, _csrf) = login(&client, &base, SECRET).await.expect("login ok");
+
+    let mut resp = client
+        .get(format!("{base}/api/v1/events"))
+        .header("Cookie", cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ctype = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        ctype.starts_with("text/event-stream"),
+        "unexpected content-type: {ctype}"
+    );
+
+    // Publish only after the client is connected — a broadcast channel reaches
+    // live subscribers, and the handler subscribes before the response head is
+    // flushed (which is what `send().await` above resolved on).
+    events.send("ping-42".to_owned()).expect("send event");
+
+    let mut buf = String::new();
+    let got = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(bytes) = resp.chunk().await.unwrap() {
+            buf.push_str(&String::from_utf8_lossy(&bytes));
+            if buf.contains("ping-42") {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(got.is_ok(), "timed out waiting for SSE event; buf={buf:?}");
+    assert!(
+        buf.contains("data: ping-42"),
+        "SSE frame not well-formed: {buf:?}"
+    );
+}
+
+#[tokio::test]
+async fn sse_without_session_returns_401() {
+    let (_parent, store, _ctx) = make_store();
+    let base = spawn(ConsoleApiState::new(store, SECRET.to_owned(), false)).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{base}/api/v1/events"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}

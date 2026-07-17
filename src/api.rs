@@ -14,18 +14,26 @@
 //! must be active on the real serve path, not just in a contract).
 
 use std::collections::HashMap;
+use std::convert::Infallible;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::RwLock;
 use serde::Deserialize;
 use serde_json::json;
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::{Stream, StreamExt};
+use tower_http::services::ServeDir;
+use tower_http::set_header::SetResponseHeaderLayer;
 use uuid::Uuid;
 
 use crate::semantic::{
@@ -35,6 +43,19 @@ use crate::semantic::{
 
 const SESSION_COOKIE: &str = "brain_console_session";
 const CSRF_HEADER: &str = "X-CSRF-Token";
+
+/// Ring-buffer depth for the in-process event broadcast. A subscriber that
+/// falls this far behind gets a `Lagged` signal (surfaced as an SSE comment)
+/// rather than blocking any publisher — events are advisory notifications.
+const EVENT_CHANNEL_CAPACITY: usize = 128;
+
+/// Content-Security-Policy applied to every static (console asset) response.
+/// Strict, no-inline baseline: only same-origin scripts/styles, no framing,
+/// no plugins, no `<base>` hijack. The Task E1 build output must satisfy this
+/// (Task 5.1 DoD: "CSP block inline"); it is deliberately stricter than the
+/// API needs so the frontend can never regress into inline `<script>`.
+pub const CONSOLE_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
+     object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
 
 // ── state ───────────────────────────────────────────────────────────────────
 
@@ -59,6 +80,10 @@ pub struct ConsoleApiState {
     /// non-loopback interface (mirrors the existing bind-address posture);
     /// omitted for loopback dev so cookies work over plain http.
     secure_cookie: bool,
+    /// In-process fan-out for job/update notifications delivered over the SSE
+    /// `/events` stream. Held as the `Sender` half so any future in-process
+    /// publisher can `subscribe()`/`send()`; the initial `Receiver` is dropped.
+    events: Arc<broadcast::Sender<String>>,
 }
 
 impl ConsoleApiState {
@@ -74,13 +99,21 @@ impl ConsoleApiState {
         secure_cookie: bool,
         session_ttl: Duration,
     ) -> Self {
+        let (events, _rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         Self {
             store,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             bootstrap_secret: Arc::new(bootstrap_secret),
             session_ttl,
             secure_cookie,
+            events: Arc::new(events),
         }
+    }
+
+    /// Publisher handle for the `/events` broadcast. Anything in-process can
+    /// clone this and `send()` a notification to all connected SSE clients.
+    pub fn events_sender(&self) -> Arc<broadcast::Sender<String>> {
+        Arc::clone(&self.events)
     }
 }
 
@@ -89,6 +122,7 @@ pub fn router(state: ConsoleApiState) -> Router {
     Router::new()
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
+        .route("/events", get(events))
         .route("/search", get(search))
         .route("/get", get(get_subject))
         .route("/entity/timeline", get(timeline))
@@ -579,6 +613,57 @@ async fn supersede(
         "event_seq": outcome.event.event_seq,
     }))
     .into_response())
+}
+
+// ── events (SSE) ──────────────────────────────────────────────────────────────
+
+/// `GET /api/v1/events` — Server-Sent Events stream of job/update
+/// notifications. Requires a valid session (same as every read route; no CSRF —
+/// it is a GET). Each `String` published on the broadcast channel is emitted as
+/// one `data:` frame; a `Lagged` subscriber (fell behind the ring buffer) gets
+/// a comment rather than a dropped connection. A 15s keep-alive comment keeps
+/// idle connections alive through proxies. There is no publisher wired yet —
+/// the plumbing exists so later phases can push events via
+/// [`ConsoleApiState::events_sender`].
+async fn events(
+    State(state): State<ConsoleApiState>,
+    _session: AuthSession,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let stream = BroadcastStream::new(state.events.subscribe()).map(|item| {
+        let event = match item {
+            Ok(message) => Event::default().data(message),
+            // Slow client: signal the gap without tearing down the stream.
+            Err(_lagged) => Event::default().comment("lagged"),
+        };
+        Ok(event)
+    });
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(std::time::Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
+// ── static assets (console) ───────────────────────────────────────────────────
+
+/// Builds a static-file router for the built Console assets in `dir`, served at
+/// `/` (as a fallback). Two security properties, both delegated to
+/// battle-tested `tower-http` layers rather than hand-rolled:
+///
+/// * **Path traversal** — [`ServeDir`] validates every request path and refuses
+///   to resolve `..`/absolute/prefix components outside `dir` (404).
+/// * **CSP** — [`SetResponseHeaderLayer`] stamps [`CONSOLE_CSP`] on *every*
+///   response (success and error alike), uniformly, so no route can forget it.
+///
+/// Deliberately NOT behind the console-session auth gate: an unauthenticated
+/// browser must load the login page/bundle before any session exists.
+pub fn static_router(dir: PathBuf) -> Router {
+    Router::new()
+        .fallback_service(ServeDir::new(dir))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(CONSOLE_CSP),
+        ))
 }
 
 #[cfg(test)]
