@@ -36,6 +36,7 @@ use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 use uuid::Uuid;
 
+use crate::galaxy::{GalaxyGraph, ZoomLevel};
 use crate::semantic::{
     ConfirmByProposalIdCommand, RejectByProposalIdCommand, SemanticError, SemanticStore,
     SupersedeByProposalIdCommand, TrustedContext,
@@ -131,6 +132,7 @@ pub fn router(state: ConsoleApiState) -> Router {
         .route("/inbox/{proposal_id}/approve", post(approve))
         .route("/inbox/{proposal_id}/reject", post(reject))
         .route("/inbox/{proposal_id}/supersede", post(supersede))
+        .route("/galaxy", get(galaxy))
         .with_state(state)
 }
 
@@ -155,6 +157,10 @@ impl ApiError {
 
     fn forbidden_csrf() -> Self {
         Self::new(StatusCode::FORBIDDEN, "csrf_failed")
+    }
+
+    fn invalid_request() -> Self {
+        Self::new(StatusCode::BAD_REQUEST, "invalid_request")
     }
 }
 
@@ -536,6 +542,112 @@ async fn evidence(
         .evidence_for(proposal_id)
         .map_err(|e| map_semantic_error(&e))?;
     Ok(Json(evidence).into_response())
+}
+
+// ── galaxy (Task E2.1) ──────────────────────────────────────────────────────
+
+/// Query params for `GET /api/v1/galaxy`. `zoom` picks the LOD cap ("far" →
+/// ≤300 community supernodes, "mid" → ≤2000 visible nodes, "close" → ego
+/// neighborhood, requires `focus`). `domain` filters to one domain. `focus`
+/// is the entity_id for ego mode.
+#[derive(Deserialize)]
+struct GalaxyQuery {
+    domain: Option<String>,
+    zoom: Option<String>,
+    focus: Option<Uuid>,
+}
+
+/// Parse the `zoom` query param into a [`ZoomLevel`]. Unknown values are a
+/// 400 `invalid_request`. Missing defaults to `Far` (the cheapest LOD).
+fn parse_zoom(raw: &Option<String>) -> Result<ZoomLevel, ApiError> {
+    match raw.as_deref() {
+        None | Some("") | Some("far") => Ok(ZoomLevel::Far),
+        Some("mid") => Ok(ZoomLevel::Mid),
+        Some("close") => Ok(ZoomLevel::Close),
+        Some(_) => Err(ApiError::invalid_request()),
+    }
+}
+
+/// `GET /api/v1/galaxy` — bounded Galaxy subgraph for the Console (Task E2.1).
+///
+/// Session required (no CSRF — read-only). The server materializes a bounded
+/// subgraph from the current claim snapshot and returns a [`GalaxyPayload`]:
+///
+/// - `zoom=far` (default): community supernodes, ≤300 nodes (first-seen).
+/// - `zoom=mid`: visible nodes, ≤2000.
+/// - `zoom=close&focus=<entity_id>`: ego neighborhood around `focus`, depth 2.
+/// - `zoom=close` without `focus`: 400 `invalid_request` (ego needs a focus).
+///
+/// `domain` filters to one domain in all modes. §9.2: server never sends the
+/// whole brain — the LOD cap (and the ego depth bound) is the safety bound.
+async fn galaxy(
+    State(state): State<ConsoleApiState>,
+    _session: AuthSession,
+    Query(params): Query<GalaxyQuery>,
+) -> Result<Response, ApiError> {
+    let zoom = parse_zoom(&params.zoom)?;
+    let lod = zoom.lod();
+
+    // ego mode requires a focus entity.
+    if matches!(zoom, ZoomLevel::Close) && params.focus.is_none() {
+        return Err(ApiError::invalid_request());
+    }
+
+    let head = state
+        .store
+        .ledger_head()
+        .map_err(|e| map_semantic_error(&e))?;
+    let claims = state
+        .store
+        .all_claims_current(head, Utc::now())
+        .map_err(|e| map_semantic_error(&e))?;
+    let now = Utc::now();
+
+    // Combine active + future + past into one flat slice the materializer
+    // consumes. Past claims still carry their entity_id (useful for
+    // provenance / supersede context); the active set is the dominant input.
+    let mut flat: Vec<&crate::semantic::ClaimView> =
+        Vec::with_capacity(claims.active.len() + claims.future.len() + claims.past.len());
+    flat.extend(claims.active.iter());
+    flat.extend(claims.future.iter());
+    flat.extend(claims.past.iter());
+
+    let canonical = state.store.entity_canonical_subjects_owned();
+
+    let graph = match (zoom, params.focus) {
+        (ZoomLevel::Close, Some(focus_id)) => {
+            // Ego mode: take the focused slice, then materialize with the
+            // ego builder. We pass the full flat slice so the BFS can walk
+            // beyond the focus's own claims to find neighbors.
+            let owned: Vec<crate::semantic::ClaimView> = flat.into_iter().cloned().collect();
+            let mut ego =
+                GalaxyGraph::ego_around(&owned, focus_id, crate::galaxy::EGO_MAX_DEPTH, now);
+            // Re-stamp node labels with canonical subjects now that we know
+            // the surviving entity set (ego_around doesn't have the map).
+            for node in ego.nodes_mut() {
+                if let Ok(id) = Uuid::parse_str(&node.id)
+                    && let Some(label) = canonical.get(&id)
+                {
+                    node.label = label.clone();
+                }
+            }
+            ego
+        }
+        _ => {
+            // Bounded mode (Far / Mid). Pass the canonical map so labels are
+            // the live canonical subject rather than the per-claim payload.
+            let domain_filter = params.domain.as_deref();
+            GalaxyGraph::from_claims_with_subjects(
+                flat.into_iter().cloned().collect::<Vec<_>>().as_slice(),
+                lod.node_cap(),
+                domain_filter,
+                &canonical,
+                now,
+            )
+        }
+    };
+
+    Ok(Json(graph.to_payload(lod)).into_response())
 }
 
 // ── review routes ───────────────────────────────────────────────────────────

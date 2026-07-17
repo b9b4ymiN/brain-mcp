@@ -42,9 +42,9 @@
 //!
 //! Seeded dataset (chosen to exercise every Console page):
 //!   * Capture+Propose pending:  GULF target_price=58, PTT target_price=62,
-//!                               AAPL sector="tech", XSS payload (subject+value)
+//!     AAPL sector="tech", XSS payload (subject+value)
 //!   * Capture+Propose+Confirm:  GULF target_price=55 (a prior — feeds timeline
-//!                               + gives Inbox supersede a prior to replace)
+//!     + gives Inbox supersede a prior to replace)
 //!
 //! Usage:
 //!     cargo run --example seed_console_e2e -- <state_dir>
@@ -53,10 +53,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use llm_wiki::semantic::{
-    CaptureCommand, ClaimDraft, ConfirmCommand, PrivacyLabel, ProposeCommand,
-    SemanticConfig, SemanticStore, TrustedContext,
+    CaptureCommand, ClaimDraft, ConfirmCommand, PrivacyLabel, ProposeCommand, SemanticConfig,
+    SemanticStore, TrustedContext,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn die(msg: impl AsRef<str>) -> ! {
     eprintln!("seed_console_e2e: {}", msg.as_ref());
@@ -153,17 +153,16 @@ fn main() -> ExitCode {
     let state_dir: PathBuf = match args.next() {
         Some(s) => PathBuf::from(s),
         None => {
-            die("missing required argument <state_dir> (the dir that contains/should contain semantic-store)");
+            die(
+                "missing required argument <state_dir> (the dir that contains/should contain semantic-store)",
+            );
         }
     };
     if args.next().is_some() {
         die("too many arguments; expected exactly one: <state_dir>");
     }
     if !state_dir.exists() {
-        die(format!(
-            "state_dir does not exist: {}",
-            state_dir.display()
-        ));
+        die(format!("state_dir does not exist: {}", state_dir.display()));
     }
 
     let semantic_root = state_dir.join("semantic-store");
