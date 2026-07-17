@@ -40,4 +40,11 @@ web/console/test-results/
 web/console/playwright-report/
 web/console/playwright/.cache/
 web/console/blob-report/
+# web/console/bench — Phase E2.3 Galaxy benchmark outputs. The schema +
+# README are tracked (reviewers validate any committed environment against
+# the schema); the per-run environment.json + results-*.json identify the
+# dev machine and are meaningless in the repo. See
+# web/console/bench/README.md for the dev-bench flag policy.
+web/console/bench/environment.json
+web/console/bench/results-*.json
 

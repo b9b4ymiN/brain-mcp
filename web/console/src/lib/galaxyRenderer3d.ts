@@ -137,8 +137,12 @@ export function createRenderer3d(opts: RendererOpts): GraphRenderer {
           const g = node as GalaxyGraphNode
           const label = escapeHtml(g.raw.label)
           const kind = escapeHtml(g.raw.kind)
-          const domain = escapeHtml(g.raw.domain)
-          return `<b>${label}</b><br/>${kind} · ${domain}`
+          // E2.2 Carry 3 — only join the domain with a middot if it's
+          // non-empty. An empty domain (which the benchmark fixtures and some
+          // ego-neighborhood nodes carry) otherwise renders a trailing
+          // " · " that looks like a broken separator.
+          const domainPart = g.raw.domain ? ' · ' + escapeHtml(g.raw.domain) : ''
+          return `<b>${label}</b><br/>${kind}${domainPart}`
         })
         .nodeAutoColorBy('kind')
         .linkAutoColorBy('kind')

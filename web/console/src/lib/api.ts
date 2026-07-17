@@ -98,6 +98,14 @@ interface RequestOptions {
   body?: unknown
   /** Mutation POSTs set this to attach `X-CSRF-Token`. */
   csrf?: boolean
+  /**
+   * Optional `AbortSignal` forwarded to `fetch`. Callers that may unmount
+   * mid-flight (e.g. `GalaxyGraph`) pass a signal so the in-flight request
+   * is aborted on teardown instead of resolving into a destroyed component.
+   * The resulting `AbortError` is surfaced as `ApiError`-shaped so callers
+   * can detect it by `name === 'AbortError'`.
+   */
+  signal?: AbortSignal
 }
 
 function buildUrl(path: string, query?: RequestOptions['query']): string {
@@ -138,8 +146,20 @@ async function request<T>(opts: RequestOptions): Promise<T> {
       headers,
       credentials: 'include',
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      signal: opts.signal,
     })
   } catch (cause) {
+    // Abort — rethrow verbatim so callers can swallow by `name === 'AbortError'`.
+    // We deliberately do NOT wrap aborts in ApiError: the caller already knows
+    // it aborted (it held the controller), and the soft 503 mapping below would
+    // be a misleading signal.
+    if (
+      cause instanceof Error &&
+      (cause.name === 'AbortError' ||
+        (typeof DOMException !== 'undefined' && cause instanceof DOMException && cause.name === 'AbortError'))
+    ) {
+      throw cause
+    }
     // Network failure / proxy down — surface as a 503-style unavailable so
     // callers can show a consistent banner rather than an opaque TypeError.
     throw new ApiError(503, 'unavailable')
@@ -431,16 +451,26 @@ export async function evidence(proposalId: Uuid): Promise<EvidenceSummary> {
  * materializer (E2.1). Session required (401 without cookie); GET so no CSRF.
  * The endpoint selects the `lod` server-side; the client renders whatever it
  * returns. `focus` pins an ego-neighborhood around a specific entity.
+ *
+ * The optional `signal` is forwarded to `fetch` so callers that may unmount
+ * mid-flight (e.g. `GalaxyGraph`'s `onDestroy` abort) can cancel the request.
+ * On abort the underlying `fetch` rejects with an `AbortError` (an
+ * `instanceof Error` whose `name === 'AbortError'`); callers should swallow
+ * that case silently rather than surface it as a generic load failure.
  */
-export async function galaxy(params: {
-  domain?: string
-  zoom?: ZoomLevel
-  focus?: string
-}): Promise<GalaxyPayload> {
+export async function galaxy(
+  params: {
+    domain?: string
+    zoom?: ZoomLevel
+    focus?: string
+    signal?: AbortSignal
+  },
+): Promise<GalaxyPayload> {
   return request<GalaxyPayload>({
     method: 'GET',
     path: '/galaxy',
     query: { domain: params.domain, zoom: params.zoom, focus: params.focus },
+    signal: params.signal,
   })
 }
 

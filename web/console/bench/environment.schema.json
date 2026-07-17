@@ -1,0 +1,75 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://brain-mcp-vnext/console/bench/environment.schema.json",
+  "title": "Galaxy benchmark environment record",
+  "description": "Machine + browser + viewport snapshot captured by the benchmark spec at the start of a run. Written to bench/environment.json (gitignored — machine-specific). The schema itself is tracked so reviewers can validate any environment.json that gets attached to a baseline re-bench report. See bench/README.md for the dev-bench flag policy.",
+  "type": "object",
+  "required": [
+    "recorded_at",
+    "os",
+    "browser",
+    "playwright_version",
+    "gpu",
+    "cpu_cores",
+    "memory_gb",
+    "viewport",
+    "device_pixel_ratio",
+    "seed",
+    "machine_label"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of the benchmark run start (new Date().toISOString())."
+    },
+    "os": {
+      "type": "string",
+      "description": "Operating system label derived from navigator.userAgent / navigator.platform (e.g. 'Win32', 'Linux x86_64', 'macOS')."
+    },
+    "browser": {
+      "type": "string",
+      "description": "Browser user-agent string verbatim (navigator.userAgent)."
+    },
+    "playwright_version": {
+      "type": "string",
+      "description": "Playwright package version (from package.json or @playwright/test)."
+    },
+    "gpu": {
+      "type": ["string", "null"],
+      "description": "WebGL renderer string from WEBGL_debug_renderer_info (e.g. 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 ...)'). null when WebGL is unavailable — the spec records the absence rather than fabricating a value."
+    },
+    "cpu_cores": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "navigator.hardwareConcurrency. Logical cores available to the JS runtime."
+    },
+    "memory_gb": {
+      "type": ["number", "null"],
+      "description": "navigator.deviceMemory in GB (Chromium-only; rounded to powers of 2). null when the browser omits the API."
+    },
+    "viewport": {
+      "type": "object",
+      "required": ["width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      },
+      "description": "Playwright viewport size in CSS pixels (matches playwright.config.ts's chromium-realbackend project)."
+    },
+    "device_pixel_ratio": {
+      "type": "number",
+      "description": "window.devicePixelRatio at capture time."
+    },
+    "seed": {
+      "type": "string",
+      "description": "Fixture seed label identifying which generated graphs were benched (e.g. 'graph-1k+graph-5k' or a git SHA). Lets a baseline re-bench pull the same fixtures."
+    },
+    "machine_label": {
+      "type": "string",
+      "description": "Free-text machine identifier. Defaults to 'dev (recorded locally)'; override with BENCH_MACHINE_LABEL env var when re-benching on the baseline hardware so the recorded file points at the right machine in reports."
+    }
+  }
+}

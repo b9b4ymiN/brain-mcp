@@ -47,6 +47,8 @@
   import {
     createRenderer,
     detectRenderer,
+    prefersReducedMotion,
+    webglAvailable,
     type GraphRenderer,
     type RendererKind,
   } from '../lib/galaxyRenderer'
@@ -94,6 +96,16 @@
   // The kind that was ACTUALLY mounted (after capability detection). Shown
   // in the UI so the user understands why they're seeing a 2D/list view.
   let activeKind = $state<RendererKind | null>(null)
+  // E2.2 Carry 2 — tracks whether the user has explicitly chosen a renderer
+  // kind via the toolbar control. When `false` (the default — auto-detected),
+  // the inline "Showing 2D — WebGL unavailable" reasoner line appears
+  // whenever `activeKind !== '3d'` so the user understands WHY 3D isn't on.
+  // When `true`, the user picked this kind themselves and the reasoner stays
+  // silent (their own choice, not a fallback).
+  let manualPreference = $state(false)
+  // The user's chosen kind (when manualPreference=true). Seeded to '3d' so
+  // the very first paint attempts 3D; the toolbar can flip it to '2d'/'list'.
+  let requestedKind = $state<RendererKind>('3d')
 
   // Renderer instance held OUTSIDE reactive state — we don't want Svelte
   // reactivity poking at the lib's internals. Mutable `let` in component
@@ -105,6 +117,17 @@
   // Monotonic request-id guard — same pattern as Entity.svelte: if the user
   // changes zoom while a fetch is in flight, the stale response is discarded.
   let fetchSeq = 0
+  // ── Unmount guard (E2.2 Carry 1) ───────────────────────────────────────
+  // If the component unmounts while `fetchGalaxy()` is mid-flight, the
+  // resolved promise would otherwise mutate a destroyed component's state
+  // (set `payload`, mount a renderer into a torn-down container, etc.). We
+  // pair a `destroyed` flag (set in `onDestroy`) with an `AbortController`
+  // whose `signal` is forwarded into `fetch` via `api.galaxy({signal})`. The
+  // aborted fetch rejects with an `AbortError`; we swallow it silently. The
+  // `destroyed` flag is the belt-and-suspenders backstop in case the abort
+  // races (e.g. fetch already completed but the microtask hasn't run yet).
+  let destroyed = false
+  let abortController: AbortController | null = null
 
   // ── data fetch ─────────────────────────────────────────────────────────
   async function reload(): Promise<void> {
@@ -118,16 +141,28 @@
     teardownRenderer()
     payload = null
     selected = null
+    // Abort any PREVIOUS in-flight fetch (the seq guard alone would discard
+    // its result, but aborting also frees the network resources). Always
+    // create a fresh controller for THIS fetch.
+    abortController?.abort()
+    const controller = new AbortController()
+    abortController = controller
     try {
       const result = await fetchGalaxy({
         zoom: activeZoom,
         focus,
         domain,
+        signal: controller.signal,
       })
-      if (seq !== fetchSeq) return
+      // AbortError would have thrown before reaching here; still defend
+      // against both the destroy path and the supersede path.
+      if (destroyed || seq !== fetchSeq) return
       payload = result
     } catch (cause) {
-      if (seq !== fetchSeq) return
+      if (destroyed || seq !== fetchSeq) return
+      // Expected on unmount — abort fired by onDestroy or by a newer reload.
+      // Swallow silently (this is the Carry 1 contract).
+      if (cause instanceof Error && cause.name === 'AbortError') return
       if (cause instanceof ApiError && cause.status === 401) {
         sessionExpired = true
         session.clear()
@@ -139,7 +174,7 @@
           ? `Failed to load galaxy (${cause.code}).`
           : 'Failed to load galaxy — is the backend running on :8080?'
     } finally {
-      if (seq === fetchSeq) loading = false
+      if (!destroyed && seq === fetchSeq) loading = false
     }
   }
 
@@ -157,7 +192,12 @@
     if (containerEl === null) return
     // Capability detection walks the fallback chain for us — '3d' requested
     // becomes '2d' or 'list' if WebGL is off / reduced-motion is preferred.
-    const kind = detectRenderer('3d')
+    // When the user has explicitly chosen a kind (manualPreference=true),
+    // we honor it verbatim (the badge reasoner is suppressed in that case
+    // because the user picked it on purpose). When auto, we still start
+    // from '3d' and let detection walk down.
+    const requested = manualPreference ? requestedKind : '3d'
+    const kind = detectRenderer(requested)
     const instance = createRenderer(kind, {
       width: containerEl.clientWidth || 600,
       height,
@@ -223,6 +263,12 @@
 
   onDestroy(() => {
     // §13 Task 5.2 DoD #4 — release WebGL resources on teardown.
+    // E2.2 Carry 1: also signal any in-flight fetch to abort so its resolved
+    // promise can't mutate a destroyed component's state. The `destroyed`
+    // flag is the secondary backstop — checked after every `await` in reload.
+    destroyed = true
+    abortController?.abort()
+    abortController = null
     teardownRenderer()
     if (resizeObserver !== null) {
       resizeObserver.disconnect()
@@ -235,6 +281,24 @@
     if (next === activeZoom) return
     activeZoom = next
     // The $effect above picks this up and refetches + remounts.
+  }
+
+  /**
+   * E2.2 Carry 2 — user explicitly chose a renderer kind via the toolbar
+   * control. Sets the manual-preference flag (suppresses the "Showing 2D —
+   * WebGL unavailable" reasoner on subsequent renders because the user
+   * picked it themselves), stores the choice, and re-mounts the renderer
+   * against the current payload (no refetch needed — same graph, different
+   * drawing engine).
+   */
+  function setRequestedKind(kind: RendererKind): void {
+    if (manualPreference && requestedKind === kind) return
+    manualPreference = true
+    requestedKind = kind
+    if (payload !== null && containerEl !== null) {
+      teardownRenderer()
+      mountRenderer()
+    }
   }
 
   function openSelected(): void {
@@ -276,12 +340,53 @@
         Close
       </button>
     </div>
-    {#if activeKind !== null}
-      <span class="renderer-badge" title="Active renderer (3D needs WebGL + motion OK)">
-        {activeKind}
-      </span>
-    {/if}
+    <div class="renderer-controls" role="group" aria-label="Galaxy renderer">
+      <button
+        type="button"
+        class:active={requestedKind === '3d'}
+        aria-pressed={requestedKind === '3d'}
+        onclick={() => setRequestedKind('3d')}
+        title="3D force graph (needs WebGL + motion OK)"
+      >
+        3D
+      </button>
+      <button
+        type="button"
+        class:active={requestedKind === '2d'}
+        aria-pressed={requestedKind === '2d'}
+        onclick={() => setRequestedKind('2d')}
+        title="2D canvas force graph"
+      >
+        2D
+      </button>
+      <button
+        type="button"
+        class:active={requestedKind === 'list'}
+        aria-pressed={requestedKind === 'list'}
+        onclick={() => setRequestedKind('list')}
+        title="Accessible DOM list (no GPU)"
+      >
+        List
+      </button>
+      {#if activeKind !== null}
+        <span class="renderer-badge" title="Active renderer (3D needs WebGL + motion OK)">
+          {activeKind}
+        </span>
+      {/if}
+    </div>
   </div>
+
+  {#if activeKind !== null && activeKind !== '3d' && !manualPreference}
+    {#if !webglAvailable()}
+      <p class="renderer-reason" role="note">
+        Showing {activeKind.toUpperCase()} — WebGL unavailable.
+      </p>
+    {:else if prefersReducedMotion()}
+      <p class="renderer-reason" role="note">
+        Showing {activeKind.toUpperCase()} — reduced motion is on.
+      </p>
+    {/if}
+  {/if}
 
   {#if sessionExpired}
     <p class="state state-error" role="alert">Session expired — sign in again.</p>
@@ -369,6 +474,45 @@
   .zoom-controls button.active {
     background: rgba(127, 127, 127, 0.3);
     font-weight: 600;
+  }
+
+  .renderer-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    border-radius: 0.375rem;
+    overflow: hidden;
+    border: 1px solid rgba(127, 127, 127, 0.45);
+  }
+
+  .renderer-controls button {
+    padding: 0.4rem 0.75rem;
+    border: none;
+    border-right: 1px solid rgba(127, 127, 127, 0.35);
+    background: rgba(127, 127, 127, 0.06);
+    color: inherit;
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+
+  .renderer-controls button:last-of-type {
+    border-right: none;
+  }
+
+  .renderer-controls button.active {
+    background: rgba(127, 127, 127, 0.3);
+    font-weight: 600;
+  }
+
+  .renderer-reason {
+    margin: 0;
+    padding: 0.4rem 0.6rem;
+    font-size: 0.8rem;
+    border-radius: 0.25rem;
+    background: rgba(180, 140, 60, 0.12);
+    border: 1px solid rgba(180, 140, 60, 0.35);
+    opacity: 0.9;
   }
 
   .renderer-badge {

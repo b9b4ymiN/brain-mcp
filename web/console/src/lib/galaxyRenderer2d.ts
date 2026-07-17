@@ -93,8 +93,11 @@ export function createRenderer2d(opts: RendererOpts): GraphRenderer {
           const g = node as GalaxyGraphNode
           const label = escapeHtml(g.raw.label)
           const kind = escapeHtml(g.raw.kind)
-          const domain = escapeHtml(g.raw.domain)
-          return `<b>${label}</b><br/>${kind} · ${domain}`
+          // E2.2 Carry 3 — only join the domain with a middot if it's
+          // non-empty (matches the 3D renderer; empty domain no longer
+          // leaves a dangling " · " in the tooltip).
+          const domainPart = g.raw.domain ? ' · ' + escapeHtml(g.raw.domain) : ''
+          return `<b>${label}</b><br/>${kind}${domainPart}`
         })
         .nodeAutoColorBy('kind')
         .linkAutoColorBy('kind')

@@ -1,0 +1,42 @@
+{
+  "lod": "visible_nodes",
+  "max_nodes": 0,
+  "node_count": 3,
+  "nodes": [
+    {
+      "id": "t0",
+      "label": "Alpha",
+      "kind": "external_fact",
+      "domain": "bench"
+    },
+    {
+      "id": "t1",
+      "label": "Beta",
+      "kind": "inference",
+      "domain": "bench"
+    },
+    {
+      "id": "t2",
+      "label": "Gamma",
+      "kind": "user_assertion",
+      "domain": "bench"
+    }
+  ],
+  "edges": [
+    {
+      "source": "t0",
+      "target": "t1",
+      "kind": "related"
+    },
+    {
+      "source": "t1",
+      "target": "t2",
+      "kind": "related"
+    },
+    {
+      "source": "t0",
+      "target": "t2",
+      "kind": "sources"
+    }
+  ]
+}
