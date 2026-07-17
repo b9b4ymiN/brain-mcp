@@ -19,6 +19,10 @@
 //!   accepted the provider's terms risk before the provider was enabled.
 
 use serde::{Deserialize, Serialize};
+use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::Duration;
 
 // ── Provider-agnostic request/response ───────────────────────────────────────
 
@@ -295,6 +299,449 @@ pub struct ComplianceRecord {
     pub processing_region: String,
     /// ISO-8601 UTC timestamp of the acknowledgement.
     pub acknowledged_at: String,
+}
+
+impl ComplianceRecord {
+    /// Append this record as one JSON line to `path` (creating the file/parent
+    /// directory if needed). This is a standalone audit log — NOT the durable
+    /// semantic schema (see module docs) — so a compliance acknowledgement is
+    /// recoverable even though it never touches `SemanticStore`.
+    pub fn persist_to(&self, path: &Path) -> io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        let line = serde_json::to_string(self)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        writeln!(file, "{line}")
+    }
+
+    /// Read every record previously appended to `path` (one JSON object per
+    /// line). Returns an empty vec if the file does not exist yet.
+    pub fn load_all_from(path: &Path) -> io::Result<Vec<ComplianceRecord>> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let file = std::fs::File::open(path)?;
+        std::io::BufReader::new(file)
+            .lines()
+            .filter(|line| !matches!(line, Ok(l) if l.trim().is_empty()))
+            .map(|line| {
+                let line = line?;
+                serde_json::from_str(&line)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+            })
+            .collect()
+    }
+}
+
+// ── HttpTransport — injectable transport for ZaiHttpAdapter ─────────────────
+
+/// The raw HTTP outcome of a transport call: a status code + response body.
+/// [`ZaiHttpAdapter`] classifies this into a content string or a
+/// [`ProviderError`] — the transport itself only reports connection-level
+/// failures (timeout/outage/partial-stream) as `Err`.
+#[derive(Clone, Debug)]
+pub struct TransportResponse {
+    pub status: u16,
+    pub body: String,
+}
+
+/// An injectable HTTP transport. Production code uses [`ReqwestTransport`];
+/// tests implement this trait directly with canned responses — no boxed
+/// closures, which keeps clippy's `type_complexity` lint clean (Task D1: the
+/// previous `Box<dyn Fn(&str, &str) -> Result<String, ProviderError>>` field
+/// this replaces).
+pub trait HttpTransport: Send + Sync {
+    /// Send `body` (a JSON request) to `url` with bearer `api_key`. Returns
+    /// the raw response on any completed HTTP exchange (even 4xx/5xx status);
+    /// returns `Err` only for a connection-level failure (timeout, DNS/TCP
+    /// failure, or the body failing to read after headers arrived).
+    fn send(
+        &self,
+        url: &str,
+        api_key: &str,
+        body: &str,
+    ) -> Result<TransportResponse, ProviderError>;
+}
+
+/// The production [`HttpTransport`]: a blocking `reqwest` client (rustls).
+/// Blocking is safe today because nothing calls [`AiProvider::complete`] from
+/// an async context yet (Phase 4 is contract-level — see module docs); a
+/// future async caller wraps the call in `tokio::task::spawn_blocking`
+/// instead of this trait growing an async fn.
+pub struct ReqwestTransport {
+    client: reqwest::blocking::Client,
+}
+
+impl ReqwestTransport {
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(60))
+                .build()
+                .expect("reqwest client builds with default TLS config"),
+        }
+    }
+}
+
+impl Default for ReqwestTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HttpTransport for ReqwestTransport {
+    fn send(
+        &self,
+        url: &str,
+        api_key: &str,
+        body: &str,
+    ) -> Result<TransportResponse, ProviderError> {
+        let result = self
+            .client
+            .post(url)
+            .bearer_auth(api_key)
+            .header("Content-Type", "application/json")
+            .body(body.to_owned())
+            .send();
+        let response = match result {
+            Ok(r) => r,
+            Err(e) if e.is_timeout() => return Err(ProviderError::Timeout),
+            Err(_) => return Err(ProviderError::Outage),
+        };
+        let status = response.status().as_u16();
+        match response.text() {
+            Ok(body) => Ok(TransportResponse { status, body }),
+            Err(_) => Err(ProviderError::PartialStream),
+        }
+    }
+}
+
+// ── Retry policy (bounded, exponential backoff) ──────────────────────────────
+
+/// Bounded exponential backoff. `max_attempts` bounds the loop (no unbounded
+/// retry); `delay_for` doubles `base_delay` per attempt, capped at
+/// `max_delay`.
+#[derive(Clone, Debug)]
+pub struct RetryPolicy {
+    pub max_attempts: u32,
+    pub base_delay: Duration,
+    pub max_delay: Duration,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(200),
+            max_delay: Duration::from_secs(5),
+        }
+    }
+}
+
+impl RetryPolicy {
+    /// A policy with near-zero delays, for tests that exercise the retry loop
+    /// without slowing down the suite.
+    pub fn fast_for_tests() -> Self {
+        Self {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(4),
+        }
+    }
+
+    fn delay_for(&self, attempt: u32) -> Duration {
+        let exp = self
+            .base_delay
+            .saturating_mul(1u32 << attempt.saturating_sub(1).min(16));
+        exp.min(self.max_delay)
+    }
+}
+
+// ── Dead-letter (exhausted retries / non-retryable failures) ────────────────
+
+/// A record of a request that could not be completed — either because the
+/// outbound policy denied it or because the transport failed permanently
+/// (non-retryable error) or exhausted its retry budget. `prompt` is ALWAYS
+/// the [`OutboundPolicy::check_text_redact`]-ed text, never the raw prompt —
+/// this is what makes the dead-letter path safe for a `local_only`/secret
+/// request to pass through on its way to being denied (Task D1 DoD:
+/// intercepted-outbound must not appear in the dead-letter record).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeadLetterEntry {
+    pub adapter_name: String,
+    pub redacted_prompt: String,
+    pub error: ProviderError,
+    pub attempts: u32,
+    pub occurred_at: String,
+}
+
+// ── ZaiHttpAdapter — concrete AiProvider for Z.ai OpenAI-compatible endpoint ─
+
+/// A concrete `AiProvider` for the Z.ai (GLM) OpenAI-compatible chat
+/// completions endpoint (Task D1). The HTTP call goes through an injectable
+/// [`HttpTransport`] (production: [`ReqwestTransport`]; tests: any transport
+/// impl with canned responses).
+///
+/// Every `complete` call, on every attempt (including retries), re-runs the
+/// [`OutboundPolicy`] check before touching the transport — a `local_only`/
+/// secret-bearing request never reaches the network, and any resulting
+/// dead-letter/log entry carries only redacted text.
+pub struct ZaiHttpAdapter {
+    config: ProviderConfig,
+    transport: Box<dyn HttpTransport>,
+    retry: RetryPolicy,
+    compliance: ComplianceRecord,
+    dead_letters: Mutex<Vec<DeadLetterEntry>>,
+}
+
+impl ZaiHttpAdapter {
+    /// Construct a production adapter with a real `reqwest` transport.
+    /// Persists `compliance` to `compliance_log_path` before returning — a
+    /// live adapter cannot exist without a recorded acknowledgement (§8.2).
+    pub fn new(
+        config: ProviderConfig,
+        compliance: ComplianceRecord,
+        compliance_log_path: PathBuf,
+    ) -> io::Result<Self> {
+        Self::with_transport(
+            config,
+            compliance,
+            compliance_log_path,
+            Box::new(ReqwestTransport::new()),
+        )
+    }
+
+    /// Construct an adapter with an injected transport (tests use this with a
+    /// scripted/mock [`HttpTransport`] — no network).
+    pub fn with_transport(
+        config: ProviderConfig,
+        compliance: ComplianceRecord,
+        compliance_log_path: PathBuf,
+        transport: Box<dyn HttpTransport>,
+    ) -> io::Result<Self> {
+        compliance.persist_to(&compliance_log_path)?;
+        Ok(Self {
+            config,
+            transport,
+            retry: RetryPolicy::default(),
+            compliance,
+            dead_letters: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// Override the retry policy (tests use [`RetryPolicy::fast_for_tests`]).
+    pub fn with_retry_policy(mut self, retry: RetryPolicy) -> Self {
+        self.retry = retry;
+        self
+    }
+
+    /// The compliance record this adapter was constructed with.
+    pub fn compliance_record(&self) -> &ComplianceRecord {
+        &self.compliance
+    }
+
+    /// Every dead-lettered request recorded so far (redacted prompts only).
+    pub fn dead_letters(&self) -> Vec<DeadLetterEntry> {
+        self.dead_letters
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn record_dead_letter(&self, request: &ProviderRequest, error: &ProviderError, attempts: u32) {
+        let entry = DeadLetterEntry {
+            adapter_name: self.adapter_name().to_owned(),
+            redacted_prompt: safe_prompt_for_audit(request),
+            error: error.clone(),
+            attempts,
+            occurred_at: chrono_now_rfc3339(),
+        };
+        tracing::warn!(
+            adapter = %entry.adapter_name,
+            attempts,
+            error = ?entry.error,
+            "zai request moved to dead-letter"
+        );
+        self.dead_letters
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(entry);
+    }
+}
+
+impl AiProvider for ZaiHttpAdapter {
+    fn complete(&self, request: &ProviderRequest) -> ProviderResult<String> {
+        if self.config.is_disabled() {
+            return Err(ProviderError::Disabled);
+        }
+        let policy = OutboundPolicy::new();
+        let mut last_err = ProviderError::Outage;
+        let mut attempts_made = 0;
+
+        for attempt in 1..=self.retry.max_attempts {
+            attempts_made = attempt;
+            let decision = policy.check(request);
+            if decision.denied {
+                last_err = ProviderError::InvalidJson(format!(
+                    "outbound policy denied: {reason}",
+                    reason = decision.reason
+                ));
+                self.record_dead_letter(request, &last_err, attempts_made);
+                return Err(last_err);
+            }
+
+            tracing::debug!(
+                attempt,
+                adapter = self.adapter_name(),
+                prompt = %safe_prompt_for_audit(request),
+                "sending zai request"
+            );
+
+            let api_key = match resolve_api_key(&self.config.api_key_ref) {
+                Ok(key) => key,
+                Err(err) => {
+                    last_err = err;
+                    self.record_dead_letter(request, &last_err, attempts_made);
+                    return Err(last_err);
+                }
+            };
+            let body = build_request_body(&self.config, request);
+
+            let outcome = self
+                .transport
+                .send(&self.config.base_url, &api_key, &body)
+                .and_then(classify_response);
+
+            match outcome {
+                Ok(content) => return Ok(content),
+                Err(err) => {
+                    last_err = err;
+                    if !last_err.is_retryable() || attempt == self.retry.max_attempts {
+                        break;
+                    }
+                    std::thread::sleep(self.retry.delay_for(attempt));
+                }
+            }
+        }
+
+        self.record_dead_letter(request, &last_err, attempts_made);
+        Err(last_err)
+    }
+
+    fn adapter_name(&self) -> &str {
+        "zai_openai_compatible"
+    }
+}
+
+/// The text safe to put in a dead-letter entry or a log/telemetry line for
+/// `request`. A `local_only` request is withheld entirely — by definition it
+/// must never leave the local machine, so pattern-based redaction (which only
+/// strips *recognized secret shapes*) is not sufficient on its own; any other
+/// request goes through [`OutboundPolicy::check_text_redact`].
+fn safe_prompt_for_audit(request: &ProviderRequest) -> String {
+    if request.local_only {
+        "[local_only — content withheld]".to_owned()
+    } else {
+        OutboundPolicy::check_text_redact(&request.prompt)
+    }
+}
+
+/// Resolve `api_key_ref` at call time. Only the `env:VARNAME` scheme is
+/// implemented today (this repo has no secret-manager client) — the raw key
+/// is never stored on [`ProviderConfig`] or the adapter, only read
+/// transiently here. A missing/unresolvable ref maps to `Outage` (retryable —
+/// setting the env var and retrying will succeed).
+fn resolve_api_key(api_key_ref: &str) -> Result<String, ProviderError> {
+    match api_key_ref.strip_prefix("env:") {
+        Some(var_name) => std::env::var(var_name).map_err(|_| ProviderError::Outage),
+        None => Err(ProviderError::Outage),
+    }
+}
+
+/// Build the OpenAI-compatible chat-completions request body.
+///
+/// `ProviderRequest` carries no task-class field (it is deliberately
+/// provider-agnostic — see module docs), so there is no signal here to choose
+/// between `routine_model` and `reasoning_model`. Task D1 always routes to
+/// `routine_model`; per-call model routing is a caller-side decision for a
+/// later task once a task-class concept exists.
+fn build_request_body(config: &ProviderConfig, request: &ProviderRequest) -> String {
+    serde_json::json!({
+        "model": config.routine_model,
+        "messages": [{"role": "user", "content": request.prompt}],
+        "max_tokens": request.max_tokens,
+        "temperature": request.temperature,
+        "response_format": {"type": "json_object"},
+    })
+    .to_string()
+}
+
+/// Classify a completed HTTP exchange into the extracted message content or a
+/// `ProviderError`. 429 is disambiguated into `RateLimited` vs
+/// `QuotaExhausted` by inspecting the error body (OpenAI-compatible APIs
+/// carry the distinction in `error.type`/`error.message`, not the status
+/// code alone).
+fn classify_response(resp: TransportResponse) -> Result<String, ProviderError> {
+    match resp.status {
+        200..=299 => extract_content(&resp.body),
+        429 => {
+            if body_indicates_quota_exhausted(&resp.body) {
+                Err(ProviderError::QuotaExhausted)
+            } else {
+                Err(ProviderError::RateLimited)
+            }
+        }
+        500..=599 => Err(ProviderError::ServerError(resp.status)),
+        other => Err(ProviderError::InvalidJson(format!(
+            "unexpected status {other}"
+        ))),
+    }
+}
+
+fn body_indicates_quota_exhausted(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("insufficient_quota") || lower.contains("quota") || lower.contains("balance")
+}
+
+/// Extract `choices[0].message.content` from an OpenAI-compatible chat
+/// completion response. Any malformed envelope is `InvalidJson` (permanent —
+/// the same input will fail again, no point retrying).
+fn extract_content(body: &str) -> Result<String, ProviderError> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| ProviderError::InvalidJson(e.to_string()))?;
+    value
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| ProviderError::InvalidJson("missing choices[0].message.content".to_owned()))
+}
+
+/// Bounded JSON repair: strip common LLM-response wrapping (markdown code
+/// fences, surrounding whitespace) and retry parsing. "Bounded" means a fixed
+/// small set of transformations — never an iterative/unbounded retry loop.
+pub fn repair_json(text: &str) -> Result<serde_json::Value, serde_json::Error> {
+    if let Ok(v) = serde_json::from_str(text) {
+        return Ok(v);
+    }
+    let trimmed = text.trim();
+    let stripped = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .unwrap_or(trimmed);
+    let stripped = stripped.strip_suffix("```").unwrap_or(stripped);
+    serde_json::from_str(stripped.trim())
+}
+
+fn chrono_now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339()
 }
 
 #[cfg(test)]

@@ -1,0 +1,4 @@
+{
+  "body": "{\"choices\":[{\"finish_reason\":\"stop\",\"index\":0,\"message\":{\"content\":\"{\\\"ack\\\":\\\"d1-live-smoke\\\"}\",\"reasoning_content\":\"The user wants a JSON object with the specific structure {\\\"ack\\\": \\\"d1-live-smoke\\\"}. I need to make sure I provide just this JSON object and nothing else, as requested. I'll format it properly as JSON and make sure it's valid.\",\"role\":\"assistant\"}}],\"created\":1784271507,\"id\":\"2026071714582575e8f509c700485b\",\"model\":\"glm-4.6\",\"object\":\"chat.completion\",\"request_id\":\"2026071714582575e8f509c700485b\",\"usage\":{\"completion_tokens\":69,\"completion_tokens_details\":{\"reasoning_tokens\":53},\"prompt_tokens\":89,\"prompt_tokens_details\":{\"cached_tokens\":0},\"total_tokens\":158}}",
+  "status": 200
+}

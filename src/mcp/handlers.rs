@@ -896,6 +896,235 @@ pub fn handle_brain_get(server: &McpServer, args: &Map<String, Value>) -> ToolHa
     ok_text(s)
 }
 
+// ── brain_ingest_source (Task D3) ────────────────────────────────────────────
+
+/// Handle `brain_ingest_source` — quarantine a URL/file/text source, chunked
+/// on paragraph boundaries, one capture per chunk (Task D3). Each chunk is
+/// its own captured object, so an extraction proposal's evidence span can
+/// only ever mean "this whole capture" — exact by construction, no partial
+/// byte-range plumbing needed at the store layer.
+///
+/// `url` goes through [`crate::source_ingest::fetch_url`] (SSRF-guarded:
+/// scheme allowlist, DNS/IP validation with pinned resolution, manual
+/// per-hop redirect re-validation, size cap, content-type allowlist).
+/// `file_path` is resolved the same way `wiki_ingest` resolves paths — must
+/// canonicalize to a location inside the current wiki's root (no traversal).
+pub fn handle_brain_ingest_source(
+    server: &McpServer,
+    args: &Map<String, Value>,
+) -> ToolHandlerResult {
+    let Some(store) = &server.semantic_store else {
+        return Err("brain not initialized".to_owned());
+    };
+    let operation_id = arg_str_req(args, "operation_id")?;
+    let max_chunk_bytes = arg_usize(args, "max_chunk_bytes").unwrap_or(4_000);
+
+    let text_arg = arg_str(args, "text");
+    let url_arg = arg_str(args, "url");
+    let file_path_arg = arg_str(args, "file_path");
+    let provided = [&text_arg, &url_arg, &file_path_arg]
+        .iter()
+        .filter(|v| v.is_some())
+        .count();
+    if provided != 1 {
+        return Err("exactly one of text, url, or file_path is required".to_owned());
+    }
+
+    let raw_text = if let Some(text) = text_arg {
+        text
+    } else if let Some(url) = url_arg {
+        let (body, _content_type) =
+            crate::source_ingest::fetch_url(&url, &crate::source_ingest::IngestPolicy::default())
+                .map_err(|e| format!("{e}"))?;
+        body
+    } else {
+        let file_path = file_path_arg.expect("exactly-one check above guarantees this is Some");
+        let engine = server.engine();
+        let wiki_name = resolve_wiki_name(&engine, args)?;
+        let space = engine.space(&wiki_name).map_err(|e| format!("{e}"))?;
+        let requested = std::path::Path::new(&file_path);
+        let full_path = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            space.wiki_root.join(requested)
+        };
+        let canonical = full_path
+            .canonicalize()
+            .map_err(|e| format!("cannot read {file_path}: {e}"))?;
+        let canonical_root = space
+            .wiki_root
+            .canonicalize()
+            .map_err(|e| format!("cannot resolve wiki root: {e}"))?;
+        if !canonical.starts_with(&canonical_root) {
+            return Err("file_path is outside the wiki root".to_owned());
+        }
+        std::fs::read_to_string(&canonical).map_err(|e| format!("cannot read {file_path}: {e}"))?
+    };
+
+    let chunks = crate::source_ingest::chunk_text(&raw_text, max_chunk_bytes);
+    if chunks.is_empty() {
+        return Err("source produced no content to ingest".to_owned());
+    }
+
+    let ctx = server.brain_context(store)?;
+    let mut captured = Vec::with_capacity(chunks.len());
+    for (index, chunk) in chunks.iter().enumerate() {
+        let chunk_operation_id = format!("{operation_id}-chunk-{index}");
+        let outcome = store
+            .capture(
+                &ctx,
+                crate::semantic::CaptureCommand {
+                    operation_id: chunk_operation_id.clone(),
+                    bytes: chunk.clone().into_bytes(),
+                    media_type: "text/plain; charset=utf-8".to_owned(),
+                },
+            )
+            .map_err(|e| format!("{e}"))?;
+        captured.push(serde_json::json!({
+            "operation_id": chunk_operation_id,
+            "event_seq": outcome.event.event_seq,
+            "bytes": chunk.len(),
+        }));
+    }
+
+    let payload = serde_json::json!({
+        "chunk_count": captured.len(),
+        "chunks": captured,
+    });
+    let s = serde_json::to_string_pretty(&payload).map_err(|e| format!("{e}"))?;
+    ok_text(s)
+}
+
+// ── brain_extract (Task D3) ──────────────────────────────────────────────────
+
+/// Handle `brain_extract` — read a quarantined chunk (from
+/// `brain_ingest_source`), ask the real `AiProvider` to extract claims from
+/// it as DATA (never instructions — the source's own text can never change
+/// `unsupported`), validate each candidate's evidence against the ACTUAL
+/// rendition bytes (mechanical quote-hash proof, not a self-report), and
+/// propose the ones that pass. A candidate the model marks unsupported, or
+/// whose response fails bounded JSON repair (partial/malformed — discarded,
+/// never guessed at), is filtered out rather than proposed.
+pub fn handle_brain_extract(server: &McpServer, args: &Map<String, Value>) -> ToolHandlerResult {
+    let Some(store) = &server.semantic_store else {
+        return Err("brain not initialized".to_owned());
+    };
+    let Some(provider) = &server.ai_provider else {
+        return Err("AI provider not configured on this server".to_owned());
+    };
+    let capture_operation_id = arg_str_req(args, "capture_operation_id")?;
+    let method = arg_str_req(args, "method")?;
+    let model = arg_str(args, "model");
+    let local_only = arg_bool(args, "local_only");
+    let prompt_version = arg_str(args, "prompt_version")
+        .unwrap_or_else(|| crate::extraction::EXTRACTION_PROMPT_VERSION.to_owned());
+
+    let ctx = server.brain_context(store)?;
+    let rendition_bytes = store
+        .read_capture(&ctx, &capture_operation_id)
+        .map_err(|e| format!("{e}"))?;
+    let rendition_text = String::from_utf8(rendition_bytes.clone())
+        .map_err(|_| "captured chunk is not valid UTF-8 text".to_owned())?;
+
+    let policy = crate::extraction::ExtractionPolicy::new();
+    let prompt = crate::extraction::build_extraction_prompt(&rendition_text);
+    // `local_only` lets a caller mark a chunk as never egressable (e.g. a
+    // source the caller knows carries sensitive content); a detected-secret
+    // pattern in the chunk itself denies the call either way, regardless of
+    // this flag — see `OutboundPolicy::check_text`.
+    let Some(request) = policy.build_provider_request(&prompt, local_only) else {
+        return Err(
+            "outbound policy denied the extraction request (local_only or detected secret)"
+                .to_owned(),
+        );
+    };
+
+    let response_text = provider
+        .complete(&request)
+        .map_err(|e| format!("provider error: {e:?}"))?;
+    // Bounded repair only — a partial/malformed response that still fails
+    // after repair is discarded here (returned as an error), never guessed
+    // at or partially applied.
+    let response_json = crate::provider::repair_json(&response_text).map_err(|e| {
+        format!("AI response was not valid JSON after bounded repair (discarded): {e}")
+    })?;
+    let candidates = crate::extraction::parse_candidates(&response_json)
+        .map_err(|e| format!("AI response did not match the expected claims schema: {e}"))?;
+
+    let mut proposed = Vec::new();
+    let mut filtered = Vec::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        let claim_operation_id = format!("{capture_operation_id}-claim-{index}");
+        let evidence = if candidate.supported {
+            vec![crate::extraction::EvidenceSpan::whole_rendition(
+                capture_operation_id.clone(),
+                &rendition_bytes,
+            )]
+        } else {
+            vec![]
+        };
+        let proposal = crate::extraction::ExtractionProposal {
+            subject: candidate.subject.clone(),
+            predicate: candidate.predicate.clone(),
+            value: candidate.value.clone(),
+            claim_kind: candidate.claim_kind.clone(),
+            domain: candidate.domain.clone(),
+            confidence_basis_points: candidate.confidence_basis_points,
+            evidence,
+            unsupported: !candidate.supported,
+        };
+        if let Err(err) = policy.validate_with_rendition(&proposal, &rendition_bytes) {
+            filtered.push(serde_json::json!({"index": index, "reason": format!("{err:?}")}));
+            continue;
+        }
+
+        let subject = proposal.subject.clone();
+        let predicate = proposal.predicate.clone();
+        let domain = proposal.domain.clone();
+        let outcome = store
+            .propose_inference(
+                &ctx,
+                crate::semantic::ProposeInferenceCommand {
+                    operation_id: claim_operation_id.clone(),
+                    evidence_capture_operation_ids: vec![capture_operation_id.clone()],
+                    method: method.clone(),
+                    model: model.clone(),
+                    prompt_version: Some(prompt_version.clone()),
+                    draft: crate::semantic::ClaimDraft {
+                        subject: proposal.subject,
+                        predicate: proposal.predicate,
+                        value: proposal.value,
+                        claim_kind: proposal.claim_kind,
+                        domain: proposal.domain,
+                        confidence_basis_points: proposal.confidence_basis_points,
+                        privacy_label: crate::semantic::PrivacyLabel::LocalOnly,
+                        valid_from: None,
+                        valid_to: None,
+                    },
+                },
+            )
+            .map_err(|e| format!("{e}"))?;
+        proposed.push(serde_json::json!({
+            "operation_id": claim_operation_id,
+            "proposal_id": outcome.generated.proposal_id,
+            "subject": subject,
+            "predicate": predicate,
+            "domain": domain,
+            "status": "proposed",
+        }));
+    }
+
+    let payload = serde_json::json!({
+        "capture_operation_id": capture_operation_id,
+        "proposed_count": proposed.len(),
+        "proposed": proposed,
+        "filtered_count": filtered.len(),
+        "filtered": filtered,
+    });
+    let s = serde_json::to_string_pretty(&payload).map_err(|e| format!("{e}"))?;
+    ok_text(s)
+}
+
 // ── brain_* mutation handlers (Phase C Task C2) ──────────────────────────────
 
 pub fn handle_brain_capture(server: &McpServer, args: &Map<String, Value>) -> ToolHandlerResult {
@@ -913,13 +1142,80 @@ pub fn handle_brain_capture(server: &McpServer, args: &Map<String, Value>) -> To
     let value: serde_json::Value =
         serde_json::from_str(&value_str).unwrap_or(serde_json::Value::String(value_str));
 
-    let ctx = store.trusted_context();
+    let ctx = server.brain_context(store)?;
     let outcome = store
         .propose_user_assertion(
             &ctx,
             crate::semantic::ProposeUserAssertionCommand {
                 operation_id,
                 utterance: utterance.into_bytes(),
+                draft: crate::semantic::ClaimDraft {
+                    subject,
+                    predicate,
+                    value,
+                    claim_kind,
+                    domain,
+                    confidence_basis_points: 9_000,
+                    privacy_label: crate::semantic::PrivacyLabel::LocalOnly,
+                    valid_from: None,
+                    valid_to: None,
+                },
+            },
+        )
+        .map_err(|e| format!("{e}"))?;
+
+    let payload = serde_json::json!({
+        "event_seq": outcome.event.event_seq,
+        "proposal_id": outcome.generated.proposal_id,
+        "status": "proposed",
+    });
+    let s = serde_json::to_string_pretty(&payload).map_err(|e| format!("{e}"))?;
+    ok_text(s)
+}
+
+/// Propose a claim derived by inference (Phase D Task D2 / F2) — the AI
+/// worker's write path. Always produces a `proposed` status; there is no
+/// parameter or code path here that can confirm it (`propose_inference`
+/// itself never writes `claim_status.status='confirmed'` — see
+/// `insert_proposal_status` in `semantic.rs`). A worker-scoped principal
+/// (capability = `Propose` only) can call this but not `brain_confirm`/
+/// `brain_supersede` — enforced at dispatch (`AuthPolicy`) and, independently,
+/// at the store layer (`propose_inference` requires the `"propose"` client
+/// capability via `brain_context`).
+pub fn handle_brain_propose(server: &McpServer, args: &Map<String, Value>) -> ToolHandlerResult {
+    let Some(store) = &server.semantic_store else {
+        return Err("brain not initialized".to_owned());
+    };
+    let operation_id = arg_str_req(args, "operation_id")?;
+    let subject = arg_str_req(args, "subject")?;
+    let predicate = arg_str_req(args, "predicate")?;
+    let value_str = arg_str_req(args, "value")?;
+    let domain = arg_str_req(args, "domain")?;
+    let method = arg_str_req(args, "method")?;
+    let claim_kind = arg_str(args, "claim_kind").unwrap_or_else(|| "inference".to_owned());
+    let model = arg_str(args, "model");
+    let prompt_version = arg_str(args, "prompt_version");
+    let evidence_capture_operation_ids: Vec<String> =
+        arg_str(args, "evidence_capture_operation_ids")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+    let value: serde_json::Value =
+        serde_json::from_str(&value_str).unwrap_or(serde_json::Value::String(value_str));
+
+    let ctx = server.brain_context(store)?;
+    let outcome = store
+        .propose_inference(
+            &ctx,
+            crate::semantic::ProposeInferenceCommand {
+                operation_id,
+                evidence_capture_operation_ids,
+                method,
+                model,
+                prompt_version,
                 draft: crate::semantic::ClaimDraft {
                     subject,
                     predicate,
@@ -951,7 +1247,7 @@ pub fn handle_brain_confirm(server: &McpServer, args: &Map<String, Value>) -> To
     let operation_id = arg_str_req(args, "operation_id")?;
     let proposal_operation_id = arg_str_req(args, "proposal_operation_id")?;
 
-    let ctx = store.trusted_context();
+    let ctx = server.brain_context(store)?;
     let outcome = store
         .confirm(
             &ctx,
@@ -984,7 +1280,7 @@ pub fn handle_brain_supersede(server: &McpServer, args: &Map<String, Value>) -> 
         .filter(|s| !s.is_empty())
         .collect();
 
-    let ctx = store.trusted_context();
+    let ctx = server.brain_context(store)?;
     let outcome = store
         .supersede(
             &ctx,

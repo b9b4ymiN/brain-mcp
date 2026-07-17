@@ -75,6 +75,8 @@ pub mod semantic;
 pub mod server;
 /// Slug validation, resolution, and URI parsing.
 pub mod slug;
+/// SSRF-guarded source fetch + chunking for `brain_ingest_source` (Task D3).
+pub mod source_ingest;
 /// Builds SpaceTypeRegistry and IndexSchema from schema files.
 pub mod space_builder;
 /// Wiki space creation, registration, and management.

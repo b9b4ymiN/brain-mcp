@@ -153,6 +153,16 @@ fn default_capability_for(name: &str) -> Capability {
         // brain_* mutations (Phase C C2)
         "brain_capture" => Capability::Capture,
         "brain_confirm" | "brain_supersede" => Capability::Confirm,
+        // brain_propose (Phase D Task D2 / F2) — the AI worker's only write
+        // capability; deliberately distinct from Confirm/Purge.
+        "brain_propose" => Capability::Propose,
+        // brain_ingest_source (Phase D Task D3) — raw source ingest into
+        // quarantine, same class as brain_capture/wiki_ingest.
+        "brain_ingest_source" => Capability::Capture,
+        // brain_extract (Phase D Task D3) — reads quarantine + calls the AI
+        // provider, but its only write is propose_inference (never
+        // confirm/purge), so it shares brain_propose's capability class.
+        "brain_extract" => Capability::Propose,
         // Capture-class (raw source ingest into quarantine).
         "wiki_ingest" => Capability::Capture,
         // Propose-class (additive writes — content write/new/commit, spaces

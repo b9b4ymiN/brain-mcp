@@ -90,8 +90,13 @@ fn annotations_for(name: &str) -> ToolAnnotations {
         | "semantic_search" | "semantic_get" | "procedural_find" | "procedural_get"
         | "graph_neighbors" | "audit_history" | "wiki_index_status" | "brain_status"
         | "brain_search" | "brain_get" => read_only(),
-        // brain_* mutations (Phase C C2)
-        "brain_capture" | "brain_confirm" | "brain_supersede" => write_additive(),
+        // brain_* mutations (Phase C C2 / Phase D D2/D3)
+        "brain_capture"
+        | "brain_confirm"
+        | "brain_supersede"
+        | "brain_propose"
+        | "brain_ingest_source"
+        | "brain_extract" => write_additive(),
         // Destructive — removes data. `wiki_schema` is a multi-action tool
         // whose `action: remove` path can delete a schema file AND page files
         // from disk (`delete_pages: true`), so it is classified by its most
@@ -505,6 +510,36 @@ pub fn tool_list() -> Vec<Tool> {
                 &["path"],
             ),
         ),
+        // ── brain_ingest_source (Task D3) ──────────────────────────────────
+        Tool::new(
+            "brain_ingest_source",
+            "Quarantine a URL/file/text source, chunked one capture per paragraph-packed chunk (SSRF-guarded for URLs)",
+            schema(
+                json!({
+                    "operation_id": str_prop("Base operation id (for idempotency) — each chunk gets '{operation_id}-chunk-N'"),
+                    "text": opt_str("Raw text to ingest (exactly one of text/url/file_path required)"),
+                    "url": opt_str("URL to fetch and ingest (http/https only, SSRF-guarded)"),
+                    "file_path": opt_str("File path (relative to the wiki root, or absolute inside it) to ingest"),
+                    "max_chunk_bytes": opt_int("Max bytes per chunk before packing the next paragraph into a new chunk (default 4000)"),
+                    "wiki": opt_str("Target wiki name (used to resolve file_path)"),
+                }),
+                &["operation_id"],
+            ),
+        ),
+        Tool::new(
+            "brain_extract",
+            "Extract claims from a quarantined chunk via the real AI provider, validate evidence against actual rendition bytes, and propose the supported ones",
+            schema(
+                json!({
+                    "capture_operation_id": str_prop("The chunk capture operation id (from brain_ingest_source) to extract from"),
+                    "method": str_prop("Extraction method label (e.g. llm_extraction)"),
+                    "model": opt_str("Model name/id used for the inference"),
+                    "prompt_version": opt_str("Prompt version identifier (default: the built-in extraction prompt version)"),
+                    "local_only": opt_bool("Never send this chunk to the AI provider — deny the call outright (default false)"),
+                }),
+                &["capture_operation_id", "method"],
+            ),
+        ),
         // ── brain_* semantic tools (Phase C Task C1) ──────────────────────
         Tool::new(
             "brain_status",
@@ -585,6 +620,32 @@ pub fn tool_list() -> Vec<Tool> {
                 ],
             ),
         ),
+        Tool::new(
+            "brain_propose",
+            "Propose a claim derived by inference (AI worker write path) — always status 'proposed', never auto-confirmed",
+            schema(
+                json!({
+                    "operation_id": str_prop("Unique operation id (for idempotency)"),
+                    "subject": str_prop("Claim subject"),
+                    "predicate": str_prop("Claim predicate"),
+                    "value": str_prop("Claim value"),
+                    "domain": str_prop("Domain (e.g. stocks, projects)"),
+                    "method": str_prop("Inference method (e.g. llm_extraction)"),
+                    "model": opt_str("Model name/id used for the inference"),
+                    "prompt_version": opt_str("Prompt version identifier"),
+                    "claim_kind": opt_str("Claim kind (default: inference)"),
+                    "evidence_capture_operation_ids": opt_str("Comma-separated capture operation ids backing this inference (omit for an unsupported/no-evidence proposal)"),
+                }),
+                &[
+                    "operation_id",
+                    "subject",
+                    "predicate",
+                    "value",
+                    "domain",
+                    "method",
+                ],
+            ),
+        ),
     ];
     // Task 3.1: attach the §7.2 annotation profile to every tool in a single
     // pass. This keeps the declarations above readable (3-arg Tool::new) and
@@ -641,6 +702,9 @@ pub fn call(server: &McpServer, name: &str, args: &Map<String, Value>) -> ToolRe
         "brain_capture" => handlers::handle_brain_capture(server, args),
         "brain_confirm" => handlers::handle_brain_confirm(server, args),
         "brain_supersede" => handlers::handle_brain_supersede(server, args),
+        "brain_propose" => handlers::handle_brain_propose(server, args),
+        "brain_ingest_source" => handlers::handle_brain_ingest_source(server, args),
+        "brain_extract" => handlers::handle_brain_extract(server, args),
         _ => Err(format!("unknown tool: {name}")),
     }));
     match result {

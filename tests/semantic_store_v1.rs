@@ -364,3 +364,48 @@ fn backup_rejects_existing_or_outside_targets() {
         Err(SemanticError::InvalidRoot(_))
     ));
 }
+
+// =============================================================================
+// read_capture (Task D3) — the read half of capture
+// =============================================================================
+
+#[test]
+fn read_capture_returns_the_exact_bytes_that_were_captured() {
+    let (_parent, _root, store, context) = fixture();
+    let original = b"exact rendition bytes for extraction";
+    store
+        .capture(&context, capture("cap-read-1", original))
+        .unwrap();
+
+    let read_back = store.read_capture(&context, "cap-read-1").unwrap();
+    assert_eq!(read_back, original);
+}
+
+#[test]
+fn read_capture_of_unknown_operation_id_is_missing_dependency() {
+    let (_parent, _root, store, context) = fixture();
+    assert!(matches!(
+        store.read_capture(&context, "never-captured"),
+        Err(SemanticError::MissingDependency(_))
+    ));
+}
+
+#[test]
+fn read_capture_is_isolated_per_client() {
+    let (_parent, _root, store, bootstrap) = fixture();
+    let other_client = store.register_client("other-client").unwrap();
+    store
+        .capture(
+            &bootstrap,
+            capture("cap-owned-by-bootstrap", b"bootstrap's bytes"),
+        )
+        .unwrap();
+
+    // A different client can't read another client's capture by guessing
+    // its operation_id — matches the existing per-client operation_id
+    // isolation (see semantic_idempotency_v1.rs's cross-client test).
+    assert!(matches!(
+        store.read_capture(&other_client, "cap-owned-by-bootstrap"),
+        Err(SemanticError::MissingDependency(_))
+    ));
+}

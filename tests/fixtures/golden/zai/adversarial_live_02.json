@@ -1,0 +1,4 @@
+{
+  "body": "error: AI response was not valid JSON after bounded repair (discarded): EOF while parsing a value at line 1 column 0",
+  "status": 0
+}

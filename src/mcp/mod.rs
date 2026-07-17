@@ -47,6 +47,11 @@ pub struct McpServer {
     /// tools return "brain not initialized". When Some, brain_search/get/status
     /// query the semantic ledger.
     pub semantic_store: Option<Arc<crate::semantic::SemanticStore>>,
+    /// Optional AI provider for `brain_extract` (Task D3). When None,
+    /// `brain_extract` returns an error rather than silently no-op-ing —
+    /// there is no default/mock provider wired in here (Phase D "NO MOCK"
+    /// decision); a caller that wants extraction must attach a real adapter.
+    pub ai_provider: Option<Arc<dyn crate::provider::AiProvider>>,
     /// The authenticated principal for this server instance. In production
     /// this comes from a validated token at the transport edge; in dev the
     /// bootstrap principal has all capabilities.
@@ -62,6 +67,7 @@ impl McpServer {
             web_refresh_tx: None,
             auth_policy: None,
             semantic_store: None,
+            ai_provider: None,
             principal: owner_principal(),
         }
     }
@@ -79,6 +85,7 @@ impl McpServer {
             web_refresh_tx: None,
             auth_policy: Some(policy),
             semantic_store: None,
+            ai_provider: None,
             principal,
         }
     }
@@ -117,6 +124,52 @@ impl McpServer {
         ))
     }
 
+    /// Derive the store-layer `TrustedContext` for the current MCP
+    /// `principal` (Phase D Task D2 / F2). `brain_*` handlers call this
+    /// instead of hardcoding `store.trusted_context()`, so a store-layer
+    /// mutation is actually attributed to — and gated by the capabilities
+    /// of — whoever is really calling, not always the owner.
+    ///
+    /// The owner (bootstrap) principal maps directly to
+    /// `store.trusted_context()`: `SemanticStore::register_client_scoped`
+    /// rejects any label starting with `__` (the bootstrap client's own
+    /// label is `__bootstrap__`), so the owner can never go through the
+    /// registration path — it doesn't need to, since the dispatch-level
+    /// `check_capability` gate (using `AuthPolicy`) already grants the
+    /// owner every capability.
+    ///
+    /// Any other principal is registered (idempotently, by `principal.id`
+    /// as the client label) with the store-layer capability strings that
+    /// correspond to its dispatch-layer `Capability`s. Registration is
+    /// first-write-wins (`register_client_scoped` does not escalate an
+    /// already-registered label's capabilities on a later call — see
+    /// `tests/semantic_capability_v1.rs`), so a worker's store-layer grant
+    /// stays pinned to what it had on first contact.
+    pub fn brain_context(
+        &self,
+        store: &crate::semantic::SemanticStore,
+    ) -> Result<crate::semantic::TrustedContext, String> {
+        if self.principal.id == OWNER_PRINCIPAL_ID {
+            return Ok(store.trusted_context());
+        }
+        let capabilities: Vec<&str> = self
+            .principal
+            .capabilities
+            .iter()
+            .filter_map(|capability| match capability {
+                auth::Capability::Propose => Some("propose"),
+                auth::Capability::Confirm => Some("confirm"),
+                auth::Capability::Purge => Some("purge"),
+                auth::Capability::Read | auth::Capability::Capture | auth::Capability::Admin => {
+                    None
+                }
+            })
+            .collect();
+        store
+            .register_client_scoped(&self.principal.id, &capabilities)
+            .map_err(|e| format!("{e}"))
+    }
+
     /// Return a strong reference to the shared engine (Task 3.2). Cloning an
     /// `McpServer` clones the `Arc`, not the engine — so every session and
     /// every reconnect observes the same engine state. This accessor makes
@@ -134,6 +187,14 @@ impl McpServer {
         self
     }
 
+    /// Attach an `AiProvider` so `brain_extract` can run real extraction
+    /// (Task D3). Without this, `brain_extract` errors rather than
+    /// fabricating a response.
+    pub fn with_ai_provider(mut self, provider: Arc<dyn crate::provider::AiProvider>) -> Self {
+        self.ai_provider = Some(provider);
+        self
+    }
+
     /// Create a new `McpServer` with web-refresh notifications enabled.
     pub fn with_web_refresh(
         manager: Arc<WikiEngine>,
@@ -144,6 +205,7 @@ impl McpServer {
             web_refresh_tx: Some(web_refresh_tx),
             auth_policy: None,
             semantic_store: None,
+            ai_provider: None,
             principal: owner_principal(),
         }
     }
@@ -184,13 +246,17 @@ impl McpServer {
     }
 }
 
+/// The dispatch-layer principal id reserved for the local owner — matches
+/// `SemanticStore`'s `BOOTSTRAP_CLIENT_LABEL` at the store layer (Task D2).
+const OWNER_PRINCIPAL_ID: &str = "__bootstrap__";
+
 /// The owner principal has all capabilities (single-owner local mode). In
 /// production the transport edge replaces this with a validated-token principal
 /// (e.g. a proposal-only worker). `serve()` uses this so the local owner keeps
 /// full access while the auth gate stays active on the hot path.
 pub fn owner_principal() -> auth::AuthPrincipal {
     auth::AuthPrincipal {
-        id: "__bootstrap__".to_owned(),
+        id: OWNER_PRINCIPAL_ID.to_owned(),
         capabilities: vec![
             auth::Capability::Read,
             auth::Capability::Capture,

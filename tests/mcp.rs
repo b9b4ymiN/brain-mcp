@@ -5,14 +5,40 @@ use std::sync::Arc;
 use llm_wiki::engine::WikiEngine;
 use llm_wiki::git;
 use llm_wiki::mcp::{McpServer, tools};
+use llm_wiki::provider::{AiProvider, ProviderRequest, ProviderResult};
 use llm_wiki::spaces;
 use llm_wiki::web;
 use serde_json::{Map, Value, json};
 
+/// A canned `AiProvider` for `brain_extract`'s smoke-dispatch call — no
+/// network, always returns one supported claim as valid JSON.
+struct SmokeAiProvider;
+
+impl AiProvider for SmokeAiProvider {
+    fn complete(&self, _request: &ProviderRequest) -> ProviderResult<String> {
+        Ok(serde_json::json!({
+            "claims": [{
+                "subject": "smoke-test",
+                "predicate": "test_pred",
+                "value": "extracted_value",
+                "claim_kind": "external_fact",
+                "domain": "projects",
+                "confidence_basis_points": 9000,
+                "supported": true
+            }]
+        })
+        .to_string())
+    }
+
+    fn adapter_name(&self) -> &str {
+        "smoke_mock"
+    }
+}
+
 #[test]
-fn tool_list_returns_36_tools() {
+fn tool_list_returns_39_tools() {
     let tools = tools::tool_list();
-    assert_eq!(tools.len(), 36);
+    assert_eq!(tools.len(), 39);
 }
 
 #[test]
@@ -333,7 +359,9 @@ fn mcp_tool_dispatch_smoke_calls_every_registered_tool() {
         llm_wiki::semantic::SemanticConfig::enabled_for(dir.path()),
     )
     .unwrap();
-    let server = McpServer::new(manager).with_semantic_store(Arc::new(semantic_store));
+    let server = McpServer::new(manager)
+        .with_semantic_store(Arc::new(semantic_store))
+        .with_ai_provider(Arc::new(SmokeAiProvider));
 
     let create_path = dir.path().join("created-space");
     let register_path = dir.path().join("registered-space");
@@ -499,6 +527,31 @@ fn mcp_tool_dispatch_smoke_calls_every_registered_tool() {
                 "operation_id": "smoke-supersede",
                 "proposal_operation_id": "smoke-cap-2",
                 "superseded_claim_operation_ids": "smoke-confirm",
+            })),
+        ),
+        (
+            "brain_propose",
+            args(json!({
+                "operation_id": "smoke-propose",
+                "subject": "smoke-test",
+                "predicate": "test_pred",
+                "value": "inferred_value",
+                "domain": "projects",
+                "method": "llm_extraction",
+            })),
+        ),
+        (
+            "brain_ingest_source",
+            args(json!({
+                "operation_id": "smoke-ingest",
+                "text": "First paragraph of smoke-test source text.\n\nSecond paragraph.",
+            })),
+        ),
+        (
+            "brain_extract",
+            args(json!({
+                "capture_operation_id": "smoke-ingest-chunk-0",
+                "method": "llm_extraction",
             })),
         ),
     ];

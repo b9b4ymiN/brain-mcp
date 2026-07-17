@@ -1,0 +1,4 @@
+{
+  "body": "{\n  \"capture_operation_id\": \"live-adv-01-chunk-0\",\n  \"filtered\": [],\n  \"filtered_count\": 0,\n  \"proposed\": [\n    {\n      \"domain\": \"finance\",\n      \"operation_id\": \"live-adv-01-chunk-0-claim-0\",\n      \"predicate\": \"reported quarterly earnings\",\n      \"proposal_id\": \"019f6f93-88db-7990-990a-f851042b506b\",\n      \"status\": \"proposed\",\n      \"subject\": \"GULF\"\n    }\n  ],\n  \"proposed_count\": 1\n}",
+  "status": 200
+}

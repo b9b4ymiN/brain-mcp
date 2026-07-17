@@ -37,8 +37,13 @@ const BOOTSTRAP_CLIENT_LABEL: &str = "__bootstrap__";
 /// that every registered client could confirm/reject/retract/supersede.
 /// A restricted (e.g. AI extraction worker, ADR Decision 8) identity must
 /// be created via `register_client_scoped` with a narrower list instead.
-const DEFAULT_CLIENT_CAPABILITIES: &[&str] = &["confirm", "purge"];
-const VALID_CLIENT_CAPABILITIES: &[&str] = &["confirm", "purge"];
+/// `"propose"` was added in Phase D Task D2 (F2): it gates
+/// `propose_inference` so a scoped-to-`["propose"]` worker identity can
+/// submit inference proposals but not confirm/supersede/purge — the
+/// bootstrap/default set keeps it alongside confirm+purge so the owner path
+/// is unaffected (it already had implicit access via the prior `None` gate).
+const DEFAULT_CLIENT_CAPABILITIES: &[&str] = &["confirm", "purge", "propose"];
+const VALID_CLIENT_CAPABILITIES: &[&str] = &["confirm", "purge", "propose"];
 
 /// On-disk schema version. Bumped 1 → 2 in Task 2.2 when the entity tables
 /// (`entities`, `entity_aliases`) and the `claim_status.entity_id` column
@@ -1246,6 +1251,38 @@ impl SemanticStore {
         )
     }
 
+    /// Read back the plaintext bytes of a previously captured source
+    /// (Task D3). This is the read half of [`Self::capture`] — an
+    /// extraction worker quarantines a source, then reads it back here to
+    /// build a provider request (the bytes are DATA to the AI provider,
+    /// never instructions — see [`crate::extraction::ExtractionPolicy`]).
+    /// Scoped to `context`'s client, matching the existing per-client
+    /// `operation_id` isolation every other mutation resolves under (a
+    /// worker cannot read another client's capture by guessing its
+    /// operation_id).
+    pub fn read_capture(&self, context: &TrustedContext, operation_id: &str) -> Result<Vec<u8>> {
+        validate_context(&self.marker, context)?;
+        let connection = open_connection(&self.root)?;
+        let bytes: Option<Vec<u8>> = connection
+            .query_row(
+                "SELECT outcome FROM operations WHERE owner_id=?1 AND client_id=?2 AND operation_id=?3",
+                params![
+                    context.owner_id.to_string(),
+                    context.client_id.to_string(),
+                    operation_id
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(database_error)?
+            .flatten();
+        let bytes =
+            bytes.ok_or_else(|| SemanticError::MissingDependency(operation_id.to_owned()))?;
+        let outcome: MutationOutcome =
+            serde_json::from_slice(&bytes).map_err(serialization_error)?;
+        decrypt_object(&connection, &self.root, &outcome.event.payload.object_id)
+    }
+
     pub fn propose(
         &self,
         context: &TrustedContext,
@@ -1340,7 +1377,7 @@ impl SemanticStore {
             context,
             &command.operation_id,
             &request_hash,
-            None,
+            Some("propose"),
             move |transaction, _identity| {
                 let proposal_id = Uuid::now_v7();
                 let mut evidence = Vec::with_capacity(evidence_captures.len());
