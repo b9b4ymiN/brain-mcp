@@ -337,6 +337,39 @@ pub struct SupersedeCommand {
     pub superseded_claim_operation_ids: Vec<String>,
 }
 
+/// Confirms a proposal by `proposal_id` rather than the proposer's
+/// `operation_id` (Task 5.1 Inbox). Unlike [`ConfirmCommand`], this does not
+/// require the calling context to be the same client that proposed — any
+/// client holding the `confirm` capability may act on it, and the resulting
+/// `claim_confirmed` event's actor/client reflect the *reviewer*, not the
+/// original proposer (correct audit trail for a review workflow).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfirmByProposalIdCommand {
+    pub operation_id: String,
+    pub proposal_id: Uuid,
+}
+
+/// Rejects a proposal by `proposal_id`. See [`ConfirmByProposalIdCommand`]
+/// for why this exists alongside [`RejectCommand`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RejectByProposalIdCommand {
+    pub operation_id: String,
+    pub proposal_id: Uuid,
+}
+
+/// Supersedes prior claims by `claim_id` while confirming a proposal by
+/// `proposal_id`. See [`ConfirmByProposalIdCommand`] for why this exists
+/// alongside [`SupersedeCommand`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SupersedeByProposalIdCommand {
+    pub operation_id: String,
+    pub proposal_id: Uuid,
+    pub superseded_claim_ids: Vec<Uuid>,
+}
+
 /// Propose a claim the owner asserted directly (Task 2.2 — human edit becomes
 /// an authored event). The `utterance` bytes ARE the evidence: there is no
 /// external source span, so this path mints a `Provenance::UserAssertion`
@@ -529,6 +562,37 @@ pub struct CurrentClaims {
     pub past: Vec<ClaimView>,
 }
 
+/// A pending proposal awaiting review (Task 5.1 Inbox). Read-only summary of
+/// a `claim_proposed` event whose `proposal_status` is still `proposed`.
+/// Store-scoped like [`ClaimView`] — not tied to whichever client proposed
+/// it, so the Console (a different client) can list and act on it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ProposalSummary {
+    pub proposal_id: Uuid,
+    pub domain: String,
+    pub subject: String,
+    pub predicate: String,
+    pub value: Value,
+    pub claim_kind: String,
+    /// ADR Decision 6 provenance variant name (`evidence` / `inference` /
+    /// `user_assertion` / `mechanical`).
+    pub provenance_kind: String,
+    pub submitted_at: DateTime<Utc>,
+    pub event_seq: u64,
+}
+
+/// Human-readable evidence for the Inbox diff view (Task 5.1 "แสดง
+/// evidence/diff ก่อน commit"). `excerpt` is `None` for provenance kinds
+/// that carry no raw text (e.g. `mechanical`, or an `inference` proposed
+/// with `unsupported=true` and no evidence spans).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EvidenceSummary {
+    pub provenance_kind: String,
+    pub excerpt: Option<String>,
+    pub source_id: Option<Uuid>,
+    pub quote_hash: Option<String>,
+}
+
 /// Result of `purge_preview`: the caller must echo `preview_hash` and
 /// `nonce` back to `purge_execute` before `expires_at` (ADR Decision 7).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -617,6 +681,23 @@ pub struct TrustedContext {
     owner_id: Uuid,
     actor_id: Uuid,
     client_id: Uuid,
+}
+
+impl TrustedContext {
+    /// The store this context is scoped to. Exposed so callers (e.g. the
+    /// Console API layer, Task 5.1) can display or audit which identity a
+    /// session is acting as without reaching into store internals.
+    pub fn owner_id(&self) -> Uuid {
+        self.owner_id
+    }
+
+    pub fn actor_id(&self) -> Uuid {
+        self.actor_id
+    }
+
+    pub fn client_id(&self) -> Uuid {
+        self.client_id
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1519,6 +1600,116 @@ impl SemanticStore {
                         "operation {proposal_operation} did not propose a claim"
                     ))
                 })?;
+                let status: String = transaction
+                    .query_row(
+                        "SELECT status FROM proposal_status WHERE proposal_id=?1",
+                        [proposal_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .map_err(database_error)?;
+                if status != "proposed" {
+                    return Err(SemanticError::InvalidTransition(format!(
+                        "proposal {proposal_id} is already {status}, cannot reject"
+                    )));
+                }
+                transaction
+                    .execute(
+                        "UPDATE proposal_status SET status='rejected' WHERE proposal_id=?1",
+                        [proposal_id.to_string()],
+                    )
+                    .map_err(database_error)?;
+                let rejection = RejectionObject {
+                    kind: "claim_rejection".to_owned(),
+                    proposal_id,
+                };
+                Ok(MutationMaterial {
+                    event_type: "claim_rejected",
+                    object_bytes: canonical_bytes(&rejection)?,
+                    media_type: OBJECT_MEDIA_TYPE.to_owned(),
+                    generated: GeneratedIds::default(),
+                })
+            },
+        )
+    }
+
+    /// Confirms a proposal identified by `proposal_id` (Task 5.1 Inbox). See
+    /// [`ConfirmByProposalIdCommand`] — the caller need not be the original
+    /// proposer.
+    pub fn confirm_by_proposal_id(
+        &self,
+        context: &TrustedContext,
+        command: ConfirmByProposalIdCommand,
+    ) -> Result<MutationOutcome> {
+        let request_hash = request_hash("confirm_by_proposal_id", &command)?;
+        let proposal_id = command.proposal_id;
+        let owner_id = context.owner_id;
+        let root = self.root.clone();
+        self.mutate(
+            context,
+            &command.operation_id,
+            &request_hash,
+            Some("confirm"),
+            move |transaction, identity| {
+                finish_confirmation_by_id(transaction, &root, owner_id, proposal_id, identity, &[])
+            },
+        )
+    }
+
+    /// Confirms a proposal identified by `proposal_id`, superseding prior
+    /// claims identified directly by `claim_id` (Task 5.1 Inbox). See
+    /// [`SupersedeByProposalIdCommand`].
+    pub fn supersede_by_proposal_id(
+        &self,
+        context: &TrustedContext,
+        command: SupersedeByProposalIdCommand,
+    ) -> Result<MutationOutcome> {
+        if command.superseded_claim_ids.is_empty() {
+            return Err(SemanticError::InvalidClaim(
+                "supersede requires at least one prior claim id".to_owned(),
+            ));
+        }
+        let request_hash = request_hash("supersede_by_proposal_id", &command)?;
+        let proposal_id = command.proposal_id;
+        let superseded_claim_ids = command.superseded_claim_ids.clone();
+        let owner_id = context.owner_id;
+        let root = self.root.clone();
+        self.mutate(
+            context,
+            &command.operation_id,
+            &request_hash,
+            Some("confirm"),
+            move |transaction, identity| {
+                finish_confirmation_by_id(
+                    transaction,
+                    &root,
+                    owner_id,
+                    proposal_id,
+                    identity,
+                    &superseded_claim_ids,
+                )
+            },
+        )
+    }
+
+    /// Rejects a proposal identified by `proposal_id` (Task 5.1 Inbox). See
+    /// [`RejectByProposalIdCommand`] — the caller need not be the original
+    /// proposer.
+    pub fn reject_by_proposal_id(
+        &self,
+        context: &TrustedContext,
+        command: RejectByProposalIdCommand,
+    ) -> Result<MutationOutcome> {
+        let request_hash = request_hash("reject_by_proposal_id", &command)?;
+        let proposal_id = command.proposal_id;
+        let owner_id = context.owner_id;
+        let root = self.root.clone();
+        self.mutate(
+            context,
+            &command.operation_id,
+            &request_hash,
+            Some("confirm"),
+            move |transaction, _identity| {
+                let _ = resolve_proposal_by_id(transaction, &root, owner_id, proposal_id)?;
                 let status: String = transaction
                     .query_row(
                         "SELECT status FROM proposal_status WHERE proposal_id=?1",
@@ -2691,6 +2882,198 @@ impl SemanticStore {
             }
         }
         Ok(result)
+    }
+
+    /// Lists every proposal still awaiting review (Task 5.1 Inbox). Owner
+    /// (store) scoped, not client-scoped — any authenticated client can see
+    /// the whole inbox regardless of who proposed each item.
+    pub fn list_pending_proposals(&self) -> Result<Vec<ProposalSummary>> {
+        let mut raw_connection = open_connection(&self.root)?;
+        let transaction = raw_connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(database_error)?;
+        let connection = &transaction;
+        let mut statement = connection
+            .prepare(
+                "SELECT event_seq,event_json,object_id FROM events \
+                 WHERE owner_id=?1 AND event_type='claim_proposed' ORDER BY event_seq ASC",
+            )
+            .map_err(database_error)?;
+        let rows = statement
+            .query_map(params![self.marker.owner_id.to_string()], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(database_error)?;
+        let mut summaries = Vec::new();
+        for row in rows {
+            let (event_seq, event_json, object_id) = row.map_err(database_error)?;
+            let event_seq = u64::try_from(event_seq)
+                .map_err(|_| SemanticError::CorruptLedger("negative event sequence".to_owned()))?;
+            let envelope: EventEnvelope =
+                serde_json::from_slice(&event_json).map_err(serialization_error)?;
+            let proposal: ProposalObject =
+                serde_json::from_slice(&decrypt_object(connection, &self.root, &object_id)?)
+                    .map_err(serialization_error)?;
+            let status: Option<String> = connection
+                .query_row(
+                    "SELECT status FROM proposal_status WHERE proposal_id=?1",
+                    [proposal.proposal_id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(database_error)?;
+            if status.as_deref() != Some("proposed") {
+                continue;
+            }
+            summaries.push(ProposalSummary {
+                proposal_id: proposal.proposal_id,
+                domain: proposal.draft.domain,
+                subject: proposal.draft.subject,
+                predicate: proposal.draft.predicate,
+                value: proposal.draft.value,
+                claim_kind: proposal.draft.claim_kind,
+                provenance_kind: proposal.provenance.kind().to_owned(),
+                submitted_at: envelope.recorded_at,
+                event_seq,
+            });
+        }
+        Ok(summaries)
+    }
+
+    /// Flat chronological claim history for one `(domain, subject,
+    /// predicate)` scope (Task 5.1 Entity timeline) — every confirmed claim
+    /// ever recorded in that scope, oldest first, unlike [`Self::claims_current`]
+    /// which buckets only the state as-of a given ledger head.
+    pub fn claim_timeline(
+        &self,
+        domain: &str,
+        subject: &str,
+        predicate: &str,
+    ) -> Result<Vec<ClaimView>> {
+        let mut raw_connection = open_connection(&self.root)?;
+        let transaction = raw_connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(database_error)?;
+        let connection = &transaction;
+        let mut statement = connection
+            .prepare(
+                "SELECT claim_id, confirmed_event_seq, entity_id
+                 FROM claim_status
+                 WHERE domain=?1 AND subject=?2 AND predicate=?3
+                 ORDER BY confirmed_event_seq ASC",
+            )
+            .map_err(database_error)?;
+        let rows = statement
+            .query_map(params![domain, subject, predicate], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(database_error)?;
+
+        let mut timeline = Vec::new();
+        for row in rows {
+            let (claim_id, confirmed_event_seq, entity_id) = row.map_err(database_error)?;
+            let confirmed_event_seq = u64::try_from(confirmed_event_seq)
+                .map_err(|_| SemanticError::CorruptLedger("negative event sequence".to_owned()))?;
+            let object_id: String = connection
+                .query_row(
+                    "SELECT object_id FROM events WHERE owner_id=?1 AND event_seq=?2",
+                    params![self.marker.owner_id.to_string(), confirmed_event_seq as i64],
+                    |row| row.get(0),
+                )
+                .map_err(database_error)?;
+            let object: ConfirmationObject =
+                serde_json::from_slice(&decrypt_object(connection, &self.root, &object_id)?)
+                    .map_err(serialization_error)?;
+            let claim = object.claim;
+            if claim.claim_id.to_string() != claim_id {
+                return Err(SemanticError::CorruptLedger(
+                    "claim_status row does not match confirmation event".to_owned(),
+                ));
+            }
+            timeline.push(build_claim_view(
+                claim,
+                confirmed_event_seq,
+                entity_id.as_deref(),
+            ));
+        }
+        Ok(timeline)
+    }
+
+    /// Human-readable evidence for the Inbox diff view (Task 5.1). Resolves
+    /// evidence content straight from the content-addressed object the
+    /// proposal's provenance points to — not through the per-client
+    /// `operations` idempotency cache, so any reviewer can inspect any
+    /// proposal's evidence regardless of who proposed it.
+    pub fn evidence_for(&self, proposal_id: Uuid) -> Result<EvidenceSummary> {
+        let mut raw_connection = open_connection(&self.root)?;
+        let transaction = raw_connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(database_error)?;
+        let connection = &transaction;
+        let (proposal, _event_seq, _submitted_at) =
+            resolve_proposal_by_id(connection, &self.root, self.marker.owner_id, proposal_id)?;
+        let provenance_kind = proposal.provenance.kind().to_owned();
+        let (excerpt, source_id, quote_hash) = match &proposal.provenance {
+            Provenance::Evidence {
+                source_id,
+                object_id,
+                byte_start,
+                byte_end,
+                quote_hash,
+                ..
+            } => {
+                let text =
+                    decrypt_text_span(connection, &self.root, object_id, *byte_start, *byte_end)?;
+                (Some(text), Some(*source_id), Some(quote_hash.clone()))
+            }
+            Provenance::UserAssertion {
+                utterance_object_id,
+                utterance_byte_start,
+                utterance_byte_end,
+                ..
+            } => {
+                let text = decrypt_text_span(
+                    connection,
+                    &self.root,
+                    utterance_object_id,
+                    *utterance_byte_start,
+                    *utterance_byte_end,
+                )?;
+                (Some(text), None, None)
+            }
+            Provenance::Inference { evidence, .. } => {
+                let mut excerpts = Vec::with_capacity(evidence.len());
+                for span in evidence {
+                    excerpts.push(decrypt_text_span(
+                        connection,
+                        &self.root,
+                        &span.object_id,
+                        span.byte_start,
+                        span.byte_end,
+                    )?);
+                }
+                if excerpts.is_empty() {
+                    (None, None, None)
+                } else {
+                    (Some(excerpts.join("\n---\n")), None, None)
+                }
+            }
+            Provenance::Mechanical { output_hash, .. } => (None, None, Some(output_hash.clone())),
+        };
+        Ok(EvidenceSummary {
+            provenance_kind,
+            excerpt,
+            source_id,
+            quote_hash,
+        })
     }
 
     /// The schema version this store was created with (currently always 1 —
@@ -4290,7 +4673,67 @@ fn finish_confirmation(
     })?;
     let bytes = decrypt_object(transaction, root, &proposed.event.payload.object_id)?;
     let proposal: ProposalObject = serde_json::from_slice(&bytes).map_err(serialization_error)?;
+    validate_proposal_pending(transaction, proposal_id, &proposal)?;
 
+    let mut superseded_claim_ids = Vec::with_capacity(superseded_claim_operations.len());
+    for claim_operation in superseded_claim_operations {
+        let confirmed = stored_outcome(transaction, context, claim_operation)?;
+        let claim_id = confirmed.generated.claim_id.ok_or_else(|| {
+            SemanticError::InvalidTransition(format!(
+                "operation {claim_operation} did not confirm a claim"
+            ))
+        })?;
+        validate_superseded_claim(transaction, claim_id, &proposal.draft)?;
+        superseded_claim_ids.push(claim_id);
+    }
+
+    build_confirmation_material(
+        transaction,
+        proposal,
+        proposal_id,
+        identity,
+        superseded_claim_ids,
+    )
+}
+
+/// Owner-scoped counterpart of [`finish_confirmation`]: resolves the
+/// proposal by `proposal_id` (bounded scan, see [`resolve_proposal_by_id`])
+/// instead of the client-scoped `operations` idempotency cache, and takes
+/// superseded claims directly by `claim_id` instead of by the confirming
+/// client's own `operation_id`. This is what lets a reviewer (Console) act
+/// on proposals/claims made by a *different* client (Task 5.1 Inbox).
+fn finish_confirmation_by_id(
+    transaction: &Transaction<'_>,
+    root: &Path,
+    owner_id: Uuid,
+    proposal_id: Uuid,
+    identity: EventIdentity,
+    superseded_claim_ids: &[Uuid],
+) -> Result<MutationMaterial> {
+    let (proposal, _event_seq, _submitted_at) =
+        resolve_proposal_by_id(transaction, root, owner_id, proposal_id)?;
+    validate_proposal_pending(transaction, proposal_id, &proposal)?;
+
+    for claim_id in superseded_claim_ids {
+        validate_superseded_claim(transaction, *claim_id, &proposal.draft)?;
+    }
+
+    build_confirmation_material(
+        transaction,
+        proposal,
+        proposal_id,
+        identity,
+        superseded_claim_ids.to_vec(),
+    )
+}
+
+/// Checks a proposal is still `proposed` and not an unsupported inference —
+/// shared by [`finish_confirmation`] and [`finish_confirmation_by_id`].
+fn validate_proposal_pending(
+    transaction: &Transaction<'_>,
+    proposal_id: Uuid,
+    proposal: &ProposalObject,
+) -> Result<()> {
     let status: String = transaction
         .query_row(
             "SELECT status FROM proposal_status WHERE proposal_id=?1",
@@ -4309,60 +4752,70 @@ fn finish_confirmation(
     {
         return Err(SemanticError::UnsupportedInference);
     }
+    Ok(())
+}
 
-    let mut superseded_claim_ids = Vec::with_capacity(superseded_claim_operations.len());
-    for claim_operation in superseded_claim_operations {
-        let confirmed = stored_outcome(transaction, context, claim_operation)?;
-        let claim_id = confirmed.generated.claim_id.ok_or_else(|| {
-            SemanticError::InvalidTransition(format!(
-                "operation {claim_operation} did not confirm a claim"
-            ))
-        })?;
-        let row: Option<ClaimScopeRow> = transaction
-            .query_row(
-                "SELECT domain,subject,predicate,superseded_by_event_seq,retracted_at_event_seq FROM claim_status WHERE claim_id=?1",
-                [claim_id.to_string()],
-                |row| {
-                    Ok(ClaimScopeRow {
-                        domain: row.get(0)?,
-                        subject: row.get(1)?,
-                        predicate: row.get(2)?,
-                        superseded_by: row.get(3)?,
-                        retracted_at: row.get(4)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(database_error)?;
-        let Some(ClaimScopeRow {
-            domain,
-            subject,
-            predicate,
-            superseded_by,
-            retracted_at,
-        }) = row
-        else {
-            return Err(SemanticError::InvalidTransition(format!(
-                "claim {claim_id} is not a known confirmed claim"
-            )));
-        };
-        if superseded_by.is_some() || retracted_at.is_some() {
-            return Err(SemanticError::InvalidTransition(format!(
-                "claim {claim_id} is already superseded or retracted"
-            )));
-        }
-        if domain != proposal.draft.domain
-            || subject != proposal.draft.subject
-            || predicate != proposal.draft.predicate
-        {
-            return Err(SemanticError::InvalidTransition(format!(
-                "claim {claim_id} scope ({domain}/{subject}/{predicate}) does not match new claim scope ({}/{}/{})",
-                proposal.draft.domain, proposal.draft.subject, proposal.draft.predicate
-            )));
-        }
-        superseded_claim_ids.push(claim_id);
+/// Validates that `claim_id` is a known, still-current claim in the same
+/// scope as `draft`, and not already superseded/retracted — shared by
+/// [`finish_confirmation`] and [`finish_confirmation_by_id`].
+fn validate_superseded_claim(
+    transaction: &Transaction<'_>,
+    claim_id: Uuid,
+    draft: &ClaimDraft,
+) -> Result<()> {
+    let row: Option<ClaimScopeRow> = transaction
+        .query_row(
+            "SELECT domain,subject,predicate,superseded_by_event_seq,retracted_at_event_seq FROM claim_status WHERE claim_id=?1",
+            [claim_id.to_string()],
+            |row| {
+                Ok(ClaimScopeRow {
+                    domain: row.get(0)?,
+                    subject: row.get(1)?,
+                    predicate: row.get(2)?,
+                    superseded_by: row.get(3)?,
+                    retracted_at: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(database_error)?;
+    let Some(ClaimScopeRow {
+        domain,
+        subject,
+        predicate,
+        superseded_by,
+        retracted_at,
+    }) = row
+    else {
+        return Err(SemanticError::InvalidTransition(format!(
+            "claim {claim_id} is not a known confirmed claim"
+        )));
+    };
+    if superseded_by.is_some() || retracted_at.is_some() {
+        return Err(SemanticError::InvalidTransition(format!(
+            "claim {claim_id} is already superseded or retracted"
+        )));
     }
+    if domain != draft.domain || subject != draft.subject || predicate != draft.predicate {
+        return Err(SemanticError::InvalidTransition(format!(
+            "claim {claim_id} scope ({domain}/{subject}/{predicate}) does not match new claim scope ({}/{}/{})",
+            draft.domain, draft.subject, draft.predicate
+        )));
+    }
+    Ok(())
+}
 
+/// Builds the `claim_confirmed` event material and writes `proposal_status`
+/// / `claim_status` rows, given an already-resolved and already-validated
+/// proposal and superseded-claim set. Shared tail of [`finish_confirmation`]
+/// and [`finish_confirmation_by_id`].
+fn build_confirmation_material(
+    transaction: &Transaction<'_>,
+    proposal: ProposalObject,
+    proposal_id: Uuid,
+    identity: EventIdentity,
+    superseded_claim_ids: Vec<Uuid>,
+) -> Result<MutationMaterial> {
     let claim_id = Uuid::now_v7();
     let ClaimDraft {
         subject,
@@ -4385,7 +4838,7 @@ fn finish_confirmation(
         kind: "claim_confirmation".to_owned(),
         claim: ClaimRecord {
             claim_id,
-            proposal_id: proposal.proposal_id,
+            proposal_id,
             subject: subject.clone(),
             predicate: predicate.clone(),
             value,
@@ -4434,6 +4887,73 @@ fn finish_confirmation(
             ..GeneratedIds::default()
         },
     })
+}
+
+/// Owner-scoped resolution of a proposal by its `proposal_id`, independent
+/// of which client originally called `propose`/`propose_inference`/etc.
+/// Bounded scan over `claim_proposed` events (same shape as `claim_at`'s
+/// `claim_confirmed` scan by `claim_id`) — pending-proposal counts are
+/// inbox-sized, not ledger-sized, so this stays cheap without a dedicated
+/// index. Returns the decrypted proposal, its event_seq, and when it was
+/// submitted.
+fn resolve_proposal_by_id(
+    connection: &Connection,
+    root: &Path,
+    owner_id: Uuid,
+    proposal_id: Uuid,
+) -> Result<(ProposalObject, u64, DateTime<Utc>)> {
+    let mut statement = connection
+        .prepare(
+            "SELECT event_seq,event_json,object_id FROM events \
+             WHERE owner_id=?1 AND event_type='claim_proposed' ORDER BY event_seq DESC",
+        )
+        .map_err(database_error)?;
+    let rows = statement
+        .query_map(params![owner_id.to_string()], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(database_error)?;
+    for row in rows {
+        let (event_seq, event_json, object_id) = row.map_err(database_error)?;
+        let event_seq = u64::try_from(event_seq)
+            .map_err(|_| SemanticError::CorruptLedger("negative event sequence".to_owned()))?;
+        let proposal: ProposalObject =
+            serde_json::from_slice(&decrypt_object(connection, root, &object_id)?)
+                .map_err(serialization_error)?;
+        if proposal.proposal_id == proposal_id {
+            let envelope: EventEnvelope =
+                serde_json::from_slice(&event_json).map_err(serialization_error)?;
+            return Ok((proposal, event_seq, envelope.recorded_at));
+        }
+    }
+    Err(SemanticError::MissingDependency(proposal_id.to_string()))
+}
+
+/// Decrypts a content-addressed object and returns the UTF-8 text span
+/// `[byte_start, byte_end)` from it, for evidence excerpt rendering
+/// ([`SemanticStore::evidence_for`]).
+fn decrypt_text_span(
+    connection: &Connection,
+    root: &Path,
+    object_id: &str,
+    byte_start: u64,
+    byte_end: u64,
+) -> Result<String> {
+    let bytes = decrypt_object(connection, root, object_id)?;
+    let start = usize::try_from(byte_start)
+        .map_err(|_| SemanticError::CorruptLedger("evidence span start overflow".to_owned()))?;
+    let end = usize::try_from(byte_end)
+        .map_err(|_| SemanticError::CorruptLedger("evidence span end overflow".to_owned()))?;
+    let span = bytes
+        .get(start..end)
+        .ok_or_else(|| SemanticError::CorruptLedger("evidence span is out of bounds".to_owned()))?;
+    std::str::from_utf8(span)
+        .map(str::to_owned)
+        .map_err(|_| SemanticError::CorruptLedger("evidence span is not valid UTF-8".to_owned()))
 }
 
 // =============================================================================

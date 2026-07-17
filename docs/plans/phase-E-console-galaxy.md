@@ -5,7 +5,11 @@
 
 ## Decisions (2026-07-16)
 - **มี Task E0 HTTP JSON/SSE API layer** (ตัวเลือกที่ดีที่สุด — Console ต้องการ session cookie/CSRF/browser auth ที่ MCP protocol ให้ไม่ได้; §9 = application service เดียวกับ MCP expose เป็น HTTPS; decouple UI จาก MCP evolution)
-- **Deps ใหม่ (ขออนุมัติก่อน install):** React + Vite + `react-force-graph-3d@1.29.1` + `react-force-graph-2d` + Playwright
+
+## Decisions (2026-07-17)
+- **Frontend stack เปลี่ยนจาก React → Svelte 5 + Vite + TS strict.** เหตุผล: Console เป็น first-party single-user tool, bundle size ไม่ใช่คอขวดจริง — แต่ heap-growth gate (Task 5.2 DoD "heap โต ≤10% หลัง mount/filter 20 รอบ") เป็นความเสี่ยงสูงกว่าถ้าใช้ React wrapper รอบ WebGL (`react-force-graph-3d`) ที่คุม dispose lifecycle ของ three.js ไม่ตรง ถือ `3d-force-graph`/`force-graph` core ตรงๆ ใน Svelte component แล้วเรียก `_destructor()` เองใน `onDestroy` ควบคุมได้แม่นกว่า
+- **Deps ใหม่ (ขออนุมัติก่อน install):** Svelte 5 + Vite + TS + `3d-force-graph` (3D renderer) + `force-graph` (2D fallback) + Playwright
+- DoD ทุกข้อของ Task 5.1–5.3 เป็น framework-agnostic (grep gate, E2E behavior, benchmark numbers) — ไม่กระทบจาก stack เปลี่ยน
 
 ## Task E0 — Console HTTP JSON/SSE API layer
 - HTTP endpoint เรียก application service เดียวกับ MCP (ไม่แตะ SQLite/Git/index ตรง) — reuse handler layer ของ brain_*
@@ -18,7 +22,7 @@
 3. ไม่มี direct storage write; audit link ครบ
 
 ## Task E1 — Console shell + review workflow (Home/Search/Inbox/Entity/Operations)
-- React+Vite; 5 หน้าเรียก E0 API จริง (mock-first ตอน dev แต่ integrate ก่อนปิด)
+- Svelte 5 + Vite + TS; 5 หน้าเรียก E0 API จริง (mock-first ตอน dev แต่ integrate ก่อนปิด)
 - Inbox: approve/reject/edit/supersede แสดง evidence + diff ก่อน commit; SafeText render (contract Task 5.1)
 
 **DoD (§13 Task 5.1):**
@@ -28,7 +32,7 @@
 4. XSS/CSP: inject payload ใน claim/source → escaped, CSP block inline
 
 ## Task E2 — Galaxy 3D graph + LOD + fallback
-- `react-force-graph-3d` หลัง `GraphRenderer` interface (contract Task 5.2); 2D/list fallback
+- `3d-force-graph` (core, ไม่ใช่ React wrapper) หลัง `GraphRenderer` interface (contract Task 5.2); `force-graph` 2D/list fallback
 - Server ส่ง bounded subgraph/ego network; semantic zoom Far/Mid/Close (≤300/≤2000/ego)
 - Label/tooltip ผ่าน escaped textContent
 
