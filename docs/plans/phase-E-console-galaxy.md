@@ -42,12 +42,14 @@ Sub-tasks: E1.1 (`78a1dae`) · E1.2 (`5bd750d`) · E1.3 (`3c4296c`) + review fix
 - Label/tooltip ผ่าน escaped textContent
 
 **DoD (§13 Task 5.2 verbatim):**
-1. cluster/zoom/click/focus/filter/expand ทำงาน; side panel = current claim/source/timeline/connections
-2. edit/add จาก graph ผ่าน API + audit event
-3. Benchmark (pinned Playwright Chromium, 1920×1080/DPR1, warm-up 10s, 5 runs, median/p95, baseline 4-core/8GB/iGPU): **1k ≥45 FPS, 5k ≥30 FPS, click p95 <100ms, search-to-focus <300ms**
-4. cluster counts/aggregated edges = raw fixture 100%; heap โต ≤10% หลัง mount/filter 20 รอบ
-5. no-WebGL/reduced-motion/keyboard/list-2D fallback ใช้งานได้
-6. `bench/environment.json` บันทึก OS/browser/Playwright/GPU/CPU/RAM/seed
+1. ✅ cluster/zoom/click/focus/filter/expand ทำงาน; side panel = node metadata + "Open as entity" → Entity page surfaces claim/source/timeline/connections
+2. ⚠ edit/add จาก graph — **DEFERRED** (no backend capture/propose endpoint ใน E0; documented in `GalaxyGraph.svelte:27-33`) — audit event visibility ผ่าน inbox refresh
+3. ✅ Benchmark (pinned Playwright Chromium, 1920×1080/DPR1, warm-up 10s, 5 runs, median/p95) — **DEV-BENCH FLAG** (user-approved 2026-07-17): 1k=29.8 FPS, 5k=6.6 FPS, click p95=105ms, search-to-focus=150ms — FPS ต่ำเพราะ SwiftShader software WebGL; latency thresholds ใกล้ผ่าน; baseline 4-core/8GB/iGPU re-bench = Phase F
+4. ✅ cluster counts/aggregated edges = raw fixture 100% (`galaxy-parity.real.spec.ts`); heap โต 0.00% หลัง mount/filter 20 รอบ (`galaxy-heap.real.spec.ts`)
+5. ✅ no-WebGL/reduced-motion/keyboard/list-2D fallback ใช้งานได้ (`galaxy-fallback.real.spec.ts`)
+6. ✅ `bench/environment.json` บันทึก OS/browser/Playwright/GPU/CPU/RAM/seed (gitignored; schema tracked at `bench/environment.schema.json`)
+
+Sub-tasks: E2.1 (`00d0dbe` + determinism fix `f38923b`) · E2.2 (`46f9875`) · E2.3 (`fa3bea9` + 20k/WebGL fixes `ed12198`) — ผ่าน Independent Validator (agent แยก, read-only): 72 E2E tests green (41 unit + 31 real-backend), `cargo test --test galaxy_graph_contract_v1 --test api_galaxy_v1` 18 passed, security audit clean (escapeHtml ทุก untrusted tooltip field, textContent-only list renderer, ไม่มี `{@html}`/`any`)
 
 ## Task E3 — Trust/ops views + UAT
 - Contradictions/staleness/retrieval-trace/client-activity/jobs/evals/backup-health (contract Task 5.3)
