@@ -8,7 +8,6 @@
    *   Pending ──Supersede▶ Approved   (POST /inbox/{id}/supersede —
    *                                    commits a new claim that replaces the
    *                                    selected prior claims)
-   *   Pending ──Edit─────▶ Approved   (supersede with a user-edited value)
    *
    * Once decided, the row is locked (the local `review.transition()` guard
    * returns `already_decided`). The Rust `transition` in `src/console.rs`
@@ -140,18 +139,6 @@
         // priors to replace.
         claims: { claim_id: Uuid; value: unknown; selected: boolean }[]
       }
-    | {
-        kind: 'edit'
-        proposalId: Uuid
-        subject: string
-        predicate: string
-        // The user-edited value. Diff is computed live from this.
-        editedValue: string
-        currentValue: unknown
-        // All current confirmed claims in scope — Edit = supersede-with-
-        // edited-value, so every confirmed prior in scope is superseded.
-        claimIds: Uuid[]
-      }
 
   let dialog = $state<Dialog | null>(null)
   // `true` while a mutation API call is in flight — disables Yes/No so the
@@ -159,6 +146,20 @@
   let acting = $state(false)
   // Ref to the Yes button so we can focus it when the dialog opens.
   let yesBtn = $state<HTMLButtonElement | null>(null)
+  // Ref to the dialog root so the focus-trap keydown handler can query its
+  // focusable descendants (Fix I2).
+  let dialogRoot = $state<HTMLDivElement | null>(null)
+
+  /**
+   * Fix I1: when the Supersede dialog has every checkbox unchecked, the
+   * Yes button is disabled and an inline validation message is shown.
+   * Prevents firing `apiSupersede(id, [])` with an empty
+   * `superseded_claim_ids` array (which the server would accept but is
+   * almost certainly not what the reviewer meant).
+   */
+  let supersedeNoneSelected = $derived(
+    dialog?.kind === 'supersede' && !dialog.claims.some((c) => c.selected),
+  )
 
   onMount(() => {
     void refreshList()
@@ -228,7 +229,6 @@
           predicate: proposal.predicate,
         }),
       ])
-      if (seq !== detailSeq) return
       // `claim_timeline` returns every claim that has ever been confirmed
       // in this scope (including later-superseded ones). For the diff's
       // "before" we want the most recent STILL-CONFIRMED claim (status
@@ -239,28 +239,41 @@
         .filter((c) => c.status === 'confirmed')
         .sort((a, b) => b.confirmed_event_seq - a.confirmed_event_seq)
       const currentValue = confirmed.length > 0 ? confirmed[0].value : null
-      details = {
-        ...details,
-        [proposal.proposal_id]: {
-          kind: 'ready',
-          evidence: evidenceResult,
-          currentValue,
-          currentClaims: confirmed,
-        },
+      const ready: DetailState = {
+        kind: 'ready',
+        evidence: evidenceResult,
+        currentValue,
+        currentClaims: confirmed,
       }
-    } catch (cause) {
+      // Always cache the result so a stale-but-completed fetch warms the
+      // per-id cache for the next open (Fix I3): previously the seq guard
+      // short-circuited BEFORE the write, leaving `details[id]` stuck at
+      // `{kind:'loading'}` forever and forcing a refetch on re-open. The
+      // seq guard now only gates whether the OPEN panel is updated.
+      details = { ...details, [proposal.proposal_id]: ready }
       if (seq !== detailSeq) return
+    } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401) {
-        sessionExpired = true
-        session.clear()
-        session.pushFlash('error', 'Session expired — sign in again.')
+        // 401 is session-wide — surface it regardless of seq (the user
+        // needs to re-authenticate before anything else can succeed).
+        if (seq === detailSeq) {
+          sessionExpired = true
+          session.clear()
+          session.pushFlash('error', 'Session expired — sign in again.')
+        }
         return
       }
       const message =
         cause instanceof ApiError
           ? `Failed to load evidence (${cause.code}).`
           : 'Failed to load evidence — is the backend running on :8080?'
+      // Cache the error too (Fix I3): a stale failed fetch should not be
+      // re-thrown on re-open; the cached `{kind:'error'}` will be reused
+      // and the user can retry by collapsing/re-expanding (which clears
+      // the entry via the `existing.kind` guard above being only on
+      // 'ready'/'error' — see the toggle/reopen path).
       details = { ...details, [proposal.proposal_id]: { kind: 'error', message } }
+      if (seq !== detailSeq) return
     }
   }
 
@@ -321,24 +334,6 @@
     void focusYes()
   }
 
-  function startEdit(
-    proposal: ProposalSummary,
-    before: unknown,
-    claims: ClaimView[],
-  ): void {
-    dialog = {
-      kind: 'edit',
-      proposalId: proposal.proposal_id,
-      subject: proposal.subject,
-      predicate: proposal.predicate,
-      editedValue:
-        typeof proposal.value === 'string' ? proposal.value : JSON.stringify(proposal.value),
-      currentValue: before,
-      claimIds: claims.map((c) => c.claim_id),
-    }
-    void focusYes()
-  }
-
   async function focusYes(): Promise<void> {
     // Wait for the DOM to render the Yes button, then focus it so keyboard
     // users can confirm with Enter immediately (DoD: dialog traps focus).
@@ -346,41 +341,48 @@
     yesBtn?.focus()
   }
 
+  /**
+   * Minimal focus trap (Fix I2). The dialog already sets `role="dialog"`,
+   * `aria-modal="true"`, closes on Escape, and focuses Yes on open — but
+   * without intercepting Tab, a keyboard user can tab out into background
+   * elements (the proposal list behind the modal). This handler cycles
+   * focus among the dialog's focusable descendants (Yes, No, plus any
+   * supersede checkboxes that are not disabled).
+   *
+   * Deliberately dependency-free: no focus-trap library, ~30 LOC. Called
+   * from the dialog root's `onkeydown`.
+   */
+  function onDialogKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      cancelDialog()
+      return
+    }
+    if (event.key !== 'Tab' || !dialogRoot) return
+    const focusables = Array.from(
+      dialogRoot.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    )
+    if (focusables.length === 0) return
+    const first = focusables[0]
+    const last = focusables[focusables.length - 1]
+    const active = document.activeElement as HTMLElement | null
+    if (event.shiftKey) {
+      if (active === first || !dialogRoot.contains(active)) {
+        event.preventDefault()
+        last.focus()
+      }
+    } else {
+      if (active === last || !dialogRoot.contains(active)) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+  }
+
   function cancelDialog(): void {
     if (acting) return
     dialog = null
-  }
-
-  // ── Live diff for the Edit dialog as the user types ───────────────────
-  let editDiffs = $derived(
-    dialog && dialog.kind === 'edit'
-      ? buildDiff(dialog.predicate, dialog.currentValue, parseEditedValue(dialog.editedValue))
-      : [],
-  )
-
-  /**
-   * Parse the user-typed Edit value. Strings stay strings; anything that
-   * looks like JSON ({...}, [...], number, true/false/null) is parsed so
-   * the diff reflects the actual JSON value that would be committed. A
-   * parse failure falls back to the raw string — the reviewer typed it,
-   * we honour it.
-   */
-  function parseEditedValue(raw: string): unknown {
-    const trimmed = raw.trim()
-    if (trimmed === '') return null
-    // Plain string with no JSON-ish first char → keep as string (the common
-    // case: most claim values are short text).
-    const c0 = trimmed[0]
-    if (c0 !== '{' && c0 !== '[' && c0 !== '"' && c0 !== 't' && c0 !== 'f' && c0 !== 'n') {
-      // Numeric? parse as number; else treat as literal string.
-      const num = Number(trimmed)
-      return trimmed !== '' && !Number.isNaN(num) && /^-?\d/.test(trimmed) ? num : raw
-    }
-    try {
-      return JSON.parse(trimmed)
-    } catch {
-      return raw
-    }
   }
 
   // ── Mutation execution (only reachable from the dialog's Yes button) ───
@@ -390,36 +392,24 @@
     // Snapshot the request plan BEFORE any `await`. TypeScript narrowing on
     // a `$state` proxy is invalidated by `await` (the proxy can be mutated
     // externally), so we extract every field we need up front into a
-    // discriminated `plan` and only then start the request. The narrowing
-    // below uses an explicit `kind === 'edit'` arm (not a bare `else`) so
-    // the union collapses correctly to the Edit variant.
+    // discriminated `plan` and only then start the request.
     type Plan =
       | { action: 'approve'; proposalId: Uuid }
       | { action: 'reject'; proposalId: Uuid }
-      | { action: 'supersede'; proposalId: Uuid; ids: Uuid[]; label: 'Superseded' }
-      | { action: 'supersede'; proposalId: Uuid; ids: Uuid[]; label: 'Edited' }
+      | { action: 'supersede'; proposalId: Uuid; ids: Uuid[] }
     let plan: Plan
     if (d.kind === 'approve') {
       plan = { action: 'approve', proposalId: d.proposalId }
     } else if (d.kind === 'reject') {
       plan = { action: 'reject', proposalId: d.proposalId }
     } else if (d.kind === 'supersede') {
+      // d.kind === 'supersede' — exhaustive over the (now 3-variant) Dialog
+      // union; the explicit kind check lets TS narrow `d` to the supersede
+      // variant so `d.claims` is visible.
       plan = {
         action: 'supersede',
         proposalId: d.proposalId,
         ids: d.claims.filter((c) => c.selected).map((c) => c.claim_id),
-        label: 'Superseded',
-      }
-    } else if (d.kind === 'edit') {
-      // Edit — supersede with the (proposal's) value, replacing every
-      // current confirmed claim in scope. The server commits the proposal's
-      // value via the proposal pipeline; Edit here is the user choosing to
-      // replace priors using this proposal.
-      plan = {
-        action: 'supersede',
-        proposalId: d.proposalId,
-        ids: d.claimIds,
-        label: 'Edited',
       }
     } else {
       // Unreachable — exhaustive over the Dialog union. Defensive: refuse
@@ -439,10 +429,10 @@
         finalize(plan.proposalId, 'reject', `Rejected proposal ${short(plan.proposalId)} (event_seq=${eventSeq}).`)
       } else {
         eventSeq = (await apiSupersede(plan.proposalId, plan.ids)).event_seq
-        finalize(plan.proposalId, 'supersede', `${plan.label} proposal ${short(plan.proposalId)} (event_seq=${eventSeq}).`)
+        finalize(plan.proposalId, 'supersede', `Superseded proposal ${short(plan.proposalId)} (event_seq=${eventSeq}).`)
       }
     } catch (cause) {
-      onMutationError(cause, plan.proposalId)
+      onMutationError(cause)
     } finally {
       acting = false
     }
@@ -461,18 +451,20 @@
   ): void {
     const prior = reviewStates[proposalId] ?? 'pending'
     const next = transition(prior, action)
-    // `transition` returns `ReviewState | TransitionError`. Treat the
-    // terminal-state case explicitly so TS narrows correctly. (Reject →
-    // 'rejected'; approve/supersede → 'approved'.) Defensive: the server
-    // already confirmed success, so even an unexpected local-state drift
-    // gets locked here.
-    const resolved: ReviewState =
-      next === 'approved' || next === 'rejected'
-        ? next
-        : action === 'reject'
-          ? 'rejected'
-          : 'approved'
-    reviewStates = { ...reviewStates, [proposalId]: resolved }
+    // `transition` returns `ReviewState | TransitionError`. The happy path
+    // is `approved`/`rejected`; the error codes (`already_decided`,
+    // `invalid_action`) indicate a logic regression — the server just
+    // confirmed success, so the local state should still be `pending`.
+    // Fix M1: fail LOUDLY here instead of silently locking the row to
+    // `approved`, so a future regression (e.g. a double-finalize race or
+    // a new ReviewAction variant the switch doesn't handle) surfaces in
+    // dev/test rather than mislabeling a rejected proposal as approved.
+    if (next !== 'approved' && next !== 'rejected') {
+      throw new Error(
+        `transition returned unexpected: ${next} (prior=${prior}, action=${action})`,
+      )
+    }
+    reviewStates = { ...reviewStates, [proposalId]: next }
     session.pushFlash('success', message)
     dialog = null
     openId = null
@@ -487,11 +479,14 @@
    *         so the user is dropped back to login.
    *   404 → proposal already decided or not found. The inbox refetch will
    *         drop the row from the list; we just flash the user.
+   *   409 → concurrent decision conflict (IdempotencyConflict /
+   *         InvalidTransition). Distinct from 404: the proposal exists
+   *         but a concurrent reviewer (or a replay) already moved it.
+   *         Refresh + close so the user sees the current state (Fix M2).
    *   other → generic failure flash; keep the dialog open so the user can
    *           retry.
    */
-  function onMutationError(cause: unknown, proposalId: Uuid): void {
-    void proposalId
+  function onMutationError(cause: unknown): void {
     if (cause instanceof ApiError) {
       if (cause.status === 401) {
         sessionExpired = true
@@ -509,6 +504,19 @@
       }
       if (cause.status === 404) {
         session.pushFlash('error', 'Proposal not found (already decided?).')
+        dialog = null
+        void refreshList()
+        return
+      }
+      if (cause.status === 409) {
+        // Fix M2: dedicated conflict branch — the proposal was already
+        // decided concurrently. Surface a distinct flash (not the 404
+        // "not found" wording) and refresh so the row reflects the
+        // winning decision.
+        session.pushFlash(
+          'error',
+          'Proposal was already decided concurrently — refreshing.',
+        )
         dialog = null
         void refreshList()
         return
@@ -593,7 +601,7 @@
                   {#if d.currentClaims.length > 0}
                     <p class="prior-claims">
                       {d.currentClaims.length} current confirmed claim(s) in scope —
-                      Supersede / Edit will replace them.
+                      Supersede will replace them.
                     </p>
                   {:else}
                     <p class="prior-claims prior-none">
@@ -624,13 +632,6 @@
                     >
                       Supersede
                     </button>
-                    <button
-                      type="button"
-                      class="action action-edit"
-                      onclick={() => startEdit(p, before, d.currentClaims)}
-                    >
-                      Edit
-                    </button>
                   </div>
                 {/if}
               </div>
@@ -656,9 +657,13 @@
     role="dialog"
     aria-modal="true"
     aria-label={`Confirm ${dialog.kind}`}
+    aria-describedby="dialog-summary"
+    tabindex="-1"
+    bind:this={dialogRoot}
+    onkeydown={(e) => onDialogKeydown(e)}
   >
     <h2>Confirm {dialog.kind}?</h2>
-    <p class="dialog-summary">
+    <p class="dialog-summary" id="dialog-summary">
       Subject <span class="mono">{dialog.subject}</span>
       · Predicate <span class="mono">{dialog.predicate}</span>
     </p>
@@ -689,21 +694,11 @@
       <p class="dialog-prompt">
         Confirm supersede — a new claim will replace the selected priors.
       </p>
-    {:else if dialog.kind === 'edit'}
-      <!-- Edit: live diff against the user-typed value -->
-      <label class="edit-label" for="edit-value">Edited value</label>
-      <input
-        id="edit-value"
-        type="text"
-        class="edit-input"
-        bind:value={dialog.editedValue}
-        disabled={acting}
-      />
-      <DiffPreviewCmp diffs={editDiffs} />
-      <p class="dialog-prompt">
-        Confirm edit — a new claim with the edited value will replace the
-        {dialog.claimIds.length} current confirmed claim(s) in scope.
-      </p>
+      {#if supersedeNoneSelected}
+        <p class="validation-warning" role="alert">
+          Select at least one claim to supersede.
+        </p>
+      {/if}
     {/if}
 
     <div class="dialog-actions">
@@ -711,7 +706,7 @@
         type="button"
         class="action action-yes"
         bind:this={yesBtn}
-        disabled={acting}
+        disabled={acting || supersedeNoneSelected}
         onclick={() => void confirmDialog()}
       >
         {acting ? 'Working…' : 'Yes, confirm'}
@@ -892,8 +887,7 @@
     border-color: rgba(190, 70, 70, 0.55);
   }
 
-  .action-supersede,
-  .action-edit {
+  .action-supersede {
     background: rgba(80, 130, 200, 0.18);
     border-color: rgba(80, 130, 200, 0.5);
   }
@@ -993,22 +987,14 @@
     white-space: nowrap;
   }
 
-  .edit-label {
-    display: block;
-    font-size: 0.8rem;
-    opacity: 0.7;
-    margin: 0.5rem 0 0.2rem;
-  }
-
-  .edit-input {
-    width: 100%;
-    padding: 0.45rem 0.55rem;
+  /* Fix I1: inline validation shown when Supersede has no claim selected. */
+  .validation-warning {
+    margin: 0.4rem 0 0;
+    padding: 0.4rem 0.6rem;
+    font-size: 0.85rem;
     border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.45);
-    background: inherit;
-    color: inherit;
-    font: inherit;
-    box-sizing: border-box;
+    border: 1px solid rgba(190, 70, 70, 0.5);
+    background: rgba(190, 70, 70, 0.15);
   }
 
   .dialog-actions {

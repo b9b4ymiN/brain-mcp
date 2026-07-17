@@ -84,4 +84,38 @@ test.describe('review.buildDiff', () => {
     expect(diffs[0].before).toBeNull()
     expect(diffs[0].after).toBe('active')
   })
+
+  test('object-value diff yields a single row when contents differ (Fix M5)', () => {
+    // buildDiff is field-level on the whole value; an object-value change
+    // is still ONE diff row (before=old object, after=new object). This
+    // pins the contract so a future multi-field refactor doesn't silently
+    // change the row count for object values.
+    const before = { a: 1, b: 2 }
+    const after = { a: 1, b: 3 }
+    const diffs = buildDiff('meta', before, after)
+    expect(diffs).toHaveLength(1)
+    expect(diffs[0].field).toBe('meta')
+    expect(diffs[0].before).toEqual(before)
+    expect(diffs[0].after).toEqual(after)
+  })
+
+  test('object-value with different key order but same contents yields no diff (Fix M5)', () => {
+    // jsonEqual uses JSON.stringify, so key ORDER matters. Document the
+    // current contract: two objects with the same KV pairs emitted in the
+    // SAME order are equal; a different order is treated as a diff (the
+    // caller is expected to have received both from serde_json, which has
+    // stable insertion-order emission, so order shifts are significant).
+    expect(buildDiff('meta', { a: 1, b: 2 }, { a: 1, b: 2 })).toEqual([])
+    const ordered = buildDiff('meta', { a: 1, b: 2 }, { b: 2, a: 1 })
+    expect(ordered).toHaveLength(1)
+  })
+
+  test('nested object-value diff yields a single row (Fix M5)', () => {
+    const before = { profile: { name: 'alice', age: 30 } }
+    const after = { profile: { name: 'alice', age: 31 } }
+    const diffs = buildDiff('profile', before, after)
+    expect(diffs).toHaveLength(1)
+    expect(diffs[0].before).toEqual(before)
+    expect(diffs[0].after).toEqual(after)
+  })
 })
