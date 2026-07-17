@@ -11,15 +11,17 @@
 - **Deps ใหม่ (ขออนุมัติก่อน install):** Svelte 5 + Vite + TS + `3d-force-graph` (3D renderer) + `force-graph` (2D fallback) + Playwright
 - DoD ทุกข้อของ Task 5.1–5.3 เป็น framework-agnostic (grep gate, E2E behavior, benchmark numbers) — ไม่กระทบจาก stack เปลี่ยน
 
-## Task E0 — Console HTTP JSON/SSE API layer
+## Task E0 — Console HTTP JSON/SSE API layer ✅ CLOSED (`ebb7701`, `7784260`, `406befe`)
 - HTTP endpoint เรียก application service เดียวกับ MCP (ไม่แตะ SQLite/Git/index ตรง) — reuse handler layer ของ brain_*
 - Auth: session cookie (HttpOnly/SameSite) + CSRF token; dev = local bootstrap, production = OAuth (Phase F)
 - SSE stream สำหรับ jobs/updates
 
 **DoD:**
-1. endpoint ครอบ read + review actions (search/get/timeline/evidence/inbox/approve/reject/supersede)
-2. auth + CSRF negative tests ผ่าน (no-session → 401, bad-CSRF → 403)
-3. ไม่มี direct storage write; audit link ครบ
+1. ✅ endpoint ครอบ read + review actions (search/get/timeline/evidence/inbox/approve/reject/supersede) — `src/api.rs`, 8 routes + login/logout + events
+2. ✅ auth + CSRF negative tests ผ่าน (no-session → 401, bad-CSRF → 403) — `tests/api_console_v1.rs` (18 tests)
+3. ✅ ไม่มี direct storage write; audit link ครบ — ทุก route เรียกผ่าน `SemanticStore` public methods เท่านั้น (grep-verified โดย Validator)
+
+Sub-tasks: E0.1 (`ebb7701`, inbox/timeline/evidence accessors + owner-scoped confirm/reject/supersede ใน `semantic.rs`) · E0.2 (`7784260`, axum `/api/v1` router + session/CSRF) · E0.3 (`406befe`, SSE `/api/v1/events` + static console serve + CSP) — ทุก sub-task ผ่าน Independent Validator (agent แยก, read-only) ก่อน commit
 
 ## Task E1 — Console shell + review workflow (Home/Search/Inbox/Entity/Operations)
 - Svelte 5 + Vite + TS; 5 หน้าเรียก E0 API จริง (mock-first ตอน dev แต่ integrate ก่อนปิด)
