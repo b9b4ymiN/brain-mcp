@@ -143,7 +143,7 @@
   {:else if currentPage === 'search'}
     <Search {session} />
   {:else if currentPage === 'inbox'}
-    <Inbox />
+    <Inbox {session} />
   {:else if currentPage === 'entity'}
     <Entity {session} />
   {:else if currentPage === 'operations'}

@@ -28,9 +28,18 @@ export function formatValue(value: unknown): string {
   if (typeof value === 'string') return value
   if (typeof value === 'number' || typeof value === 'boolean') return String(value)
   // Objects + arrays: stable JSON form. `JSON.stringify` is total for
-  // JSON-shaped values (what the wire gives us); worst case it returns
-  // `undefined` for functions/symbols, which we fold to the placeholder.
-  const json = JSON.stringify(value)
+  // JSON-shaped values (what the wire gives us), but the module docstring
+  // promises "never throws" — so we MUST guard the rare throw paths
+  // (circular references, BigInt, custom toJSON that throws). On throw we
+  // fall back to the em-dash placeholder rather than propagating. Worst
+  // case for non-throwing input it returns `undefined` for functions /
+  // symbols, which we also fold to the placeholder.
+  let json: string | undefined
+  try {
+    json = JSON.stringify(value)
+  } catch {
+    return '—'
+  }
   return json === undefined ? '—' : json
 }
 

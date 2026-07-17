@@ -52,6 +52,12 @@
   let hasSearched = $state(false)
   let sessionExpired = $state(false)
 
+  // Monotonic request-id guard: each `runSearch` invocation bumps this and
+  // stamps the call with the new value. A late-arriving response from a
+  // superseded search is detected by comparing the stamp to the live value
+  // after every `await`, and discarded instead of overwriting newer state.
+  let searchSeq = 0
+
   onMount(() => {
     // Pull a quick-search handoff from Home, if any. Consume-once: a refresh
     // of this page must NOT re-run the staged query.
@@ -65,6 +71,8 @@
   async function runSearch(): Promise<void> {
     const trimmed = query.trim()
     if (!trimmed) return
+    // Stamp this call so a newer search can invalidate our stale responses.
+    const seq = ++searchSeq
     submitting = true
     loading = true
     error = null
@@ -76,8 +84,11 @@
         domain: domain.trim() || undefined,
         top_k: topK ?? undefined,
       })
+      // Discard stale response — a newer search supersedes us.
+      if (seq !== searchSeq) return
       results = response.results
     } catch (cause) {
+      if (seq !== searchSeq) return
       if (cause instanceof ApiError && cause.status === 401) {
         sessionExpired = true
         session.clear()
@@ -90,8 +101,12 @@
           ? `Search failed (${cause.code}).`
           : 'Search failed — is the backend running on :8080?'
     } finally {
-      loading = false
-      submitting = false
+      // Only the most-recent search clears the loading flag — a stale
+      // completion would otherwise un-stick a newer in-flight search.
+      if (seq === searchSeq) {
+        loading = false
+        submitting = false
+      }
     }
   }
 

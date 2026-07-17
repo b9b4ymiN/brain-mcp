@@ -52,6 +52,11 @@
   let hasLoaded = $state(false)
   let sessionExpired = $state(false)
 
+  // Monotonic request-id guard for `viewSubject`: if the user submits a
+  // second subject while the first `getSubject()` is still in flight, the
+  // stale response is discarded rather than overwriting the newer state.
+  let viewSeq = 0
+
   // Per-row timeline expansion state.
   type RowState =
     | { kind: 'idle' }
@@ -72,6 +77,8 @@
   async function viewSubject(subject: string): Promise<void> {
     const trimmed = subject.trim()
     if (!trimmed) return
+    // Sequence-stamp this request so a later submit can invalidate us.
+    const seq = ++viewSeq
     activeSubject = trimmed
     submitting = true
     loading = true
@@ -81,8 +88,11 @@
     expanded = {}
     try {
       const response = await getSubject({ subject: trimmed })
+      // Discard stale response — a newer subject request supersedes us.
+      if (seq !== viewSeq) return
       claims = response.claims
     } catch (cause) {
+      if (seq !== viewSeq) return
       if (cause instanceof ApiError && cause.status === 401) {
         sessionExpired = true
         session.clear()
@@ -95,8 +105,12 @@
           ? `Failed to load subject (${cause.code}).`
           : 'Failed to load subject — is the backend running on :8080?'
     } finally {
-      loading = false
-      submitting = false
+      // Only the most-recent request is allowed to clear loading state —
+      // otherwise a stale completion would un-stick a newer in-flight load.
+      if (seq === viewSeq) {
+        loading = false
+        submitting = false
+      }
     }
   }
 
@@ -120,8 +134,18 @@
         subject: claim.subject,
         predicate: claim.predicate,
       })
+      // Async-toggle race guard: the user may have collapsed the row (back
+      // to `idle`) while the fetch was in flight. If `loading` is no longer
+      // the current state for this id, do NOT overwrite — their collapse
+      // intent wins. This also covers the case of a second toggle that
+      // re-opened the row (it would be `loading` again — different in-flight
+      // request owns that slot, not us).
+      if (expanded[id]?.kind !== 'loading') return
       expanded = { ...expanded, [id]: { kind: 'open', entries } }
     } catch (cause) {
+      // Same race guard in the catch branch: a mid-flight collapse must not
+      // be clobbered by a late-arriving error banner.
+      if (expanded[id]?.kind !== 'loading') return
       const message =
         cause instanceof ApiError
           ? `Timeline failed (${cause.code}).`
