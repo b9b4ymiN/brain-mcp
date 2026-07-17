@@ -601,11 +601,14 @@ async fn galaxy(
         .store
         .all_claims_current(head, Utc::now())
         .map_err(|e| map_semantic_error(&e))?;
-    let now = Utc::now();
 
     // Combine active + future + past into one flat slice the materializer
     // consumes. Past claims still carry their entity_id (useful for
     // provenance / supersede context); the active set is the dominant input.
+    // TODO(phase-e2.2/future): past (superseded/retracted/expired) claims currently
+    // contribute to node materialization + label voting. For a strictly "current brain"
+    // view, filter to `claims.active` only, or have the materializer down-weight past
+    // claims. Kept for now to preserve provenance/supersede context per §9.2.
     let mut flat: Vec<&crate::semantic::ClaimView> =
         Vec::with_capacity(claims.active.len() + claims.future.len() + claims.past.len());
     flat.extend(claims.active.iter());
@@ -620,8 +623,7 @@ async fn galaxy(
             // ego builder. We pass the full flat slice so the BFS can walk
             // beyond the focus's own claims to find neighbors.
             let owned: Vec<crate::semantic::ClaimView> = flat.into_iter().cloned().collect();
-            let mut ego =
-                GalaxyGraph::ego_around(&owned, focus_id, crate::galaxy::EGO_MAX_DEPTH, now);
+            let mut ego = GalaxyGraph::ego_around(&owned, focus_id, crate::galaxy::EGO_MAX_DEPTH);
             // Re-stamp node labels with canonical subjects now that we know
             // the surviving entity set (ego_around doesn't have the map).
             for node in ego.nodes_mut() {
@@ -642,7 +644,6 @@ async fn galaxy(
                 lod.node_cap(),
                 domain_filter,
                 &canonical,
-                now,
             )
         }
     };

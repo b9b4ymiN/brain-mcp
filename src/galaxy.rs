@@ -22,7 +22,6 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -290,13 +289,19 @@ impl GalaxyGraph {
     /// relationships, supersede/retract partners) is deferred to a future
     /// task that either extends `ClaimView` with an object-entity pointer or
     /// adds a graph-specific store method that reads the link table directly.
+    ///
+    /// # Status-based edge inference (deferred)
+    /// This signature takes no `now: DateTime<Utc>` parameter. Status-aware
+    /// edge inference (e.g. treating superseded/retracted/expired claims
+    /// differently when materializing a strictly-"current brain" view) is
+    /// deferred. When that lands, a `now` parameter will be added back to
+    /// this signature, the handler, and the tests.
     pub fn from_claims(
         claims: &[ClaimView],
         lod_cap: usize,
         domain_filter: Option<&str>,
-        now: DateTime<Utc>,
     ) -> GalaxyGraph {
-        Self::from_claims_with_subjects(claims, lod_cap, domain_filter, &HashMap::new(), now)
+        Self::from_claims_with_subjects(claims, lod_cap, domain_filter, &HashMap::new())
     }
 
     /// Same as [`Self::from_claims`] but accepts a pre-built `entity_id →
@@ -310,7 +315,6 @@ impl GalaxyGraph {
         lod_cap: usize,
         domain_filter: Option<&str>,
         canonical_subjects: &HashMap<Uuid, String>,
-        now: DateTime<Utc>,
     ) -> GalaxyGraph {
         // Stage 1: filter + group claims by entity_id (first-seen order).
         let mut entity_order: Vec<Uuid> = Vec::new();
@@ -446,11 +450,6 @@ impl GalaxyGraph {
             }
         }
 
-        // Unused-parameter honesty: `now` is reserved for future status-based
-        // edge inference (supersede/retract-as-of) that will need a world-time
-        // bound. Keep it in the signature so the API handler doesn't have to
-        // change again.
-        let _ = now;
         graph
     }
 
@@ -464,16 +463,11 @@ impl GalaxyGraph {
     ///
     /// Returns an empty graph (cap = [`GraphLod::EgoNeighborhood`] but 0 nodes)
     /// if the focus entity has no claims in the slice.
-    pub fn ego_around(
-        claims: &[ClaimView],
-        focus_entity_id: Uuid,
-        depth: usize,
-        now: DateTime<Utc>,
-    ) -> GalaxyGraph {
+    pub fn ego_around(claims: &[ClaimView], focus_entity_id: Uuid, depth: usize) -> GalaxyGraph {
         let cap = GraphLod::EgoNeighborhood.node_cap();
         let bounded_depth = depth.min(EGO_MAX_DEPTH);
         if bounded_depth == 0 {
-            return Self::ego_singleton(claims, focus_entity_id, now);
+            return Self::ego_singleton(claims, focus_entity_id);
         }
 
         // Resolve neighbors hop by hop.
@@ -511,16 +505,12 @@ impl GalaxyGraph {
         }
         // Build with the focused slice; pass empty canonical map (caller can
         // re-label later if needed). The cap keeps the payload bounded.
-        Self::from_claims(&focused, cap, None, now)
+        Self::from_claims(&focused, cap, None)
     }
 
     /// Single-entity (depth 0) ego graph: just the focus node + its claims'
     /// aggregated label. Used when `depth == 0`.
-    fn ego_singleton(
-        claims: &[ClaimView],
-        focus_entity_id: Uuid,
-        now: DateTime<Utc>,
-    ) -> GalaxyGraph {
+    fn ego_singleton(claims: &[ClaimView], focus_entity_id: Uuid) -> GalaxyGraph {
         let cap = GraphLod::EgoNeighborhood.node_cap();
         let focused: Vec<ClaimView> = claims
             .iter()
@@ -530,7 +520,7 @@ impl GalaxyGraph {
         if focused.is_empty() {
             return GalaxyGraph::new(cap);
         }
-        Self::from_claims(&focused, cap, None, now)
+        Self::from_claims(&focused, cap, None)
     }
 }
 
@@ -539,20 +529,30 @@ impl GalaxyGraph {
 pub const EGO_MAX_DEPTH: usize = 2;
 
 /// Pick the most frequent string in the iterator (ties broken by first-seen).
+///
+/// # Determinism
+/// `HashMap` iteration order is randomized by Rust's `RandomState`, and
+/// `Iterator::max_by_key` returns the LAST maximal element. A naive
+/// `counts.into_iter().max_by_key(|(_, n)| *n)` would therefore make the
+/// tie-breaker non-deterministic — producing different `label`/`kind`/`domain`
+/// values run-to-run for entities whose counts are tied (frontend flicker,
+/// flaky tests). To stay deterministic we track each string's first-seen index
+/// alongside its count and break ties on first-seen (smaller index wins),
+/// matching the `from_claims` doc contract ("ties broken by first-seen").
 fn most_frequent<'a>(iter: impl Iterator<Item = &'a str>) -> Option<String> {
-    let mut counts: HashMap<&str, usize> = HashMap::new();
-    let mut first: Option<&str> = None;
-    for s in iter {
-        if first.is_none() {
-            first = Some(s);
-        }
-        *counts.entry(s).or_insert(0) += 1;
+    // (count, first_seen_index)
+    let mut counts: HashMap<&str, (usize, usize)> = HashMap::new();
+    for (idx, s) in iter.enumerate() {
+        let entry = counts.entry(s).or_insert((0, idx));
+        entry.0 += 1;
     }
+    // Highest count wins; on a tie, the SMALLER first-seen index wins
+    // (first-seen). `max_by` with a count-descending-then-index-ascending
+    // comparator yields exactly that.
     counts
         .into_iter()
-        .max_by_key(|(_, n)| *n)
-        .map(|(s, _)| s.to_string())
-        .or_else(|| first.map(|s| s.to_string()))
+        .max_by(|a, b| a.1.0.cmp(&b.1.0).then_with(|| b.1.1.cmp(&a.1.1)))
+        .map(|(s, _)| s.to_owned())
 }
 
 /// Add an edge to `graph` only if `(source, target)` hasn't been emitted yet.
@@ -647,7 +647,6 @@ fn ego_neighbors(claims: &[ClaimView], entity_id: Uuid) -> Vec<Uuid> {
 mod tests {
     use super::*;
     use crate::semantic::{OriginClass, PrivacyLabel};
-    use chrono::TimeZone;
     use serde_json::json;
 
     /// Minimal `ClaimView` fixture for unit testing. Only the fields the
@@ -678,10 +677,6 @@ mod tests {
             origin: OriginClass::HumanAuthored,
             entity_id: Some(entity_id),
         }
-    }
-
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 7, 17, 12, 0, 0).unwrap()
     }
 
     #[test]
@@ -759,7 +754,7 @@ mod tests {
                 "external_fact",
             ),
         ];
-        let g = GalaxyGraph::from_claims(&claims, 300, None, now());
+        let g = GalaxyGraph::from_claims(&claims, 300, None);
         assert_eq!(g.node_count(), 2, "two distinct entities → two nodes");
         let labels: Vec<&str> = g.nodes().iter().map(|n| n.label.as_str()).collect();
         assert!(labels.contains(&"GULF"));
@@ -772,7 +767,7 @@ mod tests {
         let mut unbound = claim(a, "GULF", "p", json!(1), "stocks", "external_fact");
         unbound.entity_id = None;
         let claims = vec![unbound];
-        let g = GalaxyGraph::from_claims(&claims, 300, None, now());
+        let g = GalaxyGraph::from_claims(&claims, 300, None);
         assert_eq!(g.node_count(), 0);
     }
 
@@ -796,7 +791,7 @@ mod tests {
             ));
         }
         // Cap at 2 — only the first two entities (by first-seen) survive.
-        let g = GalaxyGraph::from_claims(&claims, 2, None, now());
+        let g = GalaxyGraph::from_claims(&claims, 2, None);
         assert_eq!(g.node_count(), 2);
         assert_eq!(g.nodes()[0].id, expected_first, "first-seen entity kept");
     }
@@ -809,7 +804,7 @@ mod tests {
             claim(a, "GULF", "p", json!(1), "stocks", "external_fact"),
             claim(b, "PTT", "p", json!(2), "crypto", "external_fact"),
         ];
-        let g = GalaxyGraph::from_claims(&claims, 300, Some("stocks"), now());
+        let g = GalaxyGraph::from_claims(&claims, 300, Some("stocks"));
         assert_eq!(g.node_count(), 1);
         assert_eq!(g.nodes()[0].label, "GULF");
         assert_eq!(g.nodes()[0].domain, "stocks");
@@ -823,7 +818,7 @@ mod tests {
             claim(a, "GULF", "p", json!(2), "stocks", "external_fact"),
             claim(a, "GULF-OLD", "p", json!(3), "stocks", "inference"),
         ];
-        let g = GalaxyGraph::from_claims(&claims, 300, None, now());
+        let g = GalaxyGraph::from_claims(&claims, 300, None);
         // GULF appears twice → label. external_fact appears twice → kind.
         assert_eq!(g.nodes()[0].label, "GULF");
         assert_eq!(g.nodes()[0].kind, "external_fact");
@@ -854,7 +849,7 @@ mod tests {
                 "external_fact",
             ),
         ];
-        let g = GalaxyGraph::from_claims(&claims, 300, None, now());
+        let g = GalaxyGraph::from_claims(&claims, 300, None);
         assert_eq!(
             g.edge_count(),
             1,
@@ -874,7 +869,7 @@ mod tests {
             claim(a, "SHARED", "p", json!(1), "stocks", "external_fact"),
             claim(b, "SHARED", "p", json!(2), "crypto", "external_fact"),
         ];
-        let g = GalaxyGraph::from_claims(&claims, 300, None, now());
+        let g = GalaxyGraph::from_claims(&claims, 300, None);
         assert_eq!(g.edge_count(), 1);
     }
 
@@ -902,7 +897,7 @@ mod tests {
             ),
             claim(ptt, "PTT", "p", json!(1), "stocks", "external_fact"),
         ];
-        let g = GalaxyGraph::from_claims(&claims, 300, None, now());
+        let g = GalaxyGraph::from_claims(&claims, 300, None);
         assert_eq!(g.edge_count(), 1, "deduplicated");
     }
 
@@ -922,7 +917,7 @@ mod tests {
             ),
             claim(ptt, "PTT", "p", json!(1), "stocks", "external_fact"),
         ];
-        let g = GalaxyGraph::from_claims(&claims, 1, None, now());
+        let g = GalaxyGraph::from_claims(&claims, 1, None);
         assert_eq!(g.node_count(), 1);
         assert_eq!(g.edge_count(), 0, "PTT outside cap → edge dropped");
     }
@@ -966,7 +961,7 @@ mod tests {
                 "external_fact",
             ),
         ];
-        let g = GalaxyGraph::from_claims(&claims, 300, None, now());
+        let g = GalaxyGraph::from_claims(&claims, 300, None);
         assert_eq!(g.node_count(), 3);
         // The fixture has exactly 3 distinct value-reference edges; the
         // materializer must produce exactly those 3 (no fabrication, no loss).
@@ -984,7 +979,7 @@ mod tests {
     #[test]
     fn ego_around_empty_when_focus_has_no_claims() {
         let claims: Vec<ClaimView> = vec![];
-        let g = GalaxyGraph::ego_around(&claims, Uuid::new_v4(), 1, now());
+        let g = GalaxyGraph::ego_around(&claims, Uuid::new_v4(), 1);
         assert_eq!(g.node_count(), 0);
         assert_eq!(g.max_nodes(), GraphLod::EgoNeighborhood.node_cap());
     }
@@ -1004,7 +999,7 @@ mod tests {
             ),
             claim(ptt, "PTT", "p", json!(1), "stocks", "external_fact"),
         ];
-        let g = GalaxyGraph::ego_around(&claims, gulf, 1, now());
+        let g = GalaxyGraph::ego_around(&claims, gulf, 1);
         assert!(
             g.node_count() >= 2,
             "focus + at least one neighbor: got {}",
@@ -1029,7 +1024,7 @@ mod tests {
             claim(d, "D", "p", json!(1), "stocks", "external_fact"),
         ];
         // Requested depth 99 is clamped to EGO_MAX_DEPTH (2).
-        let g = GalaxyGraph::ego_around(&claims, a, 99, now());
+        let g = GalaxyGraph::ego_around(&claims, a, 99);
         let ids: Vec<&str> = g.nodes().iter().map(|n| n.id.as_str()).collect();
         assert!(ids.contains(&a.to_string().as_str()));
         assert!(ids.contains(&b.to_string().as_str()));
@@ -1050,7 +1045,7 @@ mod tests {
             claim(a, "A", "r", json!("B"), "stocks", "external_fact"),
             claim(b, "B", "p", json!(1), "stocks", "external_fact"),
         ];
-        let g = GalaxyGraph::from_claims(&claims, 300, None, now());
+        let g = GalaxyGraph::from_claims(&claims, 300, None);
         let payload = g.to_payload(GraphLod::CommunitySupernodes);
         assert_eq!(payload.lod, GraphLod::CommunitySupernodes);
         assert_eq!(payload.max_nodes, 300);
@@ -1063,11 +1058,63 @@ mod tests {
     fn to_payload_serializes_to_json() {
         let a = Uuid::new_v4();
         let claims = vec![claim(a, "A", "p", json!(1), "stocks", "external_fact")];
-        let g = GalaxyGraph::from_claims(&claims, 300, None, now());
+        let g = GalaxyGraph::from_claims(&claims, 300, None);
         let payload = g.to_payload(GraphLod::VisibleNodes);
         let json = serde_json::to_value(&payload).expect("serializes");
         assert_eq!(json["lod"], "visible_nodes");
         assert_eq!(json["node_count"], 1);
         assert_eq!(json["nodes"][0]["label"], "A");
+    }
+
+    // ── most_frequent: determinism (regression) ──────────────────────────────
+
+    /// Direct unit test of the `most_frequent` helper: with equal counts for
+    /// "B" and "A" and "B" seen first, "B" must win — deterministically,
+    /// regardless of HashMap iteration order. Before the fix this returned
+    /// whichever key HashMap happened to yield last, so the result flipped
+    /// run-to-run (frontend flicker, flaky tests).
+    #[test]
+    fn most_frequent_breaks_ties_by_first_seen_deterministically() {
+        // Tied counts; "B" appears first.
+        assert_eq!(
+            most_frequent(["B", "A", "B", "A"].into_iter()),
+            Some("B".to_owned()),
+            "first-seen (B) must win the tie"
+        );
+        // Tied counts; "A" appears first.
+        assert_eq!(
+            most_frequent(["A", "B", "A", "B"].into_iter()),
+            Some("A".to_owned()),
+            "first-seen (A) must win the tie"
+        );
+        // Clear winner ignores first-seen.
+        assert_eq!(
+            most_frequent(["A", "B", "B", "B"].into_iter()),
+            Some("B".to_owned()),
+            "majority wins over first-seen"
+        );
+        // Empty → None.
+        assert_eq!(most_frequent(std::iter::empty::<&str>()), None);
+        // Single element.
+        assert_eq!(most_frequent(["only"].into_iter()), Some("only".to_owned()));
+    }
+
+    /// End-to-end regression: a `from_claims` fixture where the entity has
+    /// exactly tied `subject` counts must resolve the node `label` to the
+    /// first-seen subject, deterministically. The previous implementation was
+    /// non-deterministic on this input.
+    #[test]
+    fn from_claims_label_tie_breaks_by_first_seen_deterministically() {
+        let a = Uuid::new_v4();
+        // Two "A" claims first, then two "B" claims — tied 2-2, "A" first-seen.
+        let claims = vec![
+            claim(a, "A", "p", json!(1), "stocks", "external_fact"),
+            claim(a, "A", "p", json!(2), "stocks", "external_fact"),
+            claim(a, "B", "p", json!(3), "stocks", "external_fact"),
+            claim(a, "B", "p", json!(4), "stocks", "external_fact"),
+        ];
+        let g = GalaxyGraph::from_claims(&claims, 300, None);
+        let node = &g.nodes()[0];
+        assert_eq!(node.label, "A", "first-seen subject must win the tie");
     }
 }
