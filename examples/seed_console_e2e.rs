@@ -230,6 +230,8 @@ fn main() -> ExitCode {
         // XSS payload — DoD #4 (xss-csp.real.spec.ts). MUST render as literal
         // text, never execute. Subject and value both carry payloads so we
         // cover every text-bound field the Console renders.
+        // NOTE: seeded as PENDING (not confirmed) — XSS is only asserted in Inbox,
+        // not Entity (Entity shows confirmed claims only). Don't "fix" by confirming it.
         (
             "e2e-pending-xss",
             "evidence for the XSS row",

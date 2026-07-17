@@ -21,6 +21,14 @@ import { loginAsConsole, gotoNav } from './helpers.ts'
 // full inbox is replenished if the server restarts; within a single server
 // lifetime the proposals consumed here are gone, but tests run in definition
 // order within a file and we pick distinct rows.
+//
+// Pin intra-file order to serial: test 3 approves AAPL (consumes it), test 4
+// rejects GULF (consumes it), test 5 cancels on PTT (leaves it), and tests 1-2
+// rely on all rows being present. With `workers: 1` this is already the
+// behavior, but `mode: 'serial'` makes the intent explicit and survives any
+// future `--shuffle` or `fullyParallel` flip. (This is what the config comment
+// at playwright.config.ts ~L114 refers to.)
+test.describe.configure({ mode: 'serial' })
 
 test.describe('Inbox review (real backend)', () => {
   test.beforeEach(async ({ page }) => {

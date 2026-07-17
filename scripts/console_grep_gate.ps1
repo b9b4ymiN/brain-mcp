@@ -58,13 +58,18 @@ if ($jsFiles.Count -eq 0) {
 }
 
 $pattern = '(?i)(TODO|FIXME|MOCK_DATA|mock_)'
-$matches = @()
+# IMPORTANT: this accumulator MUST NOT be named $matches/$Matches — PowerShell's
+# `-match` operator populates the automatic $Matches variable (case-insensitive
+# name), which would clobber this array on the first hit and turn the `+=` into
+# a "A hash table can only be added to another hash table" stack trace. Use
+# $found; the automatic $Matches[0] below is intentional (matched text capture).
+$found = @()
 foreach ($file in $jsFiles) {
     $lineNum = 0
     foreach ($line in Get-Content $file.FullName) {
         $lineNum++
         if ($line -match $pattern) {
-            $matches += [pscustomobject]@{
+            $found += [pscustomobject]@{
                 File   = $file.FullName
                 Line   = $lineNum
                 Match  = $Matches[0]
@@ -74,10 +79,10 @@ foreach ($file in $jsFiles) {
     }
 }
 
-if ($matches.Count -gt 0) {
+if ($found.Count -gt 0) {
     Write-Host ""
-    Write-Host "[console_grep_gate] FAIL: $($matches.Count) forbidden marker(s) in built bundle:" -ForegroundColor Red
-    $matches | Format-Table -AutoSize
+    Write-Host "[console_grep_gate] FAIL: $($found.Count) forbidden marker(s) in built bundle:" -ForegroundColor Red
+    $found | Format-Table -AutoSize
     Write-Host "Phase E1 DoD #1 NOT satisfied — remove the markers and rebuild." -ForegroundColor Red
     exit 1
 }
