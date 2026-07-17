@@ -267,6 +267,12 @@ pub struct ServeConfig {
     /// Return direct JSON responses in stateless HTTP mode (default: true).
     #[serde(default = "default_mcp_json_response")]
     pub mcp_json_response: bool,
+    /// Dev-grade bootstrap secret for the Console HTTP API (Phase E Task E0.2).
+    /// **Fail-closed:** absent (`None`) means the `/api/v1` Console router is
+    /// not mounted at all — no console API surface exists. Set only for local
+    /// dev; production auth is OAuth (Phase F).
+    #[serde(default)]
+    pub console_dev_bootstrap_secret: Option<String>,
 }
 
 impl Default for ServeConfig {
@@ -288,6 +294,7 @@ impl Default for ServeConfig {
             mcp_completed_cache_ttl_secs: default_mcp_completed_cache_ttl_secs(),
             mcp_stateful_mode: default_mcp_stateful_mode(),
             mcp_json_response: default_mcp_json_response(),
+            console_dev_bootstrap_secret: None,
         }
     }
 }

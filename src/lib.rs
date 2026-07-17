@@ -4,6 +4,11 @@
 
 /// ACP (Agent Client Protocol) transport and session handling.
 pub mod acp;
+/// Console HTTP JSON API (Phase E Task E0.2) — browser-facing `/api/v1/*`
+/// surface with dev-grade session-cookie + double-submit CSRF auth. Reaches
+/// storage only through `SemanticStore` public methods (§9); fail-closed —
+/// mounted by `server` only when a bootstrap secret is configured.
+pub mod api;
 /// CLI argument structs and subcommand enums.
 pub mod cli;
 /// Global and per-wiki configuration types and loaders.

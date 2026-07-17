@@ -125,6 +125,25 @@ async fn serve_http(
         );
     }
 
+    // Console HTTP API (Task E0.2). Fail-closed: only build it when a bootstrap
+    // secret is configured AND a semantic store is attached (F1 lesson — the
+    // gate is on the real serve path, not just a contract). Clone the store
+    // handle out before `server` is moved into the MCP service closure below.
+    let console_api = match (
+        serve_cfg.console_dev_bootstrap_secret.clone(),
+        server.semantic_store.clone(),
+    ) {
+        (Some(secret), Some(store)) if !secret.is_empty() => {
+            tracing::info!("Console HTTP API mounted at /api/v1 (dev bootstrap auth)");
+            Some(crate::api::router(crate::api::ConsoleApiState::new(
+                store,
+                secret,
+                serve_cfg.http_bind_all_interfaces,
+            )))
+        }
+        _ => None,
+    };
+
     let mut session_manager = LocalSessionManager::default();
     session_manager.session_config = session_config;
 
@@ -150,6 +169,11 @@ async fn serve_http(
             .nest_service("/mcp", service)
             .route("/health", axum::routing::get(health_handler))
             .with_state(engine.clone())
+    };
+
+    let router = match console_api {
+        Some(api) => router.nest("/api/v1", api),
+        None => router,
     };
 
     let max_attempts = if serve_cfg.max_restarts == 0 {
