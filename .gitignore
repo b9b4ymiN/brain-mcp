@@ -32,3 +32,12 @@ __pycache__/
 *.pyd
 uv.lock
 
+# web/console — Vite + Svelte 5 Console (Phase E). Build & test artifacts only;
+# source is tracked, generated output is not.
+web/console/node_modules/
+web/console/dist/
+web/console/test-results/
+web/console/playwright-report/
+web/console/playwright/.cache/
+web/console/blob-report/
+
