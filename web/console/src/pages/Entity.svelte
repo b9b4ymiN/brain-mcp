@@ -28,10 +28,12 @@
     ApiError,
     type SubjectClaim,
     type ClaimView,
+    type GalaxyNode,
   } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
-  import { consumePendingSubject } from '../lib/quickSearch'
+  import { consumePendingSubject, setPendingSubject } from '../lib/quickSearch'
   import StateBox from '../components/StateBox.svelte'
+  import GalaxyGraph from '../components/GalaxyGraph.svelte'
   import { formatValue, formatDate } from '../lib/format'
 
   interface Props {
@@ -44,6 +46,13 @@
   let subjectInput = $state('')
   let activeSubject = $state('')
   let submitting = $state(false)
+
+  // View mode toggle — Galaxy is a SUB-VIEW of Entity (the 5-page
+  // ConsolePage Rust enum is locked at 5; Galaxy is never a 6th page).
+  // The plan resolution (see module-level task spec) is: same Entity page,
+  // swap the claims table for an embedded Galaxy graph focused on this
+  // entity (zoom=close, focus=current entity_id) when the user toggles.
+  let viewMode = $state<'table' | 'galaxy'>('table')
 
   // Claims table state.
   let loading = $state(false)
@@ -167,6 +176,25 @@
     const pct = Math.round(Math.max(0, Math.min(1, c)) * 100)
     return `${pct}%`
   }
+
+  /**
+   * Galaxy node → Entity navigation. The current Entity page only knows the
+   * active SUBJECT (string), not the entity_id UUID. We mirror the Home/Search
+   * handoff pattern: stage the clicked node's label as the pending subject
+   * (the galaxy `label` is the claim subject), then re-enter Entity. When
+   * GalaxyGraph is embedded with `focus=entity_id`, the side-panel "Open as
+   * entity" button is the click source; we flip back to table view + stage
+   * the subject so the table loads for the clicked entity.
+   */
+  function onGalaxyNodeClick(node: GalaxyNode): void {
+    setPendingSubject(node.label)
+    viewMode = 'table'
+    // Force a fresh load of the new subject. If the user is ALREADY on this
+    // subject (same subject, just clicked a self-node), the early-return in
+    // viewSubject would skip the load — that's fine; the existing table is
+    // still correct.
+    void viewSubject(node.label)
+  }
 </script>
 
 <section class="page page-entity">
@@ -186,10 +214,45 @@
     </button>
   </form>
 
+  {#if hasLoaded}
+    <div class="view-toggle" role="group" aria-label="Entity view mode">
+      <button
+        type="button"
+        class:active={viewMode === 'table'}
+        onclick={() => (viewMode = 'table')}
+      >
+        Claims table
+      </button>
+      <button
+        type="button"
+        class:active={viewMode === 'galaxy'}
+        onclick={() => (viewMode = 'galaxy')}
+        disabled={claims.length === 0}
+        title={claims.length === 0 ? 'Load a subject first' : 'Graph view focused on this entity'}
+      >
+        Galaxy view
+      </button>
+    </div>
+  {/if}
+
   {#if sessionExpired}
     <p class="state state-error" role="alert">Session expired — sign in again.</p>
   {:else if !hasLoaded}
     <p class="state state-empty">Enter a subject to view its claims.</p>
+  {:else if viewMode === 'galaxy'}
+    {@const focusId = claims.find((c) => c.entity_id !== null)?.entity_id ?? null}
+    <GalaxyGraph
+      {session}
+      zoom="close"
+      focus={focusId ?? undefined}
+      domain={claims[0]?.domain}
+      onNodeClick={onGalaxyNodeClick}
+    />
+    {#if focusId === null}
+      <p class="state state-empty">
+        Showing a domain-wide galaxy — no entity_id on the loaded claims.
+      </p>
+    {/if}
   {:else}
     <StateBox
       loading={loading}
@@ -306,6 +369,38 @@
     color: inherit;
     font: inherit;
     cursor: pointer;
+  }
+
+  .view-toggle {
+    display: inline-flex;
+    border-radius: 0.375rem;
+    overflow: hidden;
+    border: 1px solid rgba(127, 127, 127, 0.45);
+    margin: 0 0 1rem;
+  }
+
+  .view-toggle button {
+    padding: 0.4rem 0.875rem;
+    border: none;
+    border-right: 1px solid rgba(127, 127, 127, 0.35);
+    background: rgba(127, 127, 127, 0.06);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .view-toggle button:last-child {
+    border-right: none;
+  }
+
+  .view-toggle button.active {
+    background: rgba(127, 127, 127, 0.3);
+    font-weight: 600;
+  }
+
+  .view-toggle button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 
   .claims-table {

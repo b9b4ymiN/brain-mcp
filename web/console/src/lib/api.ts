@@ -293,6 +293,54 @@ export interface SupersedeResponse {
   event_seq: number
 }
 
+// ── Galaxy (E2.1/E2.2) ──────────────────────────────────────────────────────
+
+/**
+ * Level-of-detail selected by the Galaxy endpoint, mirrors Rust
+ * `GraphLod` (snake_case serde rename). The endpoint picks one based on the
+ * `zoom` parameter + node_count heuristics; the client must not assume a
+ * particular value for a given zoom — render what's returned.
+ */
+export type GraphLod = 'community_supernodes' | 'visible_nodes' | 'ego_neighborhood'
+
+/**
+ * Edge kinds emitted by the Galaxy materializer, mirrors Rust `EdgeKind`
+ * (`#[serde(rename_all = "snake_case")]`). `related` is the generic
+ * undirected-edge case; `sources` / `supersedes` / `retracts` carry
+ * provenance / supersession / retraction semantics for ego neighborhoods.
+ */
+export type EdgeKind = 'related' | 'sources' | 'supersedes' | 'retracts'
+
+/**
+ * Zoom preference — client-side knob that maps to `max_nodes` and influences
+ * the server-chosen `GraphLod`. Mirrors Rust `ZoomLevel` (snake_case).
+ */
+export type ZoomLevel = 'far' | 'mid' | 'close'
+
+/** Galaxy node — a claim (or community supernode at far zoom). */
+export interface GalaxyNode {
+  id: Uuid
+  label: string
+  kind: string
+  domain: string
+}
+
+/** Galaxy edge between two node ids (referenced by `id`). */
+export interface GalaxyEdge {
+  source: Uuid
+  target: Uuid
+  kind: EdgeKind
+}
+
+/** `GET /galaxy` body — the bounded subgraph materializer result (E2.1). */
+export interface GalaxyPayload {
+  lod: GraphLod
+  max_nodes: number
+  node_count: number
+  nodes: GalaxyNode[]
+  edges: GalaxyEdge[]
+}
+
 // ── parameter shapes ────────────────────────────────────────────────────────
 
 export interface SearchParams {
@@ -375,6 +423,24 @@ export async function evidence(proposalId: Uuid): Promise<EvidenceSummary> {
   return request<EvidenceSummary>({
     method: 'GET',
     path: `/inbox/${encodeURIComponent(proposalId)}/evidence`,
+  })
+}
+
+/**
+ * `GET /galaxy?domain=&zoom=far|mid|close&focus=<uuid>` — bounded subgraph
+ * materializer (E2.1). Session required (401 without cookie); GET so no CSRF.
+ * The endpoint selects the `lod` server-side; the client renders whatever it
+ * returns. `focus` pins an ego-neighborhood around a specific entity.
+ */
+export async function galaxy(params: {
+  domain?: string
+  zoom?: ZoomLevel
+  focus?: string
+}): Promise<GalaxyPayload> {
+  return request<GalaxyPayload>({
+    method: 'GET',
+    path: '/galaxy',
+    query: { domain: params.domain, zoom: params.zoom, focus: params.focus },
   })
 }
 

@@ -17,9 +17,15 @@
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "@tsconfig/svelte": "^5.0.8",
     "@types/node": "^24.13.2",
+    "@types/three": "^0.185.1",
     "svelte": "^5.56.4",
     "svelte-check": "^4.7.1",
     "typescript": "~6.0.2",
     "vite": "^8.1.1"
+  },
+  "dependencies": {
+    "3d-force-graph": "^1.80.0",
+    "force-graph": "^1.51.4",
+    "three": "^0.185.1"
   }
 }
