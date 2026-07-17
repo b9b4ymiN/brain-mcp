@@ -139,13 +139,13 @@
       </form>
     </section>
   {:else if currentPage === 'home'}
-    <Home />
+    <Home {session} />
   {:else if currentPage === 'search'}
-    <Search />
+    <Search {session} />
   {:else if currentPage === 'inbox'}
     <Inbox />
   {:else if currentPage === 'entity'}
-    <Entity />
+    <Entity {session} />
   {:else if currentPage === 'operations'}
     <Operations />
   {/if}

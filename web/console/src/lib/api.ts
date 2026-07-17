@@ -160,6 +160,14 @@ async function request<T>(opts: RequestOptions): Promise<T> {
   }
 
   if (!response.ok) {
+    // Session-expiry recovery: on 401 the cookie session is dead, so drop the
+    // cached CSRF token now — otherwise subsequent mutation POSTs keep attaching
+    // a stale token and the UI looks "stuck logged in" until reload. The
+    // session store separately flips `isLoggedIn` (via its own csrf state) once
+    // a page observes the 401 and calls `session.clear()`.
+    if (response.status === 401) {
+      csrfToken = null
+    }
     const code =
       typeof payload === 'object' &&
       payload !== null &&

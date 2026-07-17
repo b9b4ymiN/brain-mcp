@@ -53,6 +53,18 @@ export interface SessionStore {
 export function createSessionStore(): SessionStore {
   let csrf = $state<string | null>(null)
   let flash = $state<Flash | null>(null)
+  // Auto-dismiss timer id for the current flash. We track it so a new flash
+  // replaces (not stacks with) the previous timer — otherwise rapid re-pushes
+  // leak timeouts and the last-spawned one fires early. Cleared on dismiss.
+  let flashTimer: ReturnType<typeof setTimeout> | null = null
+  const FLASH_AUTO_DISMISS_MS = 6000
+
+  function clearFlashTimer(): void {
+    if (flashTimer !== null) {
+      clearTimeout(flashTimer)
+      flashTimer = null
+    }
+  }
 
   return {
     get csrf(): string | null {
@@ -74,12 +86,23 @@ export function createSessionStore(): SessionStore {
       csrf = null
       flash = null
       setCsrfToken(null)
+      clearFlashTimer()
     },
     pushFlash(kind: FlashKind, text: string): void {
+      // Replace any pending auto-dismiss timer before staging a new one. This
+      // keeps at most one in-flight timer per store and prevents leaks when
+      // the caller pushes a fresh banner while the old one is still counting
+      // down. The manual `x` button (clearFlash) also cancels the timer.
+      clearFlashTimer()
       flash = { kind, text }
+      flashTimer = setTimeout(() => {
+        flashTimer = null
+        flash = null
+      }, FLASH_AUTO_DISMISS_MS)
     },
     clearFlash(): void {
       flash = null
+      clearFlashTimer()
     },
   }
 }
