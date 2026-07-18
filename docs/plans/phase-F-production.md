@@ -15,7 +15,7 @@
   amended below to "amd64 (arm64 DEFERRED)". Re-enable when an Oracle ARM host
   or CI runner is available.
 
-## Task F1 — Reproducible deployment (Docker Compose, multi-arch)
+## Task F1 — Reproducible deployment (Docker Compose, multi-arch) ✅ CLOSED amd64 (`9e3d6ba`, `41a1406`, `e5f7b41`)
 - Dockerfile multi-stage (pinned base + toolchain) + `docker-compose.yml` (contract `DeploymentManifest` Task 6.1)
 - `docker buildx build --platform linux/amd64` (F1.3); arm64 DEFERRED — see 2026-07-18 decision above
 - Secrets ผ่าน Docker secrets/secret files — ไม่ bake ใน image/compose/repo
@@ -23,11 +23,13 @@
 - TLS + bind: default loopback (Phase B); production 0.0.0.0 เฉพาะหลัง reverse proxy + auth (ผูก Phase D worker auth)
 
 **DoD (§13 Task 6.1):**
-1. `docker compose up` บน clean host ผ่าน smoke/health/MCP/Console checks — **amd64 (arm64 DEFERRED — QEMU binfmt setup skipped per user 2026-07-18; re-enable when Oracle ARM host or CI runner available)**
-2. images build+test `linux/amd64` (arm64 DEFERRED per 2026-07-18 decision); deps/toolchain/base pinned (rust:1.95-bookworm, node:20-bookworm, debian:bookworm-slim)
-3. HTTPS/domain/secrets/volumes/migrations/backup จาก runbook บน clean host ได้
-4. health ไม่รายงาน ready ก่อน checks ผ่าน (negative test) — F1.3: `ReadinessCheck::is_ready()` returns false when any gate fails (unit tests in `tests/deployment_contract_v1.rs`)
-5. ไม่มี secret ใน image layers (scan gate)
+1. ✅ `docker compose up` บน clean host ผ่าน smoke/health/MCP/Console checks — **amd64 (arm64 DEFERRED — QEMU binfmt setup skipped per user 2026-07-18; re-enable when Oracle ARM host or CI runner available)**
+2. ✅ images build+test `linux/amd64` (arm64 DEFERRED per 2026-07-18 decision); deps/toolchain/base pinned (rust:1.95-bookworm, node:20-bookworm, debian:bookworm-slim)
+3. ✅ HTTPS/domain/secrets/volumes/migrations/backup จาก runbook บน clean host ได้ (`docs/guides/deploy-docker.md`)
+4. ✅ health ไม่รายงาน ready ก่อน checks ผ่าน (negative test) — F1.3: `ReadinessCheck::is_ready()` returns false when any gate fails (9 tests in `tests/deployment_contract_v1.rs`); `from_runtime` real producer
+5. ✅ ไม่มี secret ใน image layers (scan gate) — `docker history` clean, `docker inspect Config.Env` clean, secret via `_file:` Docker secret
+
+Sub-tasks: F1.1 (`9e3d6ba`) · F1.2 (`41a1406`) · F1.3 (`e5f7b41`) — ผ่าน combined spec+quality review (APPROVED/APPROVED/APPROVED); cargo test 9+7+44 green, fmt+clippy clean, docker smoke green (health + login 401/200 + console index + secret-scan + /ready)
 
 ## Task F2 — Observability + operations wiring *(ปิด contract-only Task 6.2)*
 - Wire `LogRedactor` เข้า log path จริง; structured logs/metrics/traces/queue-depth/projection-lag/auth-failures/storage alerts
