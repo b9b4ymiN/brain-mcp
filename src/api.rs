@@ -38,12 +38,21 @@ use uuid::Uuid;
 
 use crate::galaxy::{GalaxyGraph, ZoomLevel};
 use crate::semantic::{
-    ConfirmByProposalIdCommand, RejectByProposalIdCommand, SemanticError, SemanticStore,
-    SupersedeByProposalIdCommand, TrustedContext,
+    ConfirmByProposalIdCommand, MergeEntitiesCommand, PredicateAssignment,
+    RejectByProposalIdCommand, RetractCommand, SemanticError, SemanticStore, SplitCommand,
+    SplitOutcome, SupersedeByProposalIdCommand, TrustedContext,
 };
+use crate::trust::{DestructiveAction, DestructiveWarning};
 
 const SESSION_COOKIE: &str = "brain_console_session";
 const CSRF_HEADER: &str = "X-CSRF-Token";
+
+/// How long a recent re-authentication stays "fresh" for destructive actions
+/// (§5.3 "recent re-auth"). A session may invoke `/purge/execute` only while
+/// `now - reauthenticated_at <= PURGE_REAUTH_FRESHNESS`. The window is short on
+/// purpose: hard purge is irreversible, so the gate forces a fresh proof of
+/// the bootstrap secret close to the moment of impact.
+const PURGE_REAUTH_FRESHNESS: Duration = Duration::seconds(300);
 
 /// Ring-buffer depth for the in-process event broadcast. A subscriber that
 /// falls this far behind gets a `Lagged` signal (surfaced as an SSE comment)
@@ -63,10 +72,19 @@ pub const CONSOLE_CSP: &str = "default-src 'self'; script-src 'self'; style-src 
 /// A live Console session. Server-side half of the auth pair; the CSRF token
 /// is echoed to the client in the login response body (NOT in the HttpOnly
 /// cookie) so the frontend JS can read it and resubmit it on mutations.
+///
+/// `issued_at` records when the session was minted (login time) and is
+/// immutable for the session's life. `reauthenticated_at` is bumped by
+/// `/auth/reauth` and is the freshness marker the destructive-action gate
+/// (`/purge/execute`) checks — `None` means "never re-authed since login", so
+/// the very first hard-purge attempt always requires a re-auth even on a
+/// brand-new session.
 struct Session {
     context: TrustedContext,
     csrf_token: String,
     expires_at: DateTime<Utc>,
+    issued_at: DateTime<Utc>,
+    reauthenticated_at: Option<DateTime<Utc>>,
 }
 
 /// Shared state for the Console API router. Cheap to clone — every field is
@@ -77,6 +95,12 @@ pub struct ConsoleApiState {
     sessions: Arc<RwLock<HashMap<String, Session>>>,
     bootstrap_secret: Arc<String>,
     session_ttl: Duration,
+    /// Destructive-action re-auth freshness window (§5.3 "recent re-auth").
+    /// `/purge/execute` rejects a session whose freshness anchor
+    /// (`reauthenticated_at.unwrap_or(issued_at)`) is older than this. Defaults
+    /// to [`PURGE_REAUTH_FRESHNESS`]; the separate field exists so the contract
+    /// tests can exercise the gate without waiting 300s in real time.
+    reauth_freshness: Duration,
     /// Adds `Secure` to the session cookie. Set when the server binds a
     /// non-loopback interface (mirrors the existing bind-address posture);
     /// omitted for loopback dev so cookies work over plain http.
@@ -106,9 +130,27 @@ impl ConsoleApiState {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             bootstrap_secret: Arc::new(bootstrap_secret),
             session_ttl,
+            reauth_freshness: PURGE_REAUTH_FRESHNESS,
             secure_cookie,
             events: Arc::new(events),
         }
+    }
+
+    /// Test seam: same as [`Self::with_session_ttl`] but also pins the
+    /// destructive-action re-auth freshness window. Lets the contract tests
+    /// force a session to be "stale" for hard-purge purposes without waiting
+    /// [`PURGE_REAUTH_FRESHNESS`] in wall-clock time.
+    #[doc(hidden)]
+    pub fn with_session_ttl_and_reauth_freshness(
+        store: Arc<SemanticStore>,
+        bootstrap_secret: String,
+        secure_cookie: bool,
+        session_ttl: Duration,
+        reauth_freshness: Duration,
+    ) -> Self {
+        let mut state = Self::with_session_ttl(store, bootstrap_secret, secure_cookie, session_ttl);
+        state.reauth_freshness = reauth_freshness;
+        state
     }
 
     /// Publisher handle for the `/events` broadcast. Anything in-process can
@@ -123,6 +165,7 @@ pub fn router(state: ConsoleApiState) -> Router {
     Router::new()
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
+        .route("/auth/reauth", post(reauth))
         .route("/events", get(events))
         .route("/search", get(search))
         .route("/get", get(get_subject))
@@ -133,6 +176,19 @@ pub fn router(state: ConsoleApiState) -> Router {
         .route("/inbox/{proposal_id}/reject", post(reject))
         .route("/inbox/{proposal_id}/supersede", post(supersede))
         .route("/galaxy", get(galaxy))
+        // E3.2 — trust + operations + entity-mutation + purge surfaces.
+        .route("/trust", get(trust))
+        .route("/ops/clients", get(ops_clients))
+        .route("/ops/jobs", get(ops_jobs))
+        .route("/ops/evals", get(ops_evals))
+        .route("/ops/backup-health", get(ops_backup_health))
+        .route("/destructive/warning", get(destructive_warning))
+        .route("/entity/merge", post(entity_merge))
+        .route("/entity/split", post(entity_split))
+        .route("/claim/{claim_operation_id}/retract", post(entity_retract))
+        .route("/purge/preview", post(purge_preview))
+        .route("/purge/execute", post(purge_execute))
+        .route("/purge/status", get(purge_status))
         .with_state(state)
 }
 
@@ -161,6 +217,15 @@ impl ApiError {
 
     fn invalid_request() -> Self {
         Self::new(StatusCode::BAD_REQUEST, "invalid_request")
+    }
+
+    /// 403 `reauth_required` — the destructive-action freshness gate. Hard
+    /// purge (§5.3 "recent re-auth") requires a `/auth/reauth` within the last
+    /// `PURGE_REAUTH_FRESHNESS` seconds; this fires when that window has lapsed
+    /// (or the session has never re-authed). Distinct from `forbidden` so the
+    /// UI can prompt specifically for re-auth rather than a generic denial.
+    fn reauth_required() -> Self {
+        Self::new(StatusCode::FORBIDDEN, "reauth_required")
     }
 }
 
@@ -248,11 +313,23 @@ fn expired_cookie_header(secure: bool) -> String {
     cookie
 }
 
-/// The result of a successful session lookup, used by both extractors.
+/// The result of a successful session lookup, used by both extractors. The
+/// `freshness_anchor` is the timestamp the destructive-action gate compares
+/// against `PURGE_REAUTH_FRESHNESS`: `reauthenticated_at` if the session has
+/// re-authed since login, else `issued_at`.
 struct ResolvedSession {
     session_id: String,
     context: TrustedContext,
     csrf_token: String,
+    issued_at: DateTime<Utc>,
+    reauthenticated_at: Option<DateTime<Utc>>,
+}
+
+impl ResolvedSession {
+    /// The anchor for the destructive-action freshness gate.
+    fn freshness_anchor(&self) -> DateTime<Utc> {
+        self.reauthenticated_at.unwrap_or(self.issued_at)
+    }
 }
 
 /// Looks up and validates the session cookie. `401` on missing / unknown /
@@ -279,6 +356,8 @@ fn resolve_session(
         session_id,
         context: session.context.clone(),
         csrf_token: session.csrf_token.clone(),
+        issued_at: session.issued_at,
+        reauthenticated_at: session.reauthenticated_at,
     })
 }
 
@@ -306,9 +385,26 @@ impl FromRequestParts<ConsoleApiState> for AuthSession {
 
 /// Extractor for mutating routes: valid session (`401`) AND a matching
 /// `X-CSRF-Token` header (`403`). Session is checked first so no-session always
-/// wins as 401 even on a mutating route.
+/// wins as 401 even on a mutating route. Carries the `freshness_anchor` so the
+/// destructive-action handler can enforce the re-auth window without re-walking
+/// the session table.
 struct CsrfSession {
     context: TrustedContext,
+    freshness_anchor: DateTime<Utc>,
+}
+
+impl CsrfSession {
+    /// Destructive-action freshness gate (§5.3 "recent re-auth"). Returns
+    /// `reauth_required` (403) if the session's freshness anchor is older than
+    /// the state's configured re-auth window. Callers are mutating handlers
+    /// that the irreversibility warning explicitly flags as
+    /// `requires_recent_reauth` (today: hard purge only).
+    fn require_purge_freshness(&self, state: &ConsoleApiState) -> Result<(), ApiError> {
+        if Utc::now().signed_duration_since(self.freshness_anchor) > state.reauth_freshness {
+            return Err(ApiError::reauth_required());
+        }
+        Ok(())
+    }
 }
 
 impl FromRequestParts<ConsoleApiState> for CsrfSession {
@@ -327,8 +423,10 @@ impl FromRequestParts<ConsoleApiState> for CsrfSession {
         if !constant_time_eq(provided.as_bytes(), resolved.csrf_token.as_bytes()) {
             return Err(ApiError::forbidden_csrf());
         }
+        let freshness_anchor = resolved.freshness_anchor();
         Ok(CsrfSession {
             context: resolved.context,
+            freshness_anchor,
         })
     }
 }
@@ -354,13 +452,16 @@ async fn login(State(state): State<ConsoleApiState>, body: Option<Json<LoginRequ
     };
     let session_id = Uuid::new_v4().to_string();
     let csrf_token = Uuid::new_v4().to_string();
-    let expires_at = Utc::now() + state.session_ttl;
+    let now = Utc::now();
+    let expires_at = now + state.session_ttl;
     state.sessions.write().insert(
         session_id.clone(),
         Session {
             context,
             csrf_token: csrf_token.clone(),
             expires_at,
+            issued_at: now,
+            reauthenticated_at: None,
         },
     );
 
@@ -649,6 +750,456 @@ async fn galaxy(
     };
 
     Ok(Json(graph.to_payload(lod)).into_response())
+}
+
+// ── trust + operations + destructive-warning (Task E3.2) ────────────────────
+
+/// Query params for `GET /api/v1/trust`. `staleness_threshold_days` defaults to
+/// 90 (§5.3 ballpark "stale" horizon); `retrieval_query` optionally populates
+/// the `retrieval_trace` field so the UI can show why a retrieval returned what
+/// it did.
+#[derive(Deserialize)]
+struct TrustParams {
+    staleness_threshold_days: Option<u32>,
+    retrieval_query: Option<String>,
+}
+
+/// `GET /api/v1/trust` — the trust surface for the Console (Task E3.2).
+///
+/// Returns the live `contradictions` + `stale` flag sets plus an optional
+/// `retrieval_trace`. Session required (no CSRF — read-only). The two scanners
+/// run against the current ledger head + `Utc::now()`; the optional
+/// `retrieval_query` populates `retrieval_trace` so the same call can answer
+/// "what's contested AND what would a search for X return/exclude".
+async fn trust(
+    State(state): State<ConsoleApiState>,
+    _session: AuthSession,
+    Query(params): Query<TrustParams>,
+) -> Result<Response, ApiError> {
+    let threshold = params.staleness_threshold_days.unwrap_or(90);
+    let now = Utc::now();
+    let head = state
+        .store
+        .ledger_head()
+        .map_err(|e| map_semantic_error(&e))?;
+    let contradictions = state
+        .store
+        .contradictions(head, now)
+        .map_err(|e| map_semantic_error(&e))?;
+    let stale = state
+        .store
+        .staleness(head, threshold, now)
+        .map_err(|e| map_semantic_error(&e))?;
+    let retrieval_trace = match &params.retrieval_query {
+        Some(query) if !query.is_empty() => {
+            let trace = state
+                .store
+                .retrieval_trace(query, 10, head, now)
+                .map_err(|e| map_semantic_error(&e))?;
+            Some(trace)
+        }
+        _ => None,
+    };
+    Ok(Json(json!({
+        "contradictions": contradictions,
+        "stale": stale,
+        "retrieval_trace": retrieval_trace,
+    }))
+    .into_response())
+}
+
+/// `GET /api/v1/ops/clients` — registered-client activity audit (§9.1 ops
+/// item 7). Bare `Vec<ClientActivity>`. Session required; no CSRF.
+async fn ops_clients(
+    State(state): State<ConsoleApiState>,
+    _session: AuthSession,
+) -> Result<Response, ApiError> {
+    let clients = state
+        .store
+        .list_clients()
+        .map_err(|e| map_semantic_error(&e))?;
+    Ok(Json(clients).into_response())
+}
+
+/// `GET /api/v1/ops/jobs` — async-job queue summary for the operations
+/// dashboard. Session required; no CSRF.
+async fn ops_jobs(
+    State(state): State<ConsoleApiState>,
+    _session: AuthSession,
+) -> Result<Response, ApiError> {
+    let summary = state
+        .store
+        .job_summary()
+        .map_err(|e| map_semantic_error(&e))?;
+    Ok(Json(summary).into_response())
+}
+
+/// Query params for `GET /api/v1/ops/evals`. `domain` is required — the eval
+/// summary is per-domain (different domains have different eval suites).
+#[derive(Deserialize)]
+struct EvalsParams {
+    domain: Option<String>,
+}
+
+/// `GET /api/v1/ops/evals?domain=X` — last domain-eval run summary. `domain`
+/// is required; missing → 400 `invalid_request`. Session required; no CSRF.
+async fn ops_evals(
+    State(state): State<ConsoleApiState>,
+    _session: AuthSession,
+    Query(params): Query<EvalsParams>,
+) -> Result<Response, ApiError> {
+    let Some(domain) = params.domain.as_deref() else {
+        return Err(ApiError::invalid_request());
+    };
+    if domain.is_empty() {
+        return Err(ApiError::invalid_request());
+    }
+    let summary = state
+        .store
+        .eval_summary(domain)
+        .map_err(|e| map_semantic_error(&e))?;
+    Ok(Json(summary).into_response())
+}
+
+/// `GET /api/v1/ops/backup-health` — backup/restore-drill health. Session
+/// required; no CSRF.
+async fn ops_backup_health(
+    State(state): State<ConsoleApiState>,
+    _session: AuthSession,
+) -> Result<Response, ApiError> {
+    let health = state
+        .store
+        .backup_health()
+        .map_err(|e| map_semantic_error(&e))?;
+    Ok(Json(health).into_response())
+}
+
+/// Query params for `GET /api/v1/destructive/warning?action=...`. `action` is
+/// required and must be one of `hard_purge` / `entity_merge` / `entity_split`.
+#[derive(Deserialize)]
+struct DestructiveWarningParams {
+    action: Option<String>,
+}
+
+/// Parse the `action` query param into a [`DestructiveAction`]. Unknown or
+/// missing values are a 400 `invalid_request`.
+fn parse_destructive_action(raw: &Option<String>) -> Result<DestructiveAction, ApiError> {
+    match raw.as_deref() {
+        Some("hard_purge") => Ok(DestructiveAction::HardPurge),
+        Some("entity_merge") => Ok(DestructiveAction::EntityMerge),
+        Some("entity_split") => Ok(DestructiveAction::EntitySplit),
+        _ => Err(ApiError::invalid_request()),
+    }
+}
+
+/// `GET /api/v1/destructive/warning?action=hard_purge|entity_merge|entity_split`
+/// (Task E3.2 DoD #2). Returns the [`DestructiveWarning`] the UI MUST display
+/// before confirming the action. The warning's `message` states "no undo" /
+/// "cannot be recovered" for hard purge; `requires_recent_reauth` +
+/// `requires_two_step_nonce` flag the gates the client must satisfy first.
+/// Session required; no CSRF — it is a read.
+async fn destructive_warning(
+    _state: State<ConsoleApiState>,
+    _session: AuthSession,
+    Query(params): Query<DestructiveWarningParams>,
+) -> Result<Response, ApiError> {
+    let action = parse_destructive_action(&params.action)?;
+    Ok(Json(DestructiveWarning::for_action(action)).into_response())
+}
+
+// ── entity mutations (Task E3.2) ────────────────────────────────────────────
+
+/// `POST /api/v1/entity/merge` body. `operation_id` is optional — if absent the
+/// server mints a fresh UUIDv4, so a one-shot client doesn't have to.
+#[derive(Deserialize)]
+struct EntityMergeRequest {
+    source: Uuid,
+    target: Uuid,
+    operation_id: Option<String>,
+}
+
+/// `POST /api/v1/entity/merge` — merge source entity into target (Task 2.2).
+/// Every claim on the source is rewritten onto the target; the source's
+/// subject becomes a backlink. CSRF + session required. Returns
+/// `{status:"merged", event_seq}`.
+async fn entity_merge(
+    State(state): State<ConsoleApiState>,
+    session: CsrfSession,
+    Json(body): Json<EntityMergeRequest>,
+) -> Result<Response, ApiError> {
+    let operation_id = body
+        .operation_id
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let outcome = state
+        .store
+        .merge_entities(
+            &session.context,
+            MergeEntitiesCommand {
+                operation_id,
+                source_entity_id: body.source,
+                target_entity_id: body.target,
+            },
+        )
+        .map_err(|e| map_semantic_error(&e))?;
+    Ok(Json(json!({
+        "status": "merged",
+        "event_seq": outcome.event.event_seq,
+    }))
+    .into_response())
+}
+
+/// One predicate → target assignment in the `POST /api/v1/entity/split` body.
+#[derive(Deserialize)]
+struct SplitAssignmentBody {
+    predicate: String,
+    target_entity_id: Uuid,
+}
+
+/// `POST /api/v1/entity/split` body. `operation_id` is optional (server-mints
+/// a UUIDv4 if absent).
+#[derive(Deserialize)]
+struct EntitySplitRequest {
+    source: Uuid,
+    assignments: Vec<SplitAssignmentBody>,
+    operation_id: Option<String>,
+}
+
+/// `POST /api/v1/entity/split` — split source entity by predicate (Task E3.1).
+/// Each claim on the source whose predicate matches an assignment is rewritten
+/// onto that assignment's target; predicates not listed stay on the source.
+/// CSRF + session required. Returns `{status:"split", event_seq,
+/// moved_claim_count, source_remaining_claim_count}` — the two counts come
+/// from the structured [`SplitOutcome`] re-derived from the emitted event.
+async fn entity_split(
+    State(state): State<ConsoleApiState>,
+    session: CsrfSession,
+    Json(body): Json<EntitySplitRequest>,
+) -> Result<Response, ApiError> {
+    let operation_id = body
+        .operation_id
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let source_entity_id = body.source;
+    let assignments: Vec<PredicateAssignment> = body
+        .assignments
+        .into_iter()
+        .map(|a| PredicateAssignment {
+            predicate: a.predicate,
+            target_entity_id: a.target_entity_id,
+        })
+        .collect();
+    let outcome = state
+        .store
+        .split_entities(
+            &session.context,
+            SplitCommand {
+                operation_id,
+                source_entity_id,
+                assignments,
+            },
+        )
+        .map_err(|e| map_semantic_error(&e))?;
+    // The structured view (counts + moved claims) is reconstructed from the
+    // emitted `entity_split` event via the same helper the contract tests use.
+    let view: SplitOutcome = state
+        .store
+        .last_split_outcome_for(&session.context, source_entity_id)
+        .map_err(|e| map_semantic_error(&e))?
+        .ok_or_else(|| {
+            // Should be unreachable: split_entities just emitted the event.
+            tracing::error!(
+                source_entity_id = %source_entity_id,
+                "split_entities emitted no event the outcome helper could find"
+            );
+            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+        })?;
+    Ok(Json(json!({
+        "status": "split",
+        "event_seq": outcome.event.event_seq,
+        "moved_claim_count": view.moved_claims.len(),
+        "source_remaining_claim_count": view.source_remaining_claim_count,
+    }))
+    .into_response())
+}
+
+/// `POST /api/v1/claim/{claim_operation_id}/retract` body. `operation_id` is
+/// optional. The path's `claim_operation_id` is the proposer's `operation_id`
+/// of the confirm that minted the claim — the [`RetractCommand`] resolves the
+/// claim from it, so the API speaks the same operation-id currency the rest
+/// of the ledger uses (NOT the raw claim UUID, which the client rarely has).
+#[derive(Deserialize)]
+struct RetractRequest {
+    operation_id: Option<String>,
+}
+
+/// `POST /api/v1/claim/{claim_operation_id}/retract` — retract a confirmed
+/// claim. History and evidence are kept; the claim stops being current. CSRF +
+/// session required. The `entity_id` route the spec suggested is wrong: retract
+/// is per-claim, so this route is keyed on the claim's confirm operation_id.
+async fn entity_retract(
+    State(state): State<ConsoleApiState>,
+    session: CsrfSession,
+    Path(claim_operation_id): Path<String>,
+    body: Option<Json<RetractRequest>>,
+) -> Result<Response, ApiError> {
+    let operation_id = body
+        .and_then(|Json(b)| b.operation_id)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let outcome = state
+        .store
+        .retract(
+            &session.context,
+            RetractCommand {
+                operation_id,
+                claim_operation_id,
+            },
+        )
+        .map_err(|e| map_semantic_error(&e))?;
+    Ok(Json(json!({
+        "status": "retracted",
+        "event_seq": outcome.event.event_seq,
+    }))
+    .into_response())
+}
+
+// ── hard purge (Task E3.2 — preview / execute / status) ─────────────────────
+
+/// `POST /api/v1/purge/preview` body. `object_ids` are the content keys the
+/// caller wants irreversibly purged.
+#[derive(Deserialize)]
+struct PurgePreviewRequest {
+    object_ids: Vec<String>,
+}
+
+/// `POST /api/v1/purge/preview` — phase 1 of the hard-purge flow. Returns the
+/// [`PurgePreview`] (preview_hash + nonce + targets + expiry) PLUS the
+/// `warning` string the UI MUST display before the execute step (Task E3.2
+/// DoD #2). CSRF + session required. The nonce + preview_hash must be echoed
+/// back to `/purge/execute`.
+async fn purge_preview(
+    State(state): State<ConsoleApiState>,
+    _session: CsrfSession,
+    Json(body): Json<PurgePreviewRequest>,
+) -> Result<Response, ApiError> {
+    let preview = state
+        .store
+        .purge_preview(&body.object_ids)
+        .map_err(|e| map_semantic_error(&e))?;
+    let warning = DestructiveWarning::for_action(DestructiveAction::HardPurge);
+    Ok(Json(json!({
+        "preview": preview,
+        "warning": warning,
+    }))
+    .into_response())
+}
+
+/// `POST /api/v1/purge/execute` body. `preview_hash` + `nonce` come from a
+/// prior `/purge/preview`; `operation_id` is optional (server-mints if absent).
+#[derive(Deserialize)]
+struct PurgeExecuteRequest {
+    preview_hash: String,
+    nonce: String,
+    operation_id: Option<String>,
+}
+
+/// `POST /api/v1/purge/execute` — phase 2 of the hard-purge flow. Three gates
+/// all must pass:
+///
+/// 1. CSRF + valid session (the [`CsrfSession`] extractor).
+/// 2. Recent re-auth — the session's freshness anchor must be within
+///    [`PURGE_REAUTH_FRESHNESS`] (§5.3 "recent re-auth"). Else 403
+///    `reauth_required`, which the UI surfaces as "re-enter secret".
+/// 3. The semantic gate — correct `preview_hash` for the `nonce`, nonce
+///    unused + unexpired, `purge` capability held (checked inside
+///    [`SemanticStore::purge_execute`]).
+///
+/// Returns the `PurgeReceipt` (saga state, eventually `completed` with a
+/// composite_checksum).
+async fn purge_execute(
+    State(state): State<ConsoleApiState>,
+    session: CsrfSession,
+    Json(body): Json<PurgeExecuteRequest>,
+) -> Result<Response, ApiError> {
+    // Gate 2: recent re-auth. Hard purge is the one action whose warning has
+    // `requires_recent_reauth = true`; the check lives here rather than in the
+    // store so the auth-freshness policy stays in the API layer.
+    session.require_purge_freshness(&state)?;
+    let operation_id = body
+        .operation_id
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let receipt = state
+        .store
+        .purge_execute(
+            &session.context,
+            &operation_id,
+            &body.preview_hash,
+            &body.nonce,
+        )
+        .map_err(|e| map_semantic_error(&e))?;
+    Ok(Json(receipt).into_response())
+}
+
+/// Query params for `GET /api/v1/purge/status?purge_id=...`.
+#[derive(Deserialize)]
+struct PurgeStatusParams {
+    purge_id: Uuid,
+}
+
+/// `GET /api/v1/purge/status?purge_id=<uuid>` — current state of a hard-purge
+/// saga without advancing it. Read-only, so session-only (no CSRF). Returns the
+/// `PurgeReceipt`.
+async fn purge_status(
+    State(state): State<ConsoleApiState>,
+    _session: AuthSession,
+    Query(params): Query<PurgeStatusParams>,
+) -> Result<Response, ApiError> {
+    let receipt = state
+        .store
+        .purge_status(params.purge_id)
+        .map_err(|e| map_semantic_error(&e))?;
+    Ok(Json(receipt).into_response())
+}
+
+// ── auth: re-authentication (Task E3.2) ─────────────────────────────────────
+
+/// `POST /api/v1/auth/reauth` body — the bootstrap secret again. Same shape as
+/// `LoginRequest` so the client can reuse the same form.
+#[derive(Deserialize)]
+struct ReauthRequest {
+    secret: String,
+}
+
+/// `POST /api/v1/auth/reauth` — re-validate the bootstrap secret against an
+/// EXISTING session and bump its freshness anchor (§5.3 "recent re-auth"). The
+/// destructive-action gate (`/purge/execute`) compares
+/// `reauthenticated_at.unwrap_or(issued_at)` against
+/// [`PURGE_REAUTH_FRESHNESS`]; without a re-auth after login, hard purge is
+/// blocked. Requires a valid session (AuthSession); wrong secret → 401. Returns
+/// `{reauthenticated:true, fresh_for_seconds:300}`.
+async fn reauth(
+    State(state): State<ConsoleApiState>,
+    session: AuthSession,
+    body: Option<Json<ReauthRequest>>,
+) -> Response {
+    let Some(Json(body)) = body else {
+        return ApiError::invalid_request().into_response();
+    };
+    if !constant_time_eq(body.secret.as_bytes(), state.bootstrap_secret.as_bytes()) {
+        return ApiError::unauthorized().into_response();
+    }
+    let now = Utc::now();
+    let mut sessions = state.sessions.write();
+    let Some(entry) = sessions.get_mut(&session.session_id) else {
+        // Evicted between extractor and handler — treat as unauthenticated.
+        return ApiError::unauthorized().into_response();
+    };
+    entry.reauthenticated_at = Some(now);
+    let fresh_for_seconds = state.reauth_freshness.num_seconds();
+    drop(sessions);
+    Json(json!({
+        "reauthenticated": true,
+        "fresh_for_seconds": fresh_for_seconds,
+    }))
+    .into_response()
 }
 
 // ── review routes ───────────────────────────────────────────────────────────

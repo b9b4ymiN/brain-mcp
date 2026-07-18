@@ -803,3 +803,68 @@ fn split_entities_rejects_cross_domain() {
         "expected InvalidTransition, got {err:?}"
     );
 }
+
+/// Two `PredicateAssignment`s with the SAME predicate but DIFFERENT targets is
+/// a silent data-loss footgun (the rewrite loop's `.iter().find(...)` would
+/// otherwise pick the first and ignore the second). The store must reject this
+/// up-front with `InvalidTransition`. The same predicate twice with the SAME
+/// target is harmless and succeeds (deduped silently).
+#[test]
+fn split_entities_rejects_duplicate_predicate_with_divergent_targets() {
+    let (_parent, store, context) = fixture();
+    let source = store
+        .resolve_or_create_entity(&context, "stocks", "GULF-dup-src")
+        .expect("source");
+    let target_a = store
+        .resolve_or_create_entity(&context, "stocks", "GULF-dup-a")
+        .expect("target A");
+    let target_b = store
+        .resolve_or_create_entity(&context, "stocks", "GULF-dup-b")
+        .expect("target B");
+
+    // Divergent targets for the same predicate → reject.
+    let err = store
+        .split_entities(
+            &context,
+            SplitCommand {
+                operation_id: "split-dup".to_owned(),
+                source_entity_id: source,
+                assignments: vec![
+                    PredicateAssignment {
+                        predicate: "target_price".to_owned(),
+                        target_entity_id: target_a,
+                    },
+                    PredicateAssignment {
+                        predicate: "target_price".to_owned(),
+                        target_entity_id: target_b,
+                    },
+                ],
+            },
+        )
+        .expect_err("divergent duplicate predicate must fail");
+    assert!(
+        matches!(err, llm_wiki::semantic::SemanticError::InvalidTransition(_)),
+        "expected InvalidTransition, got {err:?}"
+    );
+
+    // Same predicate + same target twice is harmless → succeeds (deduped).
+    store
+        .split_entities(
+            &context,
+            SplitCommand {
+                operation_id: "split-dup-same".to_owned(),
+                source_entity_id: source,
+                assignments: vec![
+                    PredicateAssignment {
+                        predicate: "target_price".to_owned(),
+                        target_entity_id: target_a,
+                    },
+                    PredicateAssignment {
+                        predicate: "target_price".to_owned(),
+                        target_entity_id: target_a,
+                    },
+                ],
+            },
+        )
+        .expect("duplicate predicate with same target is harmless");
+}

@@ -4109,9 +4109,12 @@ impl SemanticStore {
     /// timestamp is read from the `events` table's `event_json` BLOB (the full
     /// `EventEnvelope.recorded_at` of the `claim_confirmed` event pointed at by
     /// `ClaimView.confirmed_event_seq`) — the only authoritative source of
-    /// transaction-time truth in the ledger. Supersede/retract events on the
-    /// same claim also refresh staleness, since they represent a more-recent
-    /// audit touch on the same row.
+    /// transaction-time truth in the ledger.
+    ///
+    /// Staleness uses the active claim's own `confirmed_event_seq` recorded_at
+    /// as the authoritative timestamp. Superseded/retracted claims move to
+    /// `past` and are not flagged; the surviving active claim's confirm time is
+    /// what's measured.
     pub fn staleness(
         &self,
         head: u64,
@@ -4536,6 +4539,27 @@ impl SemanticStore {
                     "cannot split entity {} onto itself (predicate {})",
                     command.source_entity_id, assignment.predicate
                 )));
+            }
+        }
+        // Reject divergent duplicate predicates: two `PredicateAssignment`s with
+        // the SAME predicate but DIFFERENT `target_entity_id` would otherwise be
+        // silently collapsed by the `.iter().find(...)` rewrite loop (first one
+        // wins), which is a data-loss footgun. Same predicate + same target is
+        // harmless and dedups silently.
+        let mut predicate_targets: HashMap<String, Uuid> = HashMap::new();
+        for assignment in &command.assignments {
+            match predicate_targets.get(&assignment.predicate) {
+                Some(existing) if *existing != assignment.target_entity_id => {
+                    return Err(SemanticError::InvalidTransition(format!(
+                        "duplicate predicate in split assignments: {}",
+                        assignment.predicate
+                    )));
+                }
+                _ => {
+                    predicate_targets
+                        .entry(assignment.predicate.clone())
+                        .or_insert(assignment.target_entity_id);
+                }
             }
         }
         let request_hash = request_hash("split_entities", &command)?;
