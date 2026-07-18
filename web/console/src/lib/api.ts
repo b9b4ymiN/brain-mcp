@@ -361,6 +361,170 @@ export interface GalaxyPayload {
   edges: GalaxyEdge[]
 }
 
+// ── E3.2 trust + operations + destructive-action shapes ─────────────────────
+//
+// These mirror `src/trust.rs` (TrustFlag/RetrievalTrace/DestructiveWarning/
+// JobSummary/BackupHealth/ClientActivity/EvalSummary) and `src/semantic.rs`
+// (PurgePreview/PurgeReceipt) serde shapes EXACTLY — see tests/
+// api_trust_ops_v1.rs for the wire-level fixtures.
+//
+// Field-name notes:
+//   - `TrustFlag` is `#[serde(tag="kind", rename_all="snake_case")]` so each
+//     variant carries `"kind": "contradiction"|"stale"|"orphan"`.
+//   - `PurgePreview.targets` is `Vec<String>` (content-key strings, NOT
+//     structured preview items). The E3.2 task brief described it as a list
+//     of items but the shipped Rust serde shape is a bare string list.
+//   - `POST /purge/preview` returns `{preview, warning}` where `warning` is a
+//     full `DestructiveWarning` OBJECT (not a bare string) — see api.rs
+//     `purge_preview` handler.
+//   - `PurgeReceipt`'s `registry_epoch`/`new_backup_path`/`composite_checksum`
+//     are `Option<>` server-side → nullable on the wire; only `completed`
+//     receipts populate them.
+
+/**
+ * `GET /trust` flag row — the trust surface. Discriminated by `kind`.
+ * Mirrors Rust `TrustFlag` (`#[serde(tag="kind", rename_all="snake_case")]`).
+ */
+export type TrustFlag =
+  | { kind: 'contradiction'; claim_ids: string[] }
+  | { kind: 'stale'; claim_id: string; days_since_modified: number }
+  | { kind: 'orphan'; claim_id: string }
+
+/** Retrieval-trace body returned optionally by `GET /trust?retrieval_query=`. */
+export interface RetrievalTrace {
+  included_claim_ids: string[]
+  excluded_claim_ids: string[]
+  reason: string
+}
+
+/** `GET /trust` body. */
+export interface TrustResponse {
+  contradictions: TrustFlag[]
+  stale: TrustFlag[]
+  retrieval_trace: RetrievalTrace | null
+}
+
+/** `GET /ops/clients` row. Bare JSON array on the wire. */
+export interface ClientActivity {
+  client_id: string
+  label: string
+  capabilities: string[]
+  last_active_at: string
+  mutation_count: number
+}
+
+/** `GET /ops/jobs` body. */
+export interface JobSummary {
+  active: number
+  queued: number
+  failed: number
+}
+
+/** `GET /ops/evals?domain=` body. */
+export interface EvalSummary {
+  case_count: number
+  passed: number
+  abstention_passed: boolean
+  run_at: string
+}
+
+/** `GET /ops/backup-health` body. */
+export interface BackupHealth {
+  last_backup_at: string
+  last_restore_drill_ok: boolean
+}
+
+/**
+ * One item a destructive action will affect. Mirrors Rust
+ * `DestructivePreviewItem`. The destructive-warning handler returns an empty
+ * `preview` array by default; the Console populates it client-side from the
+ * context (entity ids, object ids) before showing the dialog.
+ */
+export interface DestructivePreviewItem {
+  target_kind: string
+  target_id: string
+  effect: string
+}
+
+/**
+ * `GET /destructive/warning?action=` body. The `message` is human-readable
+ * warning text the UI MUST display before confirming (states "no undo" /
+ * "cannot be recovered" for hard purge). All text is bound via Svelte text
+ * binding — never `{@html}`.
+ */
+export interface DestructiveWarning {
+  action: 'hard_purge' | 'entity_merge' | 'entity_split'
+  irreversible: boolean
+  requires_recent_reauth: boolean
+  requires_two_step_nonce: boolean
+  preview: DestructivePreviewItem[]
+  message: string
+}
+
+/**
+ * `POST /purge/preview` result. Mirrors Rust `PurgePreview`:
+ *   - `preview_hash` + `nonce` MUST be echoed back to `/purge/execute`.
+ *   - `expires_at` is RFC 3339; the nonce is single-use and time-bounded.
+ *   - `targets` is the bare string list of object ids (NOT structured items).
+ */
+export interface PurgePreview {
+  preview_hash: string
+  nonce: string
+  expires_at: string
+  targets: string[]
+}
+
+/**
+ * `POST /purge/execute` / `GET /purge/status` body. The `state` field is the
+ * saga stage (`requested` / `registry_denied` / `key_revoked` / `live_deleted`
+ * / `projections_cleaned` / `retention_pending` / `completed`). Only a
+ * `completed` receipt populates `registry_epoch` / `new_backup_path` /
+ * `composite_checksum`; the others are `null` while the saga is in flight.
+ */
+export interface PurgeReceipt {
+  purge_id: string
+  state: string
+  registry_epoch: number | null
+  new_backup_path: string | null
+  composite_checksum: string | null
+}
+
+/**
+ * `POST /purge/preview` body. NOTE: the `warning` is a full
+ * `DestructiveWarning` object (not a bare string) — the server ships the
+ * warning alongside the preview so the UI can render both atomically.
+ */
+export interface PurgePreviewResponse {
+  preview: PurgePreview
+  warning: DestructiveWarning
+}
+
+/** `POST /auth/reauth` body. */
+export interface ReauthResponse {
+  reauthenticated: boolean
+  fresh_for_seconds: number
+}
+
+/** `POST /entity/merge` body. */
+export interface EntityMergeResponse {
+  status: 'merged'
+  event_seq: number
+}
+
+/** `POST /entity/split` body. */
+export interface EntitySplitResponse {
+  status: 'split'
+  event_seq: number
+  moved_claim_count: number
+  source_remaining_claim_count: number
+}
+
+/** `POST /claim/{id}/retract` body. */
+export interface ClaimRetractResponse {
+  status: 'retracted'
+  event_seq: number
+}
+
 // ── parameter shapes ────────────────────────────────────────────────────────
 
 export interface SearchParams {
@@ -502,6 +666,184 @@ export async function supersede(
     path: `/inbox/${encodeURIComponent(proposalId)}/supersede`,
     body: { superseded_claim_ids: supersededClaimIds },
     csrf: true,
+  })
+}
+
+// ── E3.2 trust + operations + destructive-action routes ─────────────────────
+//
+// All GETs are session-only (no CSRF). All POSTs are CSRF-required mutations.
+// Source/target/object_ids/claim_operation_id are UUID strings on the wire.
+
+/**
+ * `GET /trust?staleness_threshold_days=&retrieval_query=`. The threshold
+ * defaults to 90 server-side; `retrieval_query`, when non-empty, populates
+ * `retrieval_trace`.
+ */
+export async function trust(params?: {
+  staleness_threshold_days?: number
+  retrieval_query?: string
+}): Promise<TrustResponse> {
+  return request<TrustResponse>({
+    method: 'GET',
+    path: '/trust',
+    query: {
+      staleness_threshold_days: params?.staleness_threshold_days,
+      retrieval_query: params?.retrieval_query,
+    },
+  })
+}
+
+/** `GET /ops/clients` — bare JSON array of registered-client activity. */
+export async function opsClients(): Promise<ClientActivity[]> {
+  return request<ClientActivity[]>({ method: 'GET', path: '/ops/clients' })
+}
+
+/** `GET /ops/jobs` — async-job queue summary. */
+export async function opsJobs(): Promise<JobSummary> {
+  return request<JobSummary>({ method: 'GET', path: '/ops/jobs' })
+}
+
+/**
+ * `GET /ops/evals?domain=X`. `domain` is required (server returns 400
+ * `invalid_request` for empty/missing) — the eval summary is per-domain.
+ */
+export async function opsEvals(domain: string): Promise<EvalSummary> {
+  return request<EvalSummary>({
+    method: 'GET',
+    path: '/ops/evals',
+    query: { domain },
+  })
+}
+
+/** `GET /ops/backup-health` — backup + restore-drill health. */
+export async function opsBackupHealth(): Promise<BackupHealth> {
+  return request<BackupHealth>({ method: 'GET', path: '/ops/backup-health' })
+}
+
+/**
+ * `GET /purge/status?purge_id=<uuid>` — current PurgeReceipt for a saga.
+ * Read-only (session only, no CSRF). Use this after `/purge/execute` returns
+ * a `purge_id` to poll the saga state.
+ */
+export async function purgeStatus(purgeId: string): Promise<PurgeReceipt> {
+  return request<PurgeReceipt>({
+    method: 'GET',
+    path: '/purge/status',
+    query: { purge_id: purgeId },
+  })
+}
+
+/**
+ * `GET /destructive/warning?action=hard_purge|entity_merge|entity_split`.
+ * Returns the warning the UI MUST display before the user confirms the
+ * action (Task E3.2 DoD #2). The `preview` list is empty by default — the
+ * caller populates it from the action context before showing the dialog.
+ */
+export async function destructiveWarning(
+  action: 'hard_purge' | 'entity_merge' | 'entity_split',
+): Promise<DestructiveWarning> {
+  return request<DestructiveWarning>({
+    method: 'GET',
+    path: '/destructive/warning',
+    query: { action },
+  })
+}
+
+/**
+ * `POST /entity/merge` body `{source, target, operation_id?}`. Every claim on
+ * the source is rewritten onto the target. CSRF + session required.
+ */
+export async function entityMerge(
+  source: string,
+  target: string,
+): Promise<EntityMergeResponse> {
+  return request<EntityMergeResponse>({
+    method: 'POST',
+    path: '/entity/merge',
+    body: { source, target },
+    csrf: true,
+  })
+}
+
+/**
+ * `POST /entity/split` body `{source, assignments, operation_id?}`. Each
+ * claim on the source whose predicate matches an assignment is rewritten onto
+ * that assignment's target; predicates not listed stay on the source. CSRF +
+ * session required.
+ */
+export async function entitySplit(
+  source: string,
+  assignments: { predicate: string; target_entity_id: string }[],
+): Promise<EntitySplitResponse> {
+  return request<EntitySplitResponse>({
+    method: 'POST',
+    path: '/entity/split',
+    body: { source, assignments },
+    csrf: true,
+  })
+}
+
+/**
+ * `POST /claim/{claim_operation_id}/retract`. `claim_operation_id` is the
+ * proposer's confirm operation_id (NOT the raw claim UUID) — see api.rs
+ * `entity_retract`. CSRF + session required. Retract is reversible via
+ * supersede, so it does NOT route through the destructive-action dialog.
+ */
+export async function claimRetract(
+  claimOperationId: string,
+): Promise<ClaimRetractResponse> {
+  return request<ClaimRetractResponse>({
+    method: 'POST',
+    path: `/claim/${encodeURIComponent(claimOperationId)}/retract`,
+    csrf: true,
+  })
+}
+
+/**
+ * `POST /purge/preview` body `{object_ids}`. Phase 1 of the hard-purge flow.
+ * Returns the preview (preview_hash + nonce + targets + expiry) AND the
+ * `DestructiveWarning` the UI MUST display before the execute step. The
+ * `preview_hash` + `nonce` must be echoed back to `purgeExecute`.
+ */
+export async function purgePreview(
+  objectIds: string[],
+): Promise<PurgePreviewResponse> {
+  return request<PurgePreviewResponse>({
+    method: 'POST',
+    path: '/purge/preview',
+    body: { object_ids: objectIds },
+    csrf: true,
+  })
+}
+
+/**
+ * `POST /purge/execute` body `{preview_hash, nonce, operation_id?}`. Phase 2
+ * of the hard-purge flow. The session MUST have a recent `/auth/reauth`
+ * (else 403 `reauth_required`); the freshness gate lives in the API layer.
+ * Returns the `PurgeReceipt` (saga state, eventually `completed`).
+ */
+export async function purgeExecute(
+  previewHash: string,
+  nonce: string,
+): Promise<PurgeReceipt> {
+  return request<PurgeReceipt>({
+    method: 'POST',
+    path: '/purge/execute',
+    body: { preview_hash: previewHash, nonce },
+    csrf: true,
+  })
+}
+
+/**
+ * `POST /auth/reauth` body `{secret}`. Re-validates the bootstrap secret
+ * against an EXISTING session and bumps its freshness anchor so the next
+ * `/purge/execute` passes the recent-reauth gate. Wrong secret → 401.
+ */
+export async function reauth(secret: string): Promise<ReauthResponse> {
+  return request<ReauthResponse>({
+    method: 'POST',
+    path: '/auth/reauth',
+    body: { secret },
   })
 }
 

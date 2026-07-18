@@ -10,6 +10,12 @@
    *   - On mount, consumes a pending subject staged by Home/Search for the
    *     "click → land on loaded entity" handoff.
    *
+   * Task E3.3 (Part D + E): the entity page now hosts the entity-level
+   * destructive UI (`<EntityDestructivePanel>`) and the four-questions
+   * provenance synthesis (`<ProvenancePanel>`). Both render only when an
+   * `entity_id` is present on the loaded claims (otherwise there is no
+   * entity to merge/split/answer about).
+   *
    * 4-state coverage via `<StateBox>`:
    *   - loading    → `loading=true` while `getSubject()` is in flight.
    *   - error      → any non-401 thrown; rendered as `state-error`.
@@ -19,21 +25,27 @@
    *
    * Per-row timeline expansion is its OWN micro state machine: a row may be
    * `idle | loading | error | open(timeline[])`. We keep these in a map keyed
-   * by claim_id so multiple rows can expand independently.
+   * by claim_id so multiple rows can expand independently. The
+   * `ProvenancePanel` consumes a derived `Record<predicate, ClaimView[]>` so
+   * it reuses the timeline data we already fetched for row expansion.
    */
   import { onMount } from 'svelte'
   import {
     getSubject,
     timeline,
+    opsClients,
     ApiError,
     type SubjectClaim,
     type ClaimView,
     type GalaxyNode,
+    type ClientActivity,
   } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
   import { consumePendingSubject, setPendingSubject } from '../lib/quickSearch'
   import StateBox from '../components/StateBox.svelte'
   import GalaxyGraph from '../components/GalaxyGraph.svelte'
+  import EntityDestructivePanel from '../components/EntityDestructivePanel.svelte'
+  import ProvenancePanel from '../components/ProvenancePanel.svelte'
   import { formatValue, formatDate } from '../lib/format'
 
   interface Props {
@@ -75,6 +87,13 @@
 
   let expanded = $state<Record<string, RowState>>({})
 
+  // ── Task E3.3: /ops/clients for the provenance panel ─────────────────────
+  // Fetched once per subject view (best-effort: failure leaves the panel's
+  // "Client that edited" facet empty rather than blocking the entity view).
+  let clients = $state<ClientActivity[]>([])
+  let clientsError = $state<string | null>(null)
+  let clientsSeq = 0
+
   onMount(() => {
     const pending = consumePendingSubject()
     if (pending) {
@@ -100,6 +119,9 @@
       // Discard stale response — a newer subject request supersedes us.
       if (seq !== viewSeq) return
       claims = response.claims
+      // E3.3 Part E: best-effort client fetch for the provenance panel. Fire
+      // in parallel — failure here must not block the entity view.
+      void refreshClients()
     } catch (cause) {
       if (seq !== viewSeq) return
       if (cause instanceof ApiError && cause.status === 401) {
@@ -120,6 +142,24 @@
         loading = false
         submitting = false
       }
+    }
+  }
+
+  async function refreshClients(): Promise<void> {
+    const seq = ++clientsSeq
+    clientsError = null
+    try {
+      const result = await opsClients()
+      if (seq !== clientsSeq) return
+      clients = result
+    } catch (cause) {
+      if (seq !== clientsSeq) return
+      // Non-fatal: provenance panel degrades gracefully.
+      clients = []
+      clientsError =
+        cause instanceof ApiError
+          ? `Client activity unavailable (${cause.code}).`
+          : null
     }
   }
 
@@ -195,6 +235,31 @@
     // still correct.
     void viewSubject(node.label)
   }
+
+  // E3.3 Part D: derive the current entity_id (if any) so we can mount the
+  // destructive panel + provenance panel only when there is a real entity.
+  let activeEntityId = $derived(
+    claims.find((c) => c.entity_id !== null)?.entity_id ?? null,
+  )
+
+  // E3.3 Part E: assemble the predicate → ClaimView[] map for the provenance
+  // panel. Built from the row-expansion `expanded` map so we reuse timeline
+  // data the user has already fetched; predicates the user hasn't expanded
+  // contribute an empty entry (panel shows "no time bounds").
+  let timelineByPredicate = $derived.by<Record<string, ClaimView[]>>(() => {
+    const out: Record<string, ClaimView[]> = {}
+    for (const claim of claims) {
+      const row = expanded[claim.claim_id]
+      out[claim.predicate] = row?.kind === 'open' ? row.entries : []
+    }
+    return out
+  })
+
+  // After a destructive mutation (merge/split/retract), refetch the subject
+  // + clients so the table + provenance reflect the new state.
+  function onEntityMutated(): void {
+    if (activeSubject) void viewSubject(activeSubject)
+  }
 </script>
 
 <section class="page page-entity">
@@ -240,7 +305,7 @@
   {:else if !hasLoaded}
     <p class="state state-empty">Enter a subject to view its claims.</p>
   {:else if viewMode === 'galaxy'}
-    {@const focusId = claims.find((c) => c.entity_id !== null)?.entity_id ?? null}
+    {@const focusId = activeEntityId}
     <GalaxyGraph
       {session}
       zoom="close"
@@ -336,6 +401,29 @@
         </tbody>
       </table>
     </StateBox>
+
+    {#if activeEntityId}
+      <ProvenancePanel
+        subject={activeSubject}
+        {claims}
+        {timelineByPredicate}
+        {clients}
+      />
+      <EntityDestructivePanel
+        {session}
+        entityId={activeEntityId}
+        claims={claims.map((c) => ({
+          claim_id: c.claim_id,
+          predicate: c.predicate,
+          value: c.value,
+        }))}
+        onMutated={onEntityMutated}
+      />
+    {:else if claims.length > 0}
+      <p class="state state-empty">
+        No entity_id on these claims — destructive actions need a resolved entity.
+      </p>
+    {/if}
   {/if}
 </section>
 

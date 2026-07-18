@@ -147,7 +147,7 @@
   {:else if currentPage === 'entity'}
     <Entity {session} />
   {:else if currentPage === 'operations'}
-    <Operations />
+    <Operations {session} />
   {/if}
 </main>
 

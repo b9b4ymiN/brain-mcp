@@ -985,3 +985,109 @@ async fn auth_reauth_refreshes_freshness() {
         .unwrap();
     assert_eq!(ok.status(), 200);
 }
+
+// ── Carry-over from E3.2 review (filled in E3.3) ───────────────────────────
+//
+// Two test gaps surfaced in the E3.2 review: the round-trip from
+// `/purge/execute` → `/purge/status` (proving the saga state survives the
+// hand-off and is observable read-only), and the 404 path for retract when
+// the confirm operation_id is unknown.
+
+/// `/purge/status?purge_id=<id>` returns the same `PurgeReceipt` (same `state`
+/// + `purge_id`) that `/purge/execute` returned. Reuses the
+/// `purge_execute_succeeds_after_reauth` fixture (two-target registry so the
+/// saga reaches `completed`).
+#[tokio::test]
+async fn purge_status_returns_receipt_after_execute() {
+    let (_parent, store, _ctx) = make_store_with_purge_targets();
+    let object_id = confirm_a_claim_object_id(&store, &store.trusted_context());
+    let state = ConsoleApiState::with_session_ttl_and_reauth_freshness(
+        store,
+        SECRET.to_owned(),
+        false,
+        Duration::hours(24),
+        Duration::minutes(5),
+    );
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+    let (cookie, csrf) = login(&client, &base, SECRET).await.expect("login ok");
+
+    // Re-auth + preview + execute → capture the receipt's purge_id.
+    let reauth_resp = reauth(&client, &base, &cookie, SECRET).await;
+    assert_eq!(reauth_resp.status(), 200);
+
+    let preview_resp = client
+        .post(format!("{base}/api/v1/purge/preview"))
+        .header("Cookie", cookie.clone())
+        .header("X-CSRF-Token", csrf.clone())
+        .json(&json!({ "object_ids": [object_id] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preview_resp.status(), 200);
+    let preview: Value = preview_resp.json().await.unwrap();
+    let preview_hash = preview["preview"]["preview_hash"].as_str().unwrap().to_owned();
+    let nonce = preview["preview"]["nonce"].as_str().unwrap().to_owned();
+
+    let execute_resp = client
+        .post(format!("{base}/api/v1/purge/execute"))
+        .header("Cookie", cookie.clone())
+        .header("X-CSRF-Token", csrf.clone())
+        .json(&json!({ "preview_hash": preview_hash, "nonce": nonce }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(execute_resp.status(), 200);
+    let executed: Value = execute_resp.json().await.unwrap();
+    assert_eq!(executed["state"], "completed");
+    let purge_id = executed["purge_id"].as_str().expect("purge_id is a string");
+
+    // The carry-over assertion: GET /purge/status returns the SAME receipt
+    // (state + purge_id) read-only. This is what the Console polls to
+    // surface saga progress to the operator.
+    let status_resp = client
+        .get(format!(
+            "{base}/api/v1/purge/status?purge_id={purge_id}"
+        ))
+        .header("Cookie", cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status_resp.status(), 200);
+    let status_body: Value = status_resp.json().await.unwrap();
+    assert_eq!(status_body["purge_id"], purge_id);
+    assert_eq!(status_body["state"], "completed");
+    // The composite_checksum + new_backup_path are populated on a completed
+    // saga — assert presence (not exact value, which is content-dependent).
+    assert!(
+        status_body["composite_checksum"].as_str().is_some(),
+        "completed receipt must carry a composite_checksum: {status_body:?}"
+    );
+}
+
+/// `/claim/{unknown-op-id}/retract` → 404 `not_found`. The path's
+/// `claim_operation_id` resolves to no stored confirm outcome; the
+/// resulting `InvalidTransition` (claim not found) surfaces as 404 via the
+/// semantic-error mapper.
+#[tokio::test]
+async fn entity_retract_unknown_returns_404() {
+    let (_parent, store, _ctx) = make_store();
+    let base = spawn(ConsoleApiState::new(store, SECRET.to_owned(), false)).await;
+    let client = reqwest::Client::new();
+    let (cookie, csrf) = login(&client, &base, SECRET).await.expect("login ok");
+
+    let unknown_op = format!("unknown-{}", Uuid::new_v4());
+    let resp = client
+        .post(format!("{base}/api/v1/claim/{unknown_op}/retract"))
+        .header("Cookie", cookie)
+        .header("X-CSRF-Token", csrf)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        body["error"], "not_found",
+        "unknown confirm operation_id must map to not_found, got {body:?}"
+    );
+}
