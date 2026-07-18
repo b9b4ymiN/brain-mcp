@@ -1,0 +1,62 @@
+# .dockerignore — keep the build context small and keep secrets / machine
+# state out of the image. Anything not listed here will still COPY normally.
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+.github/
+
+# Rust build artifacts (rebuilt inside the image; never copied in)
+target/
+
+# Cargo target caches that may exist on the host
+**/*.rs.bk
+
+# Node artifacts (rebuilt inside the image)
+web/console/node_modules/
+web/console/dist/
+web/console/test-results/
+web/console/playwright-report/
+web/console/blob-report/
+web/console/playwright/.cache/
+
+# Phase E bench — machine-specific outputs (schema + README stay tracked)
+web/console/bench/environment.json
+web/console/bench/results-*.json
+
+# Editor / IDE / agent caches
+.vscode/
+.idea/
+.zcode/
+.codegraph/
+.claude/
+.mcp.json
+
+# Docs not needed in the runtime image (the binary does not read them)
+docs/
+
+# Tests (not needed in the runtime image)
+tests/
+tests-integration/
+
+# Bench / eval (host-side scripts)
+bench/
+evals/
+
+# Misc install / OS scripts (host-only)
+install.ps1
+install.sh
+
+# Local Docker smoke artifacts (must never be COPYied into the image —
+# secret-scan DoD: the bootstrap secret lives ONLY in the bind-mounted config)
+.docker-smoke-data/
+scripts/docker-smoke-config.toml
+scripts/docker-smoke-data/
+
+# Log files (never ship)
+*.log
+
+# OS cruft
+.DS_Store
+Thumbs.db

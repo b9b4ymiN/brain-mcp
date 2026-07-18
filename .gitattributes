@@ -1,0 +1,11 @@
+# Ensure Unix line endings for files used inside the Linux Docker container.
+# Without this, Git on Windows checks out with CRLF and the bash script /
+# Dockerfile / config can break inside the image.
+Dockerfile                    text eol=lf
+.dockerignore                 text eol=lf
+scripts/*.sh                  text eol=lf
+scripts/*.toml                text eol=lf
+*.toml                        text=auto
+
+# Default: let Git normalize text files but preserve repo line endings.
+* text=auto

@@ -1,0 +1,24 @@
+# scripts/docker-smoke-config.toml
+#
+# SMOKE-ONLY config bind-mounted into the container for `docker_build_smoke.sh`.
+# **This file is NOT baked into the image** (see `.dockerignore`). The bootstrap
+# secret here is a dev value; real deployments must mount a secret file via
+# `serve.console_dev_bootstrap_secret_file` (Phase F1.2) — never hardcode it.
+#
+# Field names mirror `ServeConfig` in `src/config.rs`:
+#   - http (bool)                  : enable HTTP transport
+#   - http_port (u16)              : TCP port (default 8080)
+#   - http_bind_address (String)   : bind host (default 127.0.0.1)
+#   - http_bind_all_interfaces (bool) : opt-in to bind 0.0.0.0 (in-container)
+#   - acp (bool)                   : ACP transport (disabled for smoke)
+#   - console_dev_bootstrap_secret (Option<String>) : dev-grade auth secret
+#   - console_static_dir (Option<PathBuf>)          : built Console dist path
+
+[serve]
+http = true
+http_port = 8080
+http_bind_address = "0.0.0.0"
+http_bind_all_interfaces = true   # in-container; host port stays 127.0.0.1-only
+acp = false
+console_dev_bootstrap_secret = "dev-smoke-secret"   # smoke-only
+console_static_dir = "/app/web/console/dist"

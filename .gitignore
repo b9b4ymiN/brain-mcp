@@ -48,3 +48,7 @@ web/console/blob-report/
 web/console/bench/environment.json
 web/console/bench/results-*.json
 
+# Phase F1.1 — Docker smoke test scratch dir (scripts/docker_build_smoke.sh).
+# Bind-mounted into the smoke container; never committed.
+.docker-smoke-data/
+
