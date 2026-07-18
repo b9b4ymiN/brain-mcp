@@ -28,6 +28,7 @@ use tokio::sync::mpsc;
 
 use crate::engine::{EngineState, WikiEngine};
 use crate::markdown;
+use crate::observability::IngestRateLimiter;
 use crate::slug::{Slug, WikiUri};
 
 // ── McpServer ─────────────────────────────────────────────────────────────────
@@ -56,6 +57,13 @@ pub struct McpServer {
     /// this comes from a validated token at the transport edge; in dev the
     /// bootstrap principal has all capabilities.
     principal: auth::AuthPrincipal,
+    /// Ingest limits (Task F2.3). `None` disables enforcement (legacy
+    /// behavior — used by tests that pre-date the limit wiring and by any
+    /// caller that builds an `McpServer` directly without going through
+    /// `serve()`). `serve()` always attaches limits built from
+    /// `ServeConfig`, so the production path is always gated.
+    ingest_max_source_bytes: usize,
+    rate_limiter: Option<IngestRateLimiter>,
 }
 
 impl McpServer {
@@ -69,6 +77,8 @@ impl McpServer {
             semantic_store: None,
             ai_provider: None,
             principal: owner_principal(),
+            ingest_max_source_bytes: default_ingest_max_source_bytes(),
+            rate_limiter: None,
         }
     }
 
@@ -87,6 +97,8 @@ impl McpServer {
             semantic_store: None,
             ai_provider: None,
             principal,
+            ingest_max_source_bytes: default_ingest_max_source_bytes(),
+            rate_limiter: None,
         }
     }
 
@@ -195,6 +207,66 @@ impl McpServer {
         self
     }
 
+    /// Attach ingest size + rate limits (Task F2.3). `max_source_bytes` is the
+    /// per-source byte cap; `rate_limiter` is the per-client sliding-window
+    /// limiter (already constructed with the configured per-minute cap). When
+    /// attached, the ingest entry points (`brain_ingest_source`,
+    /// `brain_capture`, `wiki_ingest`) check both before touching the store.
+    /// When NOT attached (the default for tests), the limits are unenforced —
+    /// matching the pre-F2.3 behavior so existing tests keep working without
+    /// every fixture constructing a limiter.
+    pub fn with_ingest_limits(
+        mut self,
+        max_source_bytes: usize,
+        rate_limiter: IngestRateLimiter,
+    ) -> Self {
+        self.ingest_max_source_bytes = max_source_bytes;
+        self.rate_limiter = Some(rate_limiter);
+        self
+    }
+
+    /// Ingest-limit gate (Task F2.3). Ingest entry points call this with the
+    /// byte size of the source they are about to ingest; it returns:
+    /// - `Ok(())` when under both caps (the rate-limit attempt is recorded).
+    /// - `Err(WikiError::PayloadTooLarge)` when `bytes > max_source_bytes`.
+    /// - `Err(WikiError::RateLimited)` when the per-minute cap is hit.
+    ///
+    /// Order: size first, rate second. Rationale: a size rejection is
+    /// deterministic (no client state mutation), and recording it against the
+    /// rate limiter would consume budget for a call that never reached the
+    /// store — wrong. A rate rejection records nothing (see
+    /// [`IngestRateLimiter::check_and_record`]).
+    ///
+    /// When no limiter is attached (`self.rate_limiter.is_none()`), this is a
+    /// no-op `Ok(())` — the size cap is also bypassed in that shape, matching
+    /// the pre-F2.3 behavior so legacy callers and tests are unaffected.
+    fn check_ingest_limits(&self, bytes: usize) -> Result<(), helpers::WikiError> {
+        let Some(limiter) = &self.rate_limiter else {
+            return Ok(());
+        };
+        if bytes > self.ingest_max_source_bytes {
+            return Err(helpers::WikiError::PayloadTooLarge);
+        }
+        if !limiter.check_and_record(&self.principal.id) {
+            return Err(helpers::WikiError::RateLimited);
+        }
+        Ok(())
+    }
+
+    /// The configured per-source byte cap (read-only). Used by the
+    /// rejection-message helper to render the actionable limit value back to
+    /// the client. Returns the default when no limiter is attached.
+    pub(super) fn ingest_max_source_bytes(&self) -> usize {
+        self.ingest_max_source_bytes
+    }
+
+    /// The configured per-minute rate cap (read-only). `None` when no limiter
+    /// is attached (i.e. limits are disabled). Used by the rejection-message
+    /// helper to render the actionable limit value.
+    pub(super) fn rate_limiter_max_per_minute(&self) -> Option<u32> {
+        self.rate_limiter.as_ref().map(|l| l.max_per_minute())
+    }
+
     /// Create a new `McpServer` with web-refresh notifications enabled.
     pub fn with_web_refresh(
         manager: Arc<WikiEngine>,
@@ -207,6 +279,8 @@ impl McpServer {
             semantic_store: None,
             ai_provider: None,
             principal: owner_principal(),
+            ingest_max_source_bytes: default_ingest_max_source_bytes(),
+            rate_limiter: None,
         }
     }
 
@@ -249,6 +323,15 @@ impl McpServer {
 /// The dispatch-layer principal id reserved for the local owner — matches
 /// `SemanticStore`'s `BOOTSTRAP_CLIENT_LABEL` at the store layer (Task D2).
 const OWNER_PRINCIPAL_ID: &str = "__bootstrap__";
+
+/// The default per-source byte cap when an `McpServer` is built without
+/// explicit ingest limits (i.e. NOT via `serve()`). Matches
+/// `ServeConfig::default().ingest_max_source_bytes` so direct-constructor
+/// callers get the same 10MB default — only `rate_limiter` differs (None),
+/// which makes the gate a no-op until `with_ingest_limits` attaches one.
+fn default_ingest_max_source_bytes() -> usize {
+    10 * 1024 * 1024
+}
 
 /// The owner principal has all capabilities (single-owner local mode). In
 /// production the transport edge replaces this with a validated-token principal

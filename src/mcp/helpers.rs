@@ -18,6 +18,17 @@ pub enum WikiError {
     InvalidUri,
     LockFailed,
     InternalError,
+    /// 413 Payload Too Large (Task F2.3). An ingest source exceeded the
+    /// configured `serve.ingest_max_source_bytes` cap. Surfaced via MCP as
+    /// `PAYLOAD_TOO_LARGE`; the HTTP Console API (if a future ingest route is
+    /// added) maps this to `StatusCode::PAYLOAD_TOO_LARGE` + `{"error":
+    /// "payload_too_large"}`.
+    PayloadTooLarge,
+    /// 429 Too Many Requests (Task F2.3). A client exceeded the configured
+    /// `serve.ingest_max_sources_per_minute` rate cap. Surfaced via MCP as
+    /// `RATE_LIMITED`; the HTTP Console API would map this to
+    /// `StatusCode::TOO_MANY_REQUESTS` + `{"error":"rate_limited"}`.
+    RateLimited,
 }
 
 impl WikiError {
@@ -29,6 +40,8 @@ impl WikiError {
             WikiError::InvalidUri => "INVALID_URI",
             WikiError::LockFailed => "LOCK_FAILED",
             WikiError::InternalError => "INTERNAL_ERROR",
+            WikiError::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
+            WikiError::RateLimited => "RATE_LIMITED",
         }
     }
 }
@@ -41,6 +54,8 @@ impl fmt::Display for WikiError {
             WikiError::InvalidUri => write!(f, "[{}] invalid URI", self.code()),
             WikiError::LockFailed => write!(f, "[{}] lock acquisition failed", self.code()),
             WikiError::InternalError => write!(f, "[{}] internal error", self.code()),
+            WikiError::PayloadTooLarge => write!(f, "[{}] payload too large", self.code()),
+            WikiError::RateLimited => write!(f, "[{}] rate limited", self.code()),
         }
     }
 }

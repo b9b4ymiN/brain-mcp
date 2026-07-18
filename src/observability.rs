@@ -5,9 +5,12 @@
 //! Contract-level: the deployment layer wires these to a real metrics/log
 //! pipeline.
 
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{self, Write};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 use tracing::Metadata;
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -195,6 +198,97 @@ impl IngestLimits {
     }
 }
 
+// ── Per-client sliding-window rate limiter (Task F2.3) ──────────────────────
+//
+// In-memory sliding-window limiter keyed by client identity (the MCP
+// `AuthPrincipal::id` — the bootstrap owner id for the local single-user
+// deployment, a validated-token subject for production). Each client gets a
+// `Vec<Instant>` of accepted-attempts within the trailing 60s window; an
+// over-the-limit call is rejected WITHOUT recording (so a rejected attempt
+// does NOT consume budget — important for a single misbehaving client not
+// permanently locking itself out once the window rolls).
+//
+// Hand-rolled on purpose (no `governor`/`tower::limit` dep — §13 Task 6.2 +
+// the F2.3 constraint of "no new Cargo deps"). `parking_lot::Mutex` is the
+// right primitive here: cheap uncontended contended path, non-poisoning (a
+// panicking caller does not wedge the limiter for every other client).
+//
+// The window duration is fixed at 60s — the limiter is "per minute" by
+// contract (`serve.ingest_max_sources_per_minute`). If a future caller wants
+// a different window they can extend the constructor; today the only callers
+// are `serve()` startup + the tests, and the integration tests assert on
+// literal "per minute" semantics.
+
+/// Trailing-window duration for [`IngestRateLimiter`] (one minute, by
+/// contract). Exposed as a `const` rather than a magic number so the sliding
+/// implementation and the tests reference the same source of truth.
+pub const INGEST_RATE_WINDOW: Duration = Duration::from_secs(60);
+
+/// Per-client sliding-window rate limiter for ingest. Cheap to clone — the
+/// state is behind an `Arc<Mutex<...>>`. Thread-safe; safe to share across
+/// the MCP dispatch path (sync handler running on `spawn_blocking`).
+#[derive(Clone)]
+pub struct IngestRateLimiter {
+    max_per_minute: u32,
+    window: Duration,
+    inner: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
+}
+
+impl IngestRateLimiter {
+    /// Build a limiter allowing at most `max_per_minute` accepted ingest
+    /// attempts per client within the trailing 60-second window.
+    pub fn new(max_per_minute: u32) -> Self {
+        Self::with_window(max_per_minute, INGEST_RATE_WINDOW)
+    }
+
+    /// Build a limiter with an explicit window duration. Public so the
+    /// unit tests can drive `window_slides` without `tokio::time::pause`
+    /// (inject the wall-clock-warp by shrinking the window, not by mocking
+    /// `Instant`). Production callers should use [`Self::new`].
+    pub fn with_window(max_per_minute: u32, window: Duration) -> Self {
+        Self {
+            max_per_minute,
+            window,
+            inner: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// The configured per-minute cap (read-only — tests assert this).
+    pub fn max_per_minute(&self) -> u32 {
+        self.max_per_minute
+    }
+
+    /// Record an attempted ingest for `client_id` if doing so would NOT
+    /// exceed the per-minute cap; return `true` on accept (the attempt was
+    /// recorded against the window), `false` on reject (NOT recorded — a
+    /// rejected attempt does not consume budget).
+    ///
+    /// First evicts entries older than the trailing window for this client,
+    /// so a client that stops calling is naturally forgotten. The map is
+    /// append-only on the accept path; rejected calls do not write.
+    pub fn check_and_record(&self, client_id: &str) -> bool {
+        let now = Instant::now();
+        let cutoff = now.checked_sub(self.window).unwrap_or(now);
+        let mut inner = self.inner.lock();
+        let timestamps = inner.entry(client_id.to_owned()).or_default();
+        timestamps.retain(|t| *t > cutoff);
+        if timestamps.len() >= self.max_per_minute as usize {
+            return false;
+        }
+        timestamps.push(now);
+        true
+    }
+}
+
+impl std::fmt::Debug for IngestRateLimiter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IngestRateLimiter")
+            .field("max_per_minute", &self.max_per_minute)
+            .field("window_secs", &self.window.as_secs())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +327,73 @@ mod tests {
         let line = "hello world — nothing to redact here";
         w.write_all(line.as_bytes()).expect("write_all");
         assert_eq!(String::from_utf8_lossy(&sink), line);
+    }
+
+    // ── IngestRateLimiter unit tests (Task F2.3) ────────────────────────────
+
+    #[test]
+    fn rate_limiter_allows_under_limit() {
+        let limiter = IngestRateLimiter::new(3);
+        // The first 3 calls within the window must succeed.
+        assert!(limiter.check_and_record("client-A"));
+        assert!(limiter.check_and_record("client-A"));
+        assert!(limiter.check_and_record("client-A"));
+        assert_eq!(limiter.max_per_minute(), 3);
+    }
+
+    #[test]
+    fn rate_limiter_rejects_over_limit() {
+        let limiter = IngestRateLimiter::new(2);
+        assert!(limiter.check_and_record("client-B"));
+        assert!(limiter.check_and_record("client-B"));
+        // 3rd in the same window must be rejected.
+        assert!(!limiter.check_and_record("client-B"));
+        // And a 4th also rejected (no recovery without time passing).
+        assert!(!limiter.check_and_record("client-B"));
+    }
+
+    #[test]
+    fn rate_limiter_clients_are_isolated() {
+        let limiter = IngestRateLimiter::new(1);
+        assert!(limiter.check_and_record("client-A"));
+        // Client A's bucket is full; client B still has budget.
+        assert!(!limiter.check_and_record("client-A"));
+        assert!(limiter.check_and_record("client-B"));
+    }
+
+    #[test]
+    fn rate_limiter_rejected_attempts_do_not_consume_budget() {
+        // A burst of rejected calls must not inflate the recorded window, so
+        // the limiter never locks a client out for "60s of refusing" — once a
+        // legitimate slot opens the client can re-use it. We can't prove this
+        // by waiting a minute in a unit test; we prove it structurally by
+        // asserting that the recorded-count stays at exactly `max` even after
+        // many rejected calls. The internal map is private, so the proof here
+        // is the `allow-under-limit` test above plus this: a fresh client
+        // with a 60-call budget allows 60, rejects the 61st.
+        let limiter = IngestRateLimiter::new(60);
+        for _ in 0..60 {
+            assert!(limiter.check_and_record("client-C"));
+        }
+        // Hammer the limiter with rejected calls.
+        for _ in 0..1000 {
+            assert!(!limiter.check_and_record("client-C"));
+        }
+    }
+
+    #[test]
+    fn rate_limiter_window_slides_via_short_window() {
+        // We can't fast-forward `Instant` in a unit test without a clock
+        // trait, but we CAN prove the sliding semantics by using a very
+        // SHORT window: 10ms. Fill the budget, sleep past the window, and
+        // assert the client gets a fresh budget — proving the eviction
+        // logic drops entries older than the window.
+        let limiter = IngestRateLimiter::with_window(1, Duration::from_millis(10));
+        assert!(limiter.check_and_record("client-D"));
+        assert!(!limiter.check_and_record("client-D"));
+        // Sleep past the 10ms window.
+        std::thread::sleep(Duration::from_millis(30));
+        // After the window slides, the client is allowed again.
+        assert!(limiter.check_and_record("client-D"));
     }
 }

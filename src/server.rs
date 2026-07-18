@@ -506,6 +506,22 @@ pub async fn serve(
     if let Some(store) = semantic_store {
         mcp_server = mcp_server.with_semantic_store(store);
     }
+    // Task F2.3: attach the per-source byte cap + per-client rate limiter to
+    // the hot path. `serve()` is the only production constructor for McpServer
+    // — every other entry point (tests, dev helpers) builds one without
+    // limits, which keeps the gate OFF for them and preserves backwards
+    // compatibility. Built from `ServeConfig` so an operator can tune the
+    // caps via `[serve] ingest_max_source_bytes` /
+    // `ingest_max_sources_per_minute` without touching code.
+    mcp_server = mcp_server.with_ingest_limits(
+        serve_cfg.ingest_max_source_bytes,
+        crate::observability::IngestRateLimiter::new(serve_cfg.ingest_max_sources_per_minute),
+    );
+    tracing::info!(
+        max_source_bytes = serve_cfg.ingest_max_source_bytes,
+        max_sources_per_minute = serve_cfg.ingest_max_sources_per_minute,
+        "ingest limits attached",
+    );
     // Activate the auth gate on the serve hot path (Task B3 / F1 fix). Local
     // stdio/loopback runs as the fully-trusted owner (bootstrap principal), so
     // the owner is unaffected; the point is that the gate is *on*, so a

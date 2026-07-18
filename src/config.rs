@@ -290,6 +290,20 @@ pub struct ServeConfig {
     /// auth gate — the login page must load before a session exists.
     #[serde(default)]
     pub console_static_dir: Option<std::path::PathBuf>,
+    /// Maximum bytes allowed for a single ingest source (Task F2.3). Default:
+    /// 10 MB. Sources exceeding this are rejected with 413 Payload Too Large
+    /// (the MCP surface surfaces this as a structured error — see
+    /// `WikiError::PayloadTooLarge`). Enforced at the MCP ingest entry points
+    /// (`brain_ingest_source`, `brain_capture`, `wiki_ingest`).
+    #[serde(default = "default_ingest_max_source_bytes")]
+    pub ingest_max_source_bytes: usize,
+    /// Maximum number of ingest sources per minute per client (Task F2.3).
+    /// Default: 60. Clients exceeding this are rejected with 429 Too Many
+    /// Requests (the MCP surface surfaces this as a structured error — see
+    /// `WikiError::RateLimited`). Enforced via a per-client sliding-window
+    /// limiter keyed on the authenticated principal id.
+    #[serde(default = "default_ingest_max_sources_per_minute")]
+    pub ingest_max_sources_per_minute: u32,
 }
 
 impl Default for ServeConfig {
@@ -314,6 +328,8 @@ impl Default for ServeConfig {
             console_dev_bootstrap_secret: None,
             console_dev_bootstrap_secret_file: None,
             console_static_dir: None,
+            ingest_max_source_bytes: default_ingest_max_source_bytes(),
+            ingest_max_sources_per_minute: default_ingest_max_sources_per_minute(),
         }
     }
 }
@@ -712,6 +728,20 @@ fn default_http_allowed_hosts() -> Vec<String> {
 fn default_http_bind_address() -> String {
     "127.0.0.1".to_owned()
 }
+/// Default per-source ingest byte cap: 10 MB. Sized to comfortably admit a
+/// multi-megabyte document chunk while rejecting accidental giant payloads
+/// (e.g. a binary blob a client tried to ingest as text). §13 Task 6.2
+/// "size/time limits ป้องกัน runaway ingest".
+fn default_ingest_max_source_bytes() -> usize {
+    10 * 1024 * 1024
+}
+/// Default per-client ingest rate cap: 60 sources / minute. Matches the F2.3
+/// task spec default; loose enough for a single interactive client, tight
+/// enough that a runaway loop can't run up provider cost in the minute before
+/// an operator notices.
+fn default_ingest_max_sources_per_minute() -> u32 {
+    60
+}
 fn default_max_restarts() -> u32 {
     10
 }
@@ -907,6 +937,12 @@ pub fn set_global_config_value(global: &mut GlobalConfig, key: &str, value: &str
         }
         "serve.mcp_stateful_mode" => global.serve.mcp_stateful_mode = value.parse()?,
         "serve.mcp_json_response" => global.serve.mcp_json_response = value.parse()?,
+        "serve.ingest_max_source_bytes" => {
+            global.serve.ingest_max_source_bytes = value.parse()?;
+        }
+        "serve.ingest_max_sources_per_minute" => {
+            global.serve.ingest_max_sources_per_minute = value.parse()?;
+        }
         "ingest.auto_commit" => global.ingest.auto_commit = value.parse()?,
         "history.follow" => global.history.follow = value.parse()?,
         "history.default_limit" => global.history.default_limit = value.parse()?,
@@ -963,6 +999,10 @@ pub fn get_config_value(resolved: &ResolvedConfig, global: &GlobalConfig, key: &
         }
         "serve.mcp_stateful_mode" => global.serve.mcp_stateful_mode.to_string(),
         "serve.mcp_json_response" => global.serve.mcp_json_response.to_string(),
+        "serve.ingest_max_source_bytes" => resolved.serve.ingest_max_source_bytes.to_string(),
+        "serve.ingest_max_sources_per_minute" => {
+            resolved.serve.ingest_max_sources_per_minute.to_string()
+        }
         "validation.type_strictness" => resolved.validation.type_strictness.clone(),
         "logging.log_path" => global.logging.log_path.clone(),
         "logging.log_rotation" => global.logging.log_rotation.clone(),
@@ -1132,6 +1172,8 @@ pub fn set_wiki_config_value(wiki_cfg: &mut WikiConfig, key: &str, value: &str) 
         | "serve.mcp_completed_cache_ttl_secs"
         | "serve.mcp_stateful_mode"
         | "serve.mcp_json_response"
+        | "serve.ingest_max_source_bytes"
+        | "serve.ingest_max_sources_per_minute"
         | "logging.log_path"
         | "logging.log_rotation"
         | "logging.log_max_files"

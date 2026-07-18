@@ -21,6 +21,50 @@ fn sync_web_content(server: &McpServer, wiki_name: &str) -> Result<Option<usize>
     Ok(synced)
 }
 
+// ── Ingest limit rejection (Task F2.3) ──────────────────────────────────────
+//
+// Ingest handlers run the size+rate gate (`McpServer::check_ingest_limits`)
+// before touching the store. A rejection from that gate must:
+//   1. Increment the `ingest_rejected_total{reason="size|rate"}` counter so
+//      dashboards/alerts can see the rejection rate (the metrics facade is a
+//      no-op when no recorder is installed).
+//   2. Return a clear, code-prefixed error string. The string carries the
+//      structured `WikiError` code prefix (`PAYLOAD_TOO_LARGE` /
+//      `RATE_LIMITED`) so a structured-content-aware client can branch on it,
+//      and includes the configured cap value so the operator message is
+//      actionable. The error then surfaces through `tools::call`'s
+//      `Ok(Err(msg))` arm as a normal MCP tool error.
+
+/// Build a client-facing error message for an ingest-limit rejection AND bump
+/// the `ingest_rejected_total` counter with the matching `reason` label.
+fn ingest_limit_error_message(error: &WikiError, server: &McpServer) -> String {
+    match error {
+        WikiError::PayloadTooLarge => {
+            metrics::counter!("ingest_rejected_total", "reason" => "size").increment(1);
+            err_code(
+                WikiError::PayloadTooLarge,
+                format!(
+                    "ingest rejected: source exceeds max bytes ({} bytes)",
+                    server.ingest_max_source_bytes()
+                ),
+            )
+        }
+        WikiError::RateLimited => {
+            metrics::counter!("ingest_rejected_total", "reason" => "rate").increment(1);
+            let max = server
+                .rate_limiter_max_per_minute()
+                .map(|m| format!("{m}/min"))
+                .unwrap_or_else(|| "configured cap".to_owned());
+            err_code(
+                WikiError::RateLimited,
+                format!("ingest rejected: rate limit exceeded ({max})"),
+            )
+        }
+        // Defensive — the gate only returns PayloadTooLarge / RateLimited.
+        other => err_code(other.clone(), "ingest rejected".to_owned()),
+    }
+}
+
 // ── Spaces ────────────────────────────────────────────────────────────────────
 
 /// Handle `wiki_spaces_create` — create a new wiki repository and register it.
@@ -507,6 +551,15 @@ pub fn handle_ingest(server: &McpServer, args: &Map<String, Value>) -> ToolHandl
     let dry_run = arg_bool(args, "dry_run");
     let redact = arg_bool(args, "redact");
 
+    // Task F2.3: rate-limit only. `wiki_ingest` operates on a directory tree
+    // (potentially many files); the per-source byte cap is sized for a single
+    // document source and would be wrong to apply to a multi-file ingest, so
+    // we pass `0` to skip the size check while still consuming a rate bucket.
+    // The gate is a no-op when no limiter is attached (legacy/test path).
+    server
+        .check_ingest_limits(0)
+        .map_err(|e| ingest_limit_error_message(&e, server))?;
+
     // Read path: ingest (ops handles WikiEngine mutation internally)
     let (report, wiki_name, notify_uris) = {
         let engine = server.engine();
@@ -961,6 +1014,18 @@ pub fn handle_brain_ingest_source(
         std::fs::read_to_string(&canonical).map_err(|e| format!("cannot read {file_path}: {e}"))?
     };
 
+    // Task F2.3: enforce the per-source size cap + per-client rate cap BEFORE
+    // chunking/capture. Size is measured on the WHOLE source (not per chunk) —
+    // the contract is "max bytes per single ingest source". Counted in UTF-8
+    // bytes (`len()`) which matches how the chunker sees the payload. A
+    // rejection here does NOT touch the semantic store and does NOT consume
+    // rate budget (size-check precedes rate-check inside the gate). The error
+    // string carries the structured `WikiError` code prefix so a structured-
+    // content-aware client can branch on `PAYLOAD_TOO_LARGE` / `RATE_LIMITED`.
+    server
+        .check_ingest_limits(raw_text.len())
+        .map_err(|e| ingest_limit_error_message(&e, server))?;
+
     let chunks = crate::source_ingest::chunk_text(&raw_text, max_chunk_bytes);
     if chunks.is_empty() {
         return Err("source produced no content to ingest".to_owned());
@@ -1141,6 +1206,14 @@ pub fn handle_brain_capture(server: &McpServer, args: &Map<String, Value>) -> To
 
     let value: serde_json::Value =
         serde_json::from_str(&value_str).unwrap_or(serde_json::Value::String(value_str));
+
+    // Task F2.3: a user utterance is an ingest source — enforce the same size
+    // + rate caps as `brain_ingest_source`. Measured on the utterance bytes
+    // (the load-bearing payload; subject/predicate/value are bounded by the
+    // schema and tiny in practice).
+    server
+        .check_ingest_limits(utterance.len())
+        .map_err(|e| ingest_limit_error_message(&e, server))?;
 
     let ctx = server.brain_context(store)?;
     let outcome = store

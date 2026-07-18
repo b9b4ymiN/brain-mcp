@@ -227,6 +227,24 @@ impl ApiError {
     fn reauth_required() -> Self {
         Self::new(StatusCode::FORBIDDEN, "reauth_required")
     }
+
+    /// 413 `payload_too_large` (Task F2.3). Reserved for a future Console API
+    /// ingest route — the MCP ingest path surfaces the same condition via
+    /// `WikiError::PayloadTooLarge`. Kept here so the error contract is
+    /// symmetric across surfaces; the wire shape is the same `{"error":
+    /// "<code>"}` JSON the rest of the Console API emits.
+    #[allow(dead_code)]
+    fn payload_too_large() -> Self {
+        Self::new(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large")
+    }
+
+    /// 429 `rate_limited` (Task F2.3). Reserved for a future Console API
+    /// ingest route — the MCP ingest path surfaces the same condition via
+    /// `WikiError::RateLimited`.
+    #[allow(dead_code)]
+    fn rate_limited() -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited")
+    }
 }
 
 impl IntoResponse for ApiError {
