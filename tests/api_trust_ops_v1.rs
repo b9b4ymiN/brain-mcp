@@ -1026,7 +1026,10 @@ async fn purge_status_returns_receipt_after_execute() {
         .unwrap();
     assert_eq!(preview_resp.status(), 200);
     let preview: Value = preview_resp.json().await.unwrap();
-    let preview_hash = preview["preview"]["preview_hash"].as_str().unwrap().to_owned();
+    let preview_hash = preview["preview"]["preview_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let nonce = preview["preview"]["nonce"].as_str().unwrap().to_owned();
 
     let execute_resp = client
@@ -1046,9 +1049,7 @@ async fn purge_status_returns_receipt_after_execute() {
     // (state + purge_id) read-only. This is what the Console polls to
     // surface saga progress to the operator.
     let status_resp = client
-        .get(format!(
-            "{base}/api/v1/purge/status?purge_id={purge_id}"
-        ))
+        .get(format!("{base}/api/v1/purge/status?purge_id={purge_id}"))
         .header("Cookie", cookie)
         .send()
         .await
