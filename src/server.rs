@@ -129,10 +129,24 @@ async fn serve_http(
     // secret is configured AND a semantic store is attached (F1 lesson — the
     // gate is on the real serve path, not just a contract). Clone the store
     // handle out before `server` is moved into the MCP service closure below.
-    let console_api = match (
-        serve_cfg.console_dev_bootstrap_secret.clone(),
-        server.semantic_store.clone(),
-    ) {
+    //
+    // Secret resolution priority (Phase F1.2): file > direct string. A set
+    // `console_dev_bootstrap_secret_file` that fails to read is a fatal
+    // startup error — we do NOT fall back to an empty secret or to the direct
+    // string. An empty resolved secret keeps the Console API router unmounted
+    // (matches the pre-F1.2 contract).
+    let resolved_secret = serve_cfg.resolve_bootstrap_secret()?;
+    if resolved_secret.is_some() {
+        tracing::info!(
+            source = if serve_cfg.console_dev_bootstrap_secret_file.is_some() {
+                "file"
+            } else {
+                "direct"
+            },
+            "console bootstrap secret resolved"
+        );
+    }
+    let console_api = match (resolved_secret, server.semantic_store.clone()) {
         (Some(secret), Some(store)) if !secret.is_empty() => {
             tracing::info!("Console HTTP API mounted at /api/v1 (dev bootstrap auth)");
             Some(crate::api::router(crate::api::ConsoleApiState::new(

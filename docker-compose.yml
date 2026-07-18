@@ -1,0 +1,66 @@
+# Brain MCP — Docker Compose (Phase F1.2)
+#
+# Single-service production-style stack. A reverse proxy (nginx / caddy /
+# Traefik) with TLS MUST sit in front of the published 127.0.0.1:8080 port
+# for any non-loopback exposure — the Console API is bootstrap-secret gated,
+# not OAuth-gated, until Phase F2.
+#
+# Bootstrap secret: provided via a Docker secret (`bootstrap_secret`), read
+# from `/run/secrets/bootstrap_secret` inside the container via
+# `serve.console_dev_bootstrap_secret_file`. The secret is NEVER baked into
+# the image, NEVER placed in `environment:` (env values leak via
+# `docker inspect`), and NEVER written into the tracked config file.
+#
+# Config layout: the operator's config.toml is bind-mounted at
+# `/data/config.toml` (NOT `/config/`). This matches the F1.1 finding — the
+# binary derives `state_dir = config_path.parent()` and writes the semantic
+# store + indexes into that directory, so config MUST live inside the
+# writable data volume. See `src/engine.rs:102` and the F1.1 runbook
+# (`docs/guides/deploy-docker.md`).
+
+services:
+  brain:
+    # Built fresh from the repo Dockerfile on `docker compose up --build`.
+    # Pin to a release tag (e.g. `brain:v0.5`) in production and drop the
+    # `build:` block to deploy a pre-built image from a registry.
+    image: brain:v0.5
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: brain
+    # Loopback-only publish. For any non-local access, put a reverse proxy
+    # (nginx/caddy) in front that terminates TLS and forwards to 127.0.0.1:8080.
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # Semantic store + indexes + state. Must be writable by uid 1000 (brain).
+      - ./data:/data
+      # Encrypted backup snapshots (Phase F3.1). Writable by uid 1000.
+      - ./backups:/backups
+      # Operator's config — single-file bind mount inside the writable /data
+      # volume (see header comment for the state_dir rationale).
+      - ./config/config.toml:/data/config.toml:ro
+    environment:
+      # tracing filter — adjust per-operator preference.
+      - RUST_LOG=llm_wiki=info,warn
+      # Path to the bind-mounted config. The binary's `--config` flag is the
+      # authoritative source (CMD in Dockerfile); LLM_WIKI_CONFIG is the
+      # documented env fallback the CLI reads when `--config` is absent.
+      - LLM_WIKI_CONFIG=/data/config.toml
+    secrets:
+      - bootstrap_secret
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+secrets:
+  bootstrap_secret:
+    # Operator-managed. Create with:
+    #   mkdir -p ./secrets
+    #   (umask 077; printf '%s' "$(openssl rand -hex 32)" > ./secrets/bootstrap_secret.txt)
+    # Mode 0600 + gitignored — see `.gitignore` + `docs/guides/deploy-docker.md`.
+    file: ./secrets/bootstrap_secret.txt

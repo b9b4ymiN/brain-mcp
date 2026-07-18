@@ -273,6 +273,16 @@ pub struct ServeConfig {
     /// dev; production auth is OAuth (Phase F).
     #[serde(default)]
     pub console_dev_bootstrap_secret: Option<String>,
+    /// Path to a file containing the bootstrap secret (Phase F1.2). If set,
+    /// the file's trimmed contents OVERRIDE `console_dev_bootstrap_secret`.
+    /// Use this in production (Docker secrets, systemd `LoadCredential`) to
+    /// avoid leaking the secret via env/config-file inspection — env values
+    /// are visible via `docker inspect` whereas a bind-mounted secret file
+    /// with mode 0600 is not. **Fail-closed:** a set path that cannot be read
+    /// (missing/unreadable) is a startup error; the server does NOT fall back
+    /// to an empty/direct secret. Priority: `file > direct string`.
+    #[serde(default)]
+    pub console_dev_bootstrap_secret_file: Option<std::path::PathBuf>,
     /// Directory of built Console static assets, served at `/` as a fallback
     /// with a strict CSP and path-traversal protection (Phase E Task E0.3).
     /// `None` (default) = no static serving. Points at the Task E1 Svelte build
@@ -302,8 +312,39 @@ impl Default for ServeConfig {
             mcp_stateful_mode: default_mcp_stateful_mode(),
             mcp_json_response: default_mcp_json_response(),
             console_dev_bootstrap_secret: None,
+            console_dev_bootstrap_secret_file: None,
             console_static_dir: None,
         }
+    }
+}
+
+impl ServeConfig {
+    /// Resolves the effective Console bootstrap secret.
+    ///
+    /// Priority: `console_dev_bootstrap_secret_file` > `console_dev_bootstrap_secret`.
+    ///
+    /// **Fail-closed:** if `console_dev_bootstrap_secret_file` is `Some(_)` but
+    /// the file cannot be read, this returns an error — the caller MUST NOT
+    /// fall back to the direct string or to an empty secret. The file's
+    /// contents are trimmed of surrounding ASCII whitespace (so a trailing
+    /// newline from `echo $SECRET > file` or `printf` is dropped).
+    ///
+    /// Returns `Ok(None)` when neither field is set (Console API not mounted).
+    /// Returns `Ok(Some(""))` only when the operator explicitly sets the
+    /// direct string to `""` and no file is configured — the empty-secret
+    /// check that suppresses the router mount happens at the call site.
+    pub fn resolve_bootstrap_secret(&self) -> Result<Option<String>> {
+        if let Some(path) = self.console_dev_bootstrap_secret_file.as_ref() {
+            let raw = std::fs::read_to_string(path).with_context(|| {
+                format!(
+                    "failed to read console_dev_bootstrap_secret_file at {}",
+                    path.display()
+                )
+            })?;
+            let trimmed = raw.trim().to_string();
+            return Ok(Some(trimmed));
+        }
+        Ok(self.console_dev_bootstrap_secret.clone())
     }
 }
 

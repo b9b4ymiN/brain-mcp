@@ -1,0 +1,47 @@
+# examples/config.docker.toml
+#
+# Production-style config for Docker / Compose deployment (Phase F1.2).
+#
+# Usage:
+#   1. mkdir -p ./config ./secrets ./data ./backups
+#   2. cp examples/config.docker.toml ./config/config.toml
+#   3. (umask 077; printf '%s' "$(openssl rand -hex 32)" > ./secrets/bootstrap_secret.txt)
+#   4. docker compose up -d --build
+#
+# The bootstrap secret is loaded from a Docker secret file mounted at
+# /run/secrets/bootstrap_secret (see `docker-compose.yml`'s `secrets:` block).
+# It is NEVER inlined in this file and NEVER placed in `environment:` — env
+# values leak via `docker inspect`, file values do not. The compose smoke
+# (`scripts/docker_compose_smoke.sh`) asserts the secret is absent from the
+# container's `Config.Env`.
+
+[serve]
+# HTTP transport on. ACP (stdio bridge) off for the docker shape.
+http = true
+http_port = 8080
+# Bind 0.0.0.0 INSIDE the container; the host-side publish stays
+# loopback-only (compose: "127.0.0.1:8080:8080"). A reverse proxy with TLS
+# (nginx / caddy) MUST sit in front for any non-loopback exposure.
+http_bind_address = "0.0.0.0"
+http_bind_all_interfaces = true
+acp = false
+
+# Console SPA — baked into the image at /app/web/console/dist by the
+# console-builder stage of the Dockerfile.
+console_static_dir = "/app/web/console/dist"
+
+# Bootstrap secret from Docker secret file. The file is bind-mounted by
+# compose at /run/secrets/bootstrap_secret (mode 0600 on the host).
+# Override priority: file > direct string. Fail-closed: if the file is
+# missing/unreadable, the server refuses to start (no fallback to empty).
+console_dev_bootstrap_secret_file = "/run/secrets/bootstrap_secret"
+
+[logging]
+# JSON log lines for container log aggregators (Loki / Datadog / CloudWatch).
+# Switch to "text" for easier `docker logs` reading during local dev.
+log_format = "json"
+# Log files inside the container (under /data/logs via state_dir derivation).
+# In production prefer stdout (the default `docker logs` surface) and only
+# enable file logging if you have a log shipper picking these up.
+log_rotation = "daily"
+log_max_files = 7

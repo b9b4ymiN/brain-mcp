@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+# scripts/docker_compose_smoke.sh
+#
+# Phase F1.2 compose smoke: build + up + verify the compose stack behaves like
+# a production deployment, with the bootstrap secret flowing through a Docker
+# secret file (`/run/secrets/bootstrap_secret`) — NOT via env, NOT via the
+# tracked config. This is a stronger gate than F1.1's `docker run` smoke:
+# it asserts the secret is absent from `docker inspect` Config.Env (the
+# leak vector that would defeat the `_file:` indirection).
+#
+# Usage:
+#   bash scripts/docker_compose_smoke.sh
+#
+# Pre-reqs:
+#   * Docker Engine 24+ with Compose v2 (`docker compose ...`).
+#   * BuildKit enabled (default on modern Docker).
+#
+# What this script does (in order):
+#   1. Sets up an isolated scratch tree under .docker-compose-smoke/ that
+#      mirrors the operator layout (config/, secrets/, data/, backups/) —
+#      avoids touching any real operator dirs at the repo root.
+#   2. Writes a dev-only bootstrap secret to .docker-compose-smoke/secrets/
+#      (gitignored). The value is random per run.
+#   3. Generates a compose override + config.toml that point at the scratch
+#      tree, so we don't depend on a pre-existing `./config/config.toml`.
+#   4. Builds the image fresh (compose up --build) and waits for /health.
+#   5. Login smoke: wrong secret -> 401, correct secret -> 200 + csrf_token.
+#   6. Console index check (`<title>Brain Console</title>`).
+#   7. SECURITY GATES:
+#        a. `docker inspect brain --format '{{.Config.Env}}'` MUST NOT contain
+#           the bootstrap secret value (env leak check).
+#        b. `docker inspect brain --format '{{json .Mounts}}'` MUST contain
+#           a /run/secrets/bootstrap_secret mount (file indirection check).
+#   8. `docker compose down -v` cleanup.
+#
+# Designed to run under Git Bash on Windows. `MSYS_NO_PATHCONV=1` is not
+# needed for compose subcommands (no host-path bind args on the CLI); the
+# bind mounts are expressed inside the YAML, which Docker reads verbatim.
+
+set -euo pipefail
+
+# ── Resolve repo root (so the script works from any CWD) ─────────────────────
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+REPO_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
+
+# Windows / Git Bash: translate the Unix-style MSYS path (/c/...) into the
+# Windows-native form Docker Desktop actually understands (C:\...). Otherwise
+# the absolute paths embedded in the generated compose YAML get re-translated
+# by MSYS in a way that produces bogus `context:` paths. On real Linux/macOS
+# this is a no-op.
+native_path() {
+    local p="$1"
+    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]] || command -v cygpath >/dev/null 2>&1; then
+        cygpath -m "$p" 2>/dev/null || echo "$p"
+    else
+        echo "$p"
+    fi
+}
+
+# Smoke-controlled scratch tree. Gitignored (see .gitignore: .docker-smoke-data/
+# covers F1.1; .docker-compose-smoke/ is the F1.2 equivalent).
+SCRATCH="$REPO_ROOT/.docker-compose-smoke"
+COMPOSE_FILE="$SCRATCH/docker-compose.smoke.yml"
+EXAMPLE_CONFIG="$REPO_ROOT/examples/config.docker.toml"
+
+# Per-run random secret. We need to know it for the login check, so derive
+# it deterministically from openssl + a per-run nonce.
+SMOKE_PORT="${SMOKE_PORT:-18081}"
+SECRET="smoke-$(openssl rand -hex 16 2>/dev/null || echo "fallback-$$")"
+SECRET_LEN=${#SECRET}
+
+echo "[smoke] repo root        : $REPO_ROOT"
+echo "[smoke] scratch tree     : $SCRATCH"
+echo "[smoke] port             : 127.0.0.1:${SMOKE_PORT} -> 8080"
+echo "[smoke] secret length    : $SECRET_LEN chars (value redacted)"
+
+# ── Sanity: example config + compose file must exist ─────────────────────────
+if [[ ! -f "$EXAMPLE_CONFIG" ]]; then
+    echo "[smoke] FAIL: $EXAMPLE_CONFIG missing — run from a checkout that has Phase F1.2 applied" >&2
+    exit 2
+fi
+if [[ ! -f "$REPO_ROOT/docker-compose.yml" ]]; then
+    echo "[smoke] FAIL: $REPO_ROOT/docker-compose.yml missing" >&2
+    exit 2
+fi
+
+# ── 1. Setup scratch tree ────────────────────────────────────────────────────
+echo "[smoke] setting up scratch tree ..."
+rm -rf "$SCRATCH"
+mkdir -p "$SCRATCH/config" "$SCRATCH/secrets" "$SCRATCH/data" "$SCRATCH/backups"
+
+# Write the dev-only secret (mode 0600). Docker compose reads this via the
+# `secrets:` block and surfaces it at /run/secrets/bootstrap_secret inside
+# the container.
+( umask 077 && printf '%s' "$SECRET" > "$SCRATCH/secrets/bootstrap_secret.txt" )
+chmod 600 "$SCRATCH/secrets/bootstrap_secret.txt" 2>/dev/null || true
+
+# Copy the tracked template into the scratch config dir. The single-file
+# bind mount (`./config/config.toml:/data/config.toml:ro`) is what the
+# container reads.
+cp "$EXAMPLE_CONFIG" "$SCRATCH/config/config.toml"
+
+# ── 2. Generate the smoke compose file ───────────────────────────────────────
+# We can't reuse the root docker-compose.yml directly because (a) it hard-codes
+# `image: brain:v0.5` and (b) its bind mounts point at ./data, ./backups,
+# ./config, ./secrets at the repo root (which we don't want to pollute). The
+# generated override re-points everything at the scratch tree + a per-run
+# port + a smoke-specific image tag.
+#
+# Paths are emitted in their OS-native form (via `native_path`) so Docker
+# Desktop on Windows accepts them verbatim without MSYS path translation
+# mangling the `context:` / `volumes:` values.
+REPO_ROOT_N="$(native_path "$REPO_ROOT")"
+SCRATCH_N="$(native_path "$SCRATCH")"
+cat > "$COMPOSE_FILE" <<EOF
+services:
+  brain:
+    image: brain-compose-smoke:dev
+    build:
+      context: $REPO_ROOT_N
+      dockerfile: Dockerfile
+    container_name: brain_compose_smoke
+    ports:
+      - "127.0.0.1:${SMOKE_PORT}:8080"
+    volumes:
+      - $SCRATCH_N/data:/data
+      - $SCRATCH_N/backups:/backups
+      - $SCRATCH_N/config/config.toml:/data/config.toml:ro
+    environment:
+      - RUST_LOG=llm_wiki=info,warn
+      - LLM_WIKI_CONFIG=/data/config.toml
+    secrets:
+      - bootstrap_secret
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+
+secrets:
+  bootstrap_secret:
+    file: $SCRATCH_N/secrets/bootstrap_secret.txt
+EOF
+
+cleanup() {
+    local ec=$?
+    echo "[smoke] cleaning up compose stack ..."
+    # `down -v` removes the containers + the anonymous volumes. The bind
+    # mounts under $SCRATCH are removed by the rm -rf above / next run.
+    ( cd "$SCRATCH" && MSYS_NO_PATHCONV=1 docker compose -p brain-compose-smoke \
+        -f docker-compose.smoke.yml down -v >/dev/null 2>&1 ) || true
+    if [[ "${KEEP_SMOKE:-0}" != "1" ]]; then
+        rm -rf "$SCRATCH"
+    fi
+    exit $ec
+}
+trap cleanup EXIT INT TERM
+
+# ── 3. Build + up ────────────────────────────────────────────────────────────
+echo "[smoke] docker compose up -d --build (this builds the image fresh, ~4 min on a cold cache) ..."
+# Run compose with the smoke file as the project. -p sets the project name so
+# we don't collide with the operator's default project. `MSYS_NO_PATHCONV=1`
+# is set so Git Bash on Windows does not rewrite path-looking CLI args.
+( cd "$SCRATCH" && MSYS_NO_PATHCONV=1 docker compose -p brain-compose-smoke -f docker-compose.smoke.yml up -d --build )
+
+# ── 4. Poll /health (up to 90s — fresh build container cold-starts slower) ───
+echo "[smoke] waiting for /health (up to 90s) ..."
+HEALTHY=""
+for i in $(seq 1 90); do
+    if curl -sf "http://127.0.0.1:${SMOKE_PORT}/health" >/dev/null 2>&1; then
+        echo "[smoke] healthy after ${i}s"
+        HEALTHY="1"
+        break
+    fi
+    if (( i % 15 == 0 )); then
+        echo "[smoke]   ...still waiting at ${i}s. Recent container logs:"
+        docker logs --tail 15 brain_compose_smoke 2>&1 | sed 's/^/            /' || true
+    fi
+    sleep 1
+done
+
+if [[ -z "$HEALTHY" ]]; then
+    echo "[smoke] FAIL: /health never came up. Full container logs:"
+    docker logs brain_compose_smoke 2>&1 | sed 's/^/    /'
+    exit 1
+fi
+
+# ── 5. /health body shape ────────────────────────────────────────────────────
+echo "[smoke] checking /health body ..."
+HEALTH_BODY="$(curl -sf "http://127.0.0.1:${SMOKE_PORT}/health")"
+echo "[smoke]   /health -> $HEALTH_BODY"
+echo "$HEALTH_BODY" | grep -q '"uptime_secs"' || { echo "[smoke] FAIL: /health missing uptime_secs"; exit 1; }
+echo "$HEALTH_BODY" | grep -q '"wikis"'       || { echo "[smoke] FAIL: /health missing wikis";       exit 1; }
+
+# ── 6. Auth gate: wrong secret -> 401 ────────────────────────────────────────
+echo "[smoke] checking /api/v1/auth/login with WRONG secret (expect 401) ..."
+CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+    -X POST "http://127.0.0.1:${SMOKE_PORT}/api/v1/auth/login" \
+    -H 'Content-Type: application/json' \
+    -d '{"secret":"this-is-not-the-secret"}')
+echo "[smoke]   -> HTTP $CODE"
+[[ "$CODE" = "401" ]] || { echo "[smoke] FAIL: expected 401 got $CODE"; exit 1; }
+
+# ── 7. Auth gate: correct secret -> 200 + csrf_token ─────────────────────────
+echo "[smoke] checking /api/v1/auth/login with CORRECT secret (expect 200) ..."
+LOGIN_BODY=$(curl -s -w "\n%{http_code}" \
+    -X POST "http://127.0.0.1:${SMOKE_PORT}/api/v1/auth/login" \
+    -H 'Content-Type: application/json' \
+    -d "{\"secret\":\"$SECRET\"}")
+CODE=$(echo "$LOGIN_BODY" | tail -n1)
+BODY=$(echo "$LOGIN_BODY" | sed '$d')
+echo "[smoke]   -> HTTP $CODE body=$BODY"
+[[ "$CODE" = "200" ]] || { echo "[smoke] FAIL: expected 200 got $CODE (secret file may not have been read)"; exit 1; }
+echo "$BODY" | grep -q '"csrf_token"' || { echo "[smoke] FAIL: login response missing csrf_token"; exit 1; }
+
+# ── 8. Console static index served at / ──────────────────────────────────────
+echo "[smoke] checking Console static index at / ..."
+INDEX_BODY="$(curl -sf "http://127.0.0.1:${SMOKE_PORT}/")"
+echo "$INDEX_BODY" | grep -q '<title>Brain Console</title>' \
+    || { echo "[smoke] FAIL: console index missing <title>Brain Console</title>"; exit 1; }
+echo "[smoke]   console index OK"
+
+# ── 9. SECURITY GATE A: secret NOT in Config.Env ─────────────────────────────
+# This is the load-bearing check for the entire F1.2 secret-file indirection.
+# If the secret value appears in `docker inspect ... Config.Env`, then either:
+#   (a) the operator put it in `environment:` (the leak vector we avoid), or
+#   (b) some future change made the binary re-export it into the env.
+# Either way: fail loudly.
+echo "[smoke] SECURITY GATE: secret value must NOT appear in docker inspect Config.Env ..."
+INSPECT_ENV="$(docker inspect brain_compose_smoke --format '{{.Config.Env}}' 2>/dev/null || true)"
+if echo "$INSPECT_ENV" | grep -F -q -- "$SECRET"; then
+    echo "[smoke] FAIL: secret leaked into Config.Env — _file: indirection defeated"
+    echo "[smoke]   Config.Env = $INSPECT_ENV"
+    exit 1
+fi
+echo "[smoke]   Config.Env is clean (does not contain the secret value)"
+
+# Also assert RUST_LOG + LLM_WIKI_CONFIG are present (sanity — the env block
+# actually wired up; if these are missing, the secret check above is vacuous).
+echo "$INSPECT_ENV" | grep -q 'RUST_LOG=' \
+    || { echo "[smoke] FAIL: RUST_LOG missing from Config.Env (env block not wired)"; exit 1; }
+echo "$INSPECT_ENV" | grep -q 'LLM_WIKI_CONFIG=' \
+    || { echo "[smoke] FAIL: LLM_WIKI_CONFIG missing from Config.Env"; exit 1; }
+
+# ── 10. SECURITY GATE B: /run/secrets mount present ──────────────────────────
+echo "[smoke] SECURITY GATE: /run/secrets/bootstrap_secret mount must be present ..."
+MOUNTS_JSON="$(docker inspect brain_compose_smoke --format '{{json .Mounts}}')"
+if ! echo "$MOUNTS_JSON" | grep -F -q '/run/secrets/bootstrap_secret'; then
+    echo "[smoke] FAIL: /run/secrets/bootstrap_secret mount missing from container"
+    echo "[smoke]   Mounts = $MOUNTS_JSON"
+    exit 1
+fi
+echo "[smoke]   secret file mount OK"
+
+# Also assert the source path points at the scratch secrets dir (not a stray
+# operator copy). Compare in BOTH the MSYS-style path (what Bash sees) and
+# the OS-native path (what Docker Desktop on Windows reports in `Mounts`).
+SECRET_SRC_UNIX="$SCRATCH/secrets/bootstrap_secret.txt"
+SECRET_SRC_NATIVE="$(native_path "$SECRET_SRC_UNIX")"
+if ! ( echo "$MOUNTS_JSON" | grep -F -q -- "$SECRET_SRC_UNIX" \
+       || echo "$MOUNTS_JSON" | grep -F -q -- "$SECRET_SRC_NATIVE" ); then
+    echo "[smoke] FAIL: secret mount source does not point at scratch secrets dir"
+    echo "[smoke]   expected (unix)  = $SECRET_SRC_UNIX"
+    echo "[smoke]   expected (native)= $SECRET_SRC_NATIVE"
+    echo "[smoke]   Mounts           = $MOUNTS_JSON"
+    exit 1
+fi
+
+# ── 11. Image history clean (carry from F1.1) ────────────────────────────────
+echo "[smoke] SECRET SCAN: image history must not contain the secret ..."
+if docker history --no-trunc brain-compose-smoke:dev 2>/dev/null | grep -F -q -- "$SECRET"; then
+    echo "[smoke] FAIL: secret leaked into image history"
+    exit 1
+fi
+echo "[smoke]   image history clean"
+
+# ── 12. Non-root gate (carry from F1.1) ──────────────────────────────────────
+echo "[smoke] non-root: checking uid inside container ..."
+ID_OUT="$(docker exec brain_compose_smoke id 2>/dev/null || true)"
+if [[ -z "$ID_OUT" ]]; then
+    # `docker exec` may not be available; fall back to a fresh ephemeral run.
+    ID_OUT="$(MSYS_NO_PATHCONV=1 docker run --rm --entrypoint /bin/sh brain-compose-smoke:dev -c 'id')"
+fi
+echo "[smoke]   -> $ID_OUT"
+echo "$ID_OUT" | grep -Eq 'uid=1000\(brain\)' \
+    || { echo "[smoke] FAIL: container not running as brain(uid=1000): $ID_OUT"; exit 1; }
+
+echo ""
+echo "[smoke] PASS — all checks green (compose up, /health, login 401/200, console index,"
+echo "                 secret NOT in inspect Env, secret file mount present, image clean, non-root)"

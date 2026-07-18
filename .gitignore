@@ -51,4 +51,24 @@ web/console/bench/results-*.json
 # Phase F1.1 — Docker smoke test scratch dir (scripts/docker_build_smoke.sh).
 # Bind-mounted into the smoke container; never committed.
 .docker-smoke-data/
+# Phase F1.2 — Docker Compose smoke scratch tree
+# (scripts/docker_compose_smoke.sh). Mirrors the operator layout under a
+# per-run scratch dir; contains a dev-only random bootstrap secret.
+.docker-compose-smoke/
+
+# Phase F1.2 — Docker Compose operator-managed runtime trees. These directories
+# are bind-mounted by `docker-compose.yml` and must NEVER be committed:
+#   * secrets/ — production bootstrap secret (`./secrets/bootstrap_secret.txt`)
+#     leaks the Console API auth key if pushed. The compose smoke creates a
+#     dev-only value under a separate scratch path (see
+#     `scripts/docker_compose_smoke.sh`) so this rule does not weaken CI.
+#   * data/    — semantic store, indexes, state (rebuildable from git).
+#   * backups/ — encrypted backup snapshots (F3.1).
+#   * config/config.toml — the operator's actual production config (may carry
+#     hostnames / OAuth client IDs / wiki paths). The tracked template lives
+#     at `examples/config.docker.toml`.
+secrets/
+data/
+backups/
+config/config.toml
 
