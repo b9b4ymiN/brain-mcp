@@ -42,17 +42,19 @@ Sub-tasks: F1.1 (`9e3d6ba`) · F1.2 (`41a1406`) · F1.3 (`e5f7b41`) — ผ่�
 
 Sub-tasks: F2.1 (`6acd45a`) · F2.2 (`12b9bb6`) · F2.3 (`ec579c4`) + memory-bound fix (`f5dbc96`) — ผ่าน combined spec+quality review (APPROVED ×3 + APPROVED_WITH_NITS ×1); cargo test 27+ green, fmt+clippy clean, /metrics smoke green, /metrics endpoint returns Prometheus text + counter increments verified live
 
-## Task F3 — Backup/restore/upgrade + external security review
+## Task F3 — Backup/restore/upgrade + external security review ✅ CLOSED (`785040b`, `35314ec`, `b68c2df`, `2a7f2df`, F3.4 docs)
 - Encrypted automated backup (objects/ledger/Git/config); **clean-host restore drill จริงใน Docker**
 - Restore sync PurgeRegistry + key revocations ก่อน decrypt; registry stale/unavailable → **fail closed**
-- Composite checksum (`ledger_head+purge_epoch+schema_version`) + event/object/Git/referential/projection manifests ตรง
+- Composite checksum (`ledger_head+purge_epoch+schema_version`) + per-blob digests (`objects: HashMap<path, sha256(plaintext)>` from `b68c2df`) — covers object-swap-under-same-key gap
 - Schema upgrade + app rollback rehearsal; RPO/RTO บันทึก + monitor
-- External security review (security-reviewer agent แยก — เทียบเท่า external)
+- External security review (security-reviewer subagent — เทียบเท่า external; report at `docs/security/phase-F-review.md`)
 
 **DoD (§13 Task 6.3):**
-1. Restore drill บน clean Docker host ผ่าน + composite checksum ตรง + registry fail-closed พิสูจน์
-2. Upgrade + rollback rehearsal ผ่านโดยข้อมูลไม่หาย
-3. RPO/RTO บันทึกและ monitor ได้
-4. Security review ไม่มี critical/high unresolved
+1. ✅ Restore drill บน clean Docker host ผ่าน + composite checksum ตรง + registry fail-closed พิสูจน์ — `run_restore_drill` writes `<root>/restore-drill.json`; 3 fail-closed tests (registry tampered, checksum mismatch, layer missing) green; backup_health flips `last_restore_drill_ok=true`
+2. ✅ Upgrade + rollback rehearsal ผ่านโดยข้อมูลไม่หาย — v2→v3 noop + rollback v3→v2 (transactional, marker rewrite atomic, idempotent recovery on partial failure); `upgrade_rehearsal_round_trip` test green
+3. ✅ RPO/RTO บันทึกและ monitor ได้ — `record_rpo_rto` writes `<root>/rpo-rto.json` (atomic); `read_rpo_rto` กลับมา; CLI `recovery rpo-rto --rpo --rto --met/--not-met`
+4. ✅ Security review ไม่มี critical/high unresolved — `docs/security/phase-F-review.md`: 0 Critical, 0 High, 6 Medium (M-1 `__Host-` cookie prefix, M-2 no /auth/login rate limit, M-3 bincode unmaintained, M-4 stale SECURITY.md, M-5 optional subtle swap, M-6 /metrics no auth), 3 Low; `cargo audit` clean (0 vulnerabilities)
 
-**Phase F Gate = Phase 6 Gate ปิด:** production acceptance + external review clear + restore ได้จริง → **Independent Validator PASS** → **ระบบ production-ready**
+Sub-tasks: F3.1 (`785040b`) · F3.2 (`35314ec`) + fixes (`b68c2df`) · F3.3 (`2a7f2df`) · F3.4 (this commit, docs + SECURITY.md refresh + Gate close) — ผ่าน combined spec+quality review + external security-reviewer subagent (PASS, 0 critical/high)
+
+**Phase F Gate = Phase 6 Gate ปิด:** production acceptance + external review clear + restore ได้จริง → **Independent Validator PASS** (next dispatch) → **ระบบ production-ready**

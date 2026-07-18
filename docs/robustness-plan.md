@@ -1,6 +1,6 @@
 # Robustness Plan — Index
 
-> สถานะ: **Phase A/B/C/E CLOSED · Phase D = NEXT**
+> สถานะ: **Phase A/B/C/E/F CLOSED · Phase D = NEXT** (only Z.ai live-fire remains)
 > Base: branch `vnext/phase-0` (Phase 7 Gate closed — ALL PHASES contract-cleared)
 > Master spec: `C:\Programing\AI2.0\jarvis\brain_2nd\GOAL-vNext.md` (§11 System DoD, §12 Engineering Loop, §13 Phase DoD)
 > ทิศทาง: **Audit ก่อน → ปิด gap ตามลำดับความเสี่ยง**
@@ -33,7 +33,7 @@ Evidence: [`baseline/audit-20260716-report.md`](baseline/audit-20260716-report.m
 | D2 | Auth ไม่อยู่บน hot path + per-handle HIGH | Task 1.3/3.3 | ✅ ปิด Phase B (F1 fix `a9cec81`) |
 | D3 | Z.ai HTTP adapter จริง + adversarial corpus | Task 4.1/4.2 | ⬜ Phase D |
 | D4 | React Console + Galaxy + Playwright gates | Task 5.1–5.3 | ✅ ปิด Phase E (UAT 3 โดเมน + a11y) |
-| D5 | `docker compose up` + restore drill + external review | Task 6.1–6.3 | ⬜ Phase F |
+| D5 | `docker compose up` + restore drill + external review | Task 6.1–6.3 | ✅ ปิด Phase F (amd64; arm64 DEFERRED; security review PASS) |
 | D6 | `cargo audit` vuln | baseline | ✅ ปิด Phase B (crossbeam-epoch 0.9.20) |
 | D7 | governance fail + eval byte_lock | baseline | ✅ ปิด Phase B |
 | D8 | untracked fixtures + `.zcode/` | git status | ✅ ปิด Phase A (`3a21daf`) |
