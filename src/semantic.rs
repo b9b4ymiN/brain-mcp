@@ -1506,12 +1506,16 @@ impl SemanticStore {
             let _ = fs::remove_dir_all(&staging);
         }
 
+        // Drop-guard: wipe the staging dir on scope exit regardless of how we
+        // leave it (normal return, `?` error propagation, OR panic unwind).
+        // The staging dir contains the plaintext snapshot — defense-in-depth
+        // against a rusqlite panic or stray `.unwrap()` mid-backup leaking
+        // decrypted bytes at `parent/.{target}-staging/`. `run_encrypted_backup_inner`
+        // writes the ENCRYPTED target into `target`, never renames `staging`
+        // into anything, so the guard is never disarmed here.
+        let staging_guard = StagingDirGuard::new(staging.clone());
         let report = self.run_encrypted_backup_inner(&staging, target);
-
-        // Always wipe the staging dir, success or failure.
-        if staging.exists() {
-            let _ = fs::remove_dir_all(&staging);
-        }
+        drop(staging_guard);
         report
     }
 
@@ -1536,6 +1540,15 @@ impl SemanticStore {
 
         // 4. Encrypt every layer. Each .enc file is nonce||ciphertext.
         let mut objects_count: u64 = 0;
+        // Per-blob plaintext digests (F3.2 review Fix 2). Keyed by the
+        // object path relative to the `objects/` root (e.g.
+        // `"ab/cd/abcd1234..."`); valued by `sha256(plaintext)` lowercase
+        // hex. Filled alongside encryption below; carried by the manifest
+        // so restore can fail-closed if a `.enc` blob is substituted with a
+        // legitimately-encrypted blob from a DIFFERENT object under the same
+        // key (AES-GCM authenticates the ciphertext but not the binding to
+        // THIS specific backup).
+        let mut object_digests: HashMap<String, String> = HashMap::new();
         encrypt_file_into(
             &cipher,
             &staging.join(DATABASE_FILE),
@@ -1564,6 +1577,7 @@ impl SemanticStore {
                 let shard_name = shard.file_name().ok_or_else(|| {
                     SemanticError::CorruptLedger("object shard has no name".to_owned())
                 })?;
+                let shard_name_str = shard_name.to_string_lossy().into_owned();
                 let target_shard = target.join("objects").join(shard_name);
                 fs::create_dir_all(&target_shard).map_err(io_error)?;
                 for entry in fs::read_dir(&shard).map_err(io_error)? {
@@ -1574,11 +1588,22 @@ impl SemanticStore {
                     let file_name = path.file_name().ok_or_else(|| {
                         SemanticError::CorruptLedger("object file has no name".to_owned())
                     })?;
+                    // Read the plaintext once, hash it for the manifest's
+                    // per-blob digest map, then hand it to the encryptor
+                    // (which re-reads — kept separate so the encrypt path
+                    // stays unchanged and the digest is over exactly the
+                    // bytes that hit disk).
+                    let plaintext = fs::read(&path).map_err(io_error)?;
+                    let mut hasher = Sha256::new();
+                    hasher.update(&plaintext);
+                    let digest_hex = hex::encode(hasher.finalize());
                     // Object blob files are content-addressed hex digests
                     // with no extension; the encrypted sibling is just
                     // "<digest>.enc" so the original name stays readable.
-                    let enc_name = format!("{}.enc", file_name.to_string_lossy());
+                    let file_name_str = file_name.to_string_lossy().into_owned();
+                    let enc_name = format!("{}.enc", file_name_str);
                     encrypt_file_into(&cipher, &path, &target_shard.join(enc_name))?;
+                    object_digests.insert(format!("{shard_name_str}/{file_name_str}"), digest_hex);
                     objects_count = objects_count.saturating_add(1);
                 }
             }
@@ -1611,6 +1636,7 @@ impl SemanticStore {
             objects_count,
             ledger_events_count: ledger_events_backed_up,
             purge_epoch,
+            objects: object_digests,
         };
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(serialization_error)?;
         write_new_file(&target.join(BACKUP_MANIFEST_FILE), &manifest_bytes)?;
@@ -1721,9 +1747,20 @@ impl SemanticStore {
         if staging.exists() {
             let _ = fs::remove_dir_all(&staging);
         }
+
+        // Drop-guard: wipe the staging dir on scope exit regardless of how we
+        // leave it (normal return, `?` error propagation, OR panic unwind).
+        // The staging dir holds the DECRYPTED layers — defense-in-depth
+        // against a panic mid-`run_restore_inner` leaking plaintext at
+        // `parent/.{target}-restore-staging/`. On the success path
+        // `run_restore_inner` renames `staging` into `target` atomically; the
+        // guard is then disarmed (staging no longer exists at the path, and
+        // `target` is operator data we must NOT wipe).
+        let staging_guard = StagingDirGuard::new(staging.clone());
         let result = self.run_restore_inner(backup, target, &staging, &cipher, &manifest);
-        if staging.exists() {
-            let _ = fs::remove_dir_all(&staging);
+        match &result {
+            Ok(_) => staging_guard.disarm(),
+            Err(_) => drop(staging_guard),
         }
         result
     }
@@ -1771,6 +1808,7 @@ impl SemanticStore {
                 let shard_name = shard.file_name().ok_or_else(|| {
                     SemanticError::CorruptLedger("object shard has no name".to_owned())
                 })?;
+                let shard_name_str = shard_name.to_string_lossy().into_owned();
                 let staging_shard = staging.join("objects").join(shard_name);
                 fs::create_dir_all(&staging_shard).map_err(io_error)?;
                 for entry in fs::read_dir(&shard).map_err(io_error)? {
@@ -1789,6 +1827,48 @@ impl SemanticStore {
                         .unwrap_or(&plain_name)
                         .to_owned();
                     let bytes = decrypt_backup_layer(cipher, &path)?;
+                    // Per-blob digest verification (F3.2 review Fix 2).
+                    // AES-GCM authenticates the ciphertext but not its
+                    // binding to THIS specific backup — a substituted blob
+                    // from a different object under the same key would
+                    // otherwise decrypt cleanly. The manifest's `objects`
+                    // map binds each `<shard>/<digest>` path to the original
+                    // plaintext's sha256, so a substitution fails closed
+                    // here. F3.1 manifests have an empty `objects` map
+                    // (no digests recorded) → log + skip verification for
+                    // back-compat.
+                    let relative_key = format!("{shard_name_str}/{plain_name}");
+                    if let Some(expected_digest) = manifest.objects.get(&relative_key) {
+                        let mut hasher = Sha256::new();
+                        hasher.update(&bytes);
+                        let actual_digest = hex::encode(hasher.finalize());
+                        if &actual_digest != expected_digest {
+                            return Err(SemanticError::CorruptLedger(format!(
+                                "object blob digest mismatch at {relative_key}: \
+                                 manifest={expected_digest} restored={actual_digest} \
+                                 (blob may have been substituted with a legitimately-encrypted \
+                                 blob from a different object under the same key)"
+                            )));
+                        }
+                    } else if !manifest.objects.is_empty() {
+                        // The map is non-empty but this blob is unlisted —
+                        // treat as tampering (a real backup lists every blob
+                        // it encrypts; a missing entry means the on-disk tree
+                        // has more blobs than the manifest, which can only
+                        // happen via post-hoc injection).
+                        return Err(SemanticError::CorruptLedger(format!(
+                            "object blob at {relative_key} is not listed in the manifest's \
+                             per-blob digest map (manifest lists {} blobs; this blob is extra)",
+                            manifest.objects.len()
+                        )));
+                    } else {
+                        tracing::warn!(
+                            target: "semantic::restore",
+                            relative_path = %relative_key,
+                            "restoring F3.1-era backup (no per-blob digests in manifest); \
+                             skipping blob digest verification for this path"
+                        );
+                    }
                     write_new_file(&staging_shard.join(&plain_name), &bytes)?;
                 }
             }
@@ -5723,6 +5803,43 @@ fn snapshot_registry_epoch(connection: &Connection) -> Result<u64> {
     Ok(epoch.map(|value| value.max(0) as u64).unwrap_or(0))
 }
 
+/// Removes the wrapped directory when dropped, regardless of how control
+/// leaves the owning scope (panic unwind, early return via `?`, or normal
+/// fallthrough). Used to guarantee staging dirs containing decrypted
+/// plaintext are wiped even on panic — defense-in-depth for the threat
+/// model: a rusqlite internal panic or a stray `.unwrap()` mid-restore must
+/// not leave plaintext on disk at `parent/.{target}-restore-staging/` (or
+/// the matching `.{target}-staging/` backup sibling).
+///
+/// Disarm via [`StagingDirGuard::disarm`] once the staging dir has been
+/// renamed to its final target (atomic) — the guard's `Drop` also tolerates
+/// the path no longer existing (it `.exists()` checks before removal), so
+/// disarming after a successful rename is a defensive no-op even if a
+/// caller forgets.
+struct StagingDirGuard(Option<PathBuf>);
+
+impl StagingDirGuard {
+    fn new(path: PathBuf) -> Self {
+        Self(Some(path))
+    }
+
+    /// Disarm the guard (staging will NOT be removed on drop). Use when the
+    /// staging dir has been renamed to its final target.
+    fn disarm(mut self) {
+        self.0.take();
+    }
+}
+
+impl Drop for StagingDirGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take()
+            && path.exists()
+        {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+    }
+}
+
 /// Plaintext manifest written into every encrypted-backup directory (Task
 /// F3.1). Carries the layer-list + composite checksum + created-at so a
 /// clean-host restore drill can verify the snapshot without first
@@ -5754,6 +5871,20 @@ struct BackupManifest {
     /// "no denials recorded", matching the original pre-F3.2 semantics.
     #[serde(default)]
     purge_epoch: u64,
+    /// Per-blob plaintext digests (F3.2 review Fix 2). Keyed by object path
+    /// relative to the `objects/` root (e.g. `"ab/cd/abcd1234..."`), valued by
+    /// `sha256(plaintext_bytes)` (lowercase hex). On restore, each decrypted
+    /// blob's recomputed digest MUST equal the manifest's entry — this binds
+    /// the AES-GCM-authenticated ciphertext to THIS specific backup, defeating
+    /// an attacker who substitutes `objects/<shard>/<digest>.enc` with a
+    /// legitimately-encrypted blob from a DIFFERENT object under the same key.
+    ///
+    /// Defaults to an empty map so F3.1 manifests (no digests) parse; on
+    /// restore, an empty map means "no per-blob verification" and a warning
+    /// is logged (back-compat — operators re-taking a backup under F3.2 fill
+    /// the map and get the stronger guarantee).
+    #[serde(default)]
+    objects: HashMap<String, String>,
 }
 
 fn open_connection(root: &Path) -> Result<Connection> {

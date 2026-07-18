@@ -662,3 +662,228 @@ fn restore_from_backup_low_level_round_trip() {
         .expect("open restored store");
     let _ = restored; // opened successfully = marker + db + identity are consistent
 }
+
+// ── F3.2 review Fix 1 — staging cleanup on panic via Drop guard ─────────────
+
+/// Defense-in-depth test for the `StagingDirGuard` Drop guard (F3.2 review
+/// Fix 1): after a SUCCESSFUL restore, the staging dir MUST have been
+/// atomically renamed into `target`, and the disarmed guard MUST NOT wipe
+/// `target`. (The panic-unwind coverage is structural — the guard's `Drop`
+/// runs whenever its owner scope exits, including unwinding; simulating a
+/// rusqlite internal panic mid-`run_restore_inner` is not easily reachable
+/// from a black-box integration test without synthesizing a corrupt backup
+/// that panics inside SQLite, and we already have
+/// `restore_drill_fails_when_db_layer_missing` covering the error-path
+/// cleanup. The Drop guard is a one-liner-verify struct: any test that
+/// reaches the staging-guarded scope exercises the drop path.)
+#[test]
+fn restore_target_kept_after_success_and_staging_wiped() {
+    let (parent, _root, store, backup_dir, key) = backup_and_key();
+
+    // Restore into a fresh target under the same parent.
+    let target_dir = parent.path().join("restored-store");
+    let receipt = store
+        .restore_from_backup(&backup_dir, &target_dir, &key)
+        .expect("restore_from_backup");
+    assert_eq!(receipt.state, "completed");
+
+    // On the success path the staging dir is renamed INTO target — so the
+    // staging path (parent/.restored-store-restore-staging) MUST NOT exist,
+    // and target MUST persist (operator data, never wiped by the guard).
+    let staging_dir = parent.path().join(".restored-store-restore-staging");
+    assert!(
+        !staging_dir.exists(),
+        "staging dir must be gone after successful restore (atomic rename into target), \
+         got {}",
+        staging_dir.display()
+    );
+    assert!(
+        target_dir.exists(),
+        "target MUST persist after restore (operator data)"
+    );
+    assert!(
+        target_dir.join("semantic.sqlite3").is_file(),
+        "restored db must exist at target (guard did not wipe target)"
+    );
+}
+
+// ── F3.2 review Fix 2 — per-blob digests in BackupManifest ──────────────────
+
+/// Stage a SECOND store in the same parent (so the same `allowed_parent`)
+/// with DIFFERENT object content, sharing the SAME `backup.key` as the first
+/// store. Returns `(second_store, backup_dir_of_second)` so the swap test
+/// can substitute a `.enc` blob from store-2 into store-1's backup dir.
+///
+/// Sharing the key is the threat model: an attacker who has the operator's
+/// `backup.key` (or has read access to backups taken under that key) can
+/// legitimately encrypt a foreign blob under it — AES-GCM authenticates the
+/// ciphertext but does NOT bind it to the original backup. Per-blob
+/// plaintext digests in `manifest.json` close that gap.
+fn second_store_with_same_key(
+    parent: &Path,
+    src_root: &Path,
+) -> (std::path::PathBuf, SemanticStore, std::path::PathBuf) {
+    let second_root = parent.join("semantic-store-other");
+    let (store, _admin) =
+        SemanticStore::create(&second_root, enabled(parent)).expect("create second store");
+
+    // Copy store-1's backup.key into store-2's root BEFORE its first
+    // backup_encrypted call — that call's load_or_create_backup_key will
+    // then pick up the shared key (idempotent key load), so both backups
+    // are encrypted under the SAME AES-256-GCM key.
+    let key_bytes = fs::read(src_root.join("backup.key")).expect("read src backup.key");
+    fs::write(second_root.join("backup.key"), &key_bytes).expect("seed second store key");
+
+    // Capture DIFFERENT object content so the digests differ.
+    let ctx = store.trusted_context();
+    store
+        .capture(
+            &ctx,
+            CaptureCommand {
+                operation_id: "op-other-a".to_owned(),
+                bytes: b"completely different payload A".to_vec(),
+                media_type: "text/plain".to_owned(),
+            },
+        )
+        .expect("capture other A");
+    store
+        .capture(
+            &ctx,
+            CaptureCommand {
+                operation_id: "op-other-b".to_owned(),
+                bytes: b"unrelated bytes for swap test".to_vec(),
+                media_type: "application/octet-stream".to_owned(),
+            },
+        )
+        .expect("capture other B");
+
+    let backup_dir = parent.join("enc-backup-other");
+    store
+        .backup_encrypted(&backup_dir)
+        .expect("backup_encrypted second");
+    (second_root, store, backup_dir)
+}
+
+/// Collect every `objects/<shard>/<digest>.enc` path under `backup_dir` (the
+/// encrypted object-blob tree). Returns absolute paths.
+fn collect_enc_object_blobs(backup_dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let objects = backup_dir.join("objects");
+    if !objects.is_dir() {
+        return out;
+    }
+    for shard in fs::read_dir(&objects).expect("read objects") {
+        let shard = shard.unwrap().path();
+        if !shard.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(&shard).expect("read shard") {
+            let path = entry.unwrap().path();
+            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("enc") {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn restore_drill_passes_with_valid_object_blobs() {
+    // Happy path is unaffected by the per-blob digest layer: a freshly-taken
+    // backup's manifest lists every blob it encrypted, and the recomputed
+    // sha256 of each restored plaintext matches. This guards against the
+    // digest code rejecting legitimate backups (the red→green pair for the
+    // swap test).
+    let (_parent, _root, store, backup_dir, key) = backup_and_key();
+
+    // Manifest MUST now carry a non-empty `objects` digest map (F3.2 review
+    // Fix 2). The fixture captures 2 objects → at least 2 digests.
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(backup_dir.join("manifest.json")).expect("read manifest"))
+            .expect("manifest parses");
+    let objects_map = manifest
+        .get("objects")
+        .expect("manifest.objects field present");
+    let digest_count = objects_map.as_object().map(|m| m.len()).unwrap_or(0);
+    assert!(
+        digest_count >= 2,
+        "manifest.objects must list >=2 per-blob digests (got {digest_count})"
+    );
+
+    // Restore must succeed end-to-end with all digests matching.
+    let result = store
+        .run_restore_drill(&backup_dir, &key)
+        .expect("run_restore_drill");
+    assert!(
+        result.passed(),
+        "drill must pass on a fresh backup with valid per-blob digests (got {result:?})"
+    );
+}
+
+#[test]
+fn restore_drill_fails_when_object_blob_swapped() {
+    // Threat model (F3.2 review Fix 2): an attacker substitutes
+    // `objects/<shard>/<digest>.enc` with a legitimately-encrypted blob
+    // from a DIFFERENT object under the SAME backup key. AES-GCM
+    // authenticates the substituted ciphertext (so decryption succeeds),
+    // but the decrypted plaintext no longer matches what the backup
+    // originally recorded — detected here via the manifest's per-blob
+    // sha256 digest map.
+    let (parent, root, store, backup_dir, key) = backup_and_key();
+
+    // Second store + backup sharing the same key (different object bytes).
+    let (_other_root, _other_store, other_backup_dir) =
+        second_store_with_same_key(parent.path(), &root);
+
+    // Both backups must have at least one object blob to swap.
+    let primary_blobs = collect_enc_object_blobs(&backup_dir);
+    let other_blobs = collect_enc_object_blobs(&other_backup_dir);
+    assert!(
+        !primary_blobs.is_empty() && !other_blobs.is_empty(),
+        "both backups must have at least one encrypted object blob to swap"
+    );
+
+    // Sanity: the substituted blob must decrypt cleanly under the same key
+    // (this is what AES-GCM does NOT catch — it authenticates the foreign
+    // ciphertext). If the key share above is wrong, this assertion catches
+    // it before the swap rather than producing a misleading test outcome.
+    let cipher = cipher_from_key(&root);
+    let swapped_bytes = fs::read(&other_blobs[0]).expect("read other blob bytes");
+    let _ = decrypt_backup_layer(&cipher, &other_blobs[0])
+        .expect("substituted blob MUST decrypt under the shared key (otherwise this is not the threat model)");
+
+    // Overwrite the primary's first object blob with the substituted bytes
+    // (same nonce+ ciphertext, but for a DIFFERENT plaintext).
+    let target_path = &primary_blobs[0];
+    fs::write(target_path, &swapped_bytes).expect("swap blob bytes");
+
+    // Restore must FAIL CLOSED via the per-blob digest check. The drill
+    // returns Ok(RecoveryDrillResult) on the failure branch (never Err), so
+    // check `passed()` is false + composite_checksum_matches is false.
+    let result = store
+        .run_restore_drill(&backup_dir, &key)
+        .expect("drill returns a result, not an error");
+    assert!(
+        !result.passed(),
+        "drill MUST fail when an object blob is swapped (got {result:?})"
+    );
+    assert!(
+        !result.composite_checksum_matches,
+        "composite_checksum_matches must be false on object-blob swap"
+    );
+
+    // The outcome file must record the failure with an error string that
+    // mentions the digest mismatch (so operators see WHY the drill failed).
+    let body: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join("restore-drill.json")).expect("read drill file"),
+    )
+    .expect("drill file parses");
+    assert_eq!(body["last_ok"], json!(false), "outcome file last_ok=false");
+    let err = body["error"]
+        .as_str()
+        .expect("outcome file carries an error message");
+    assert!(
+        err.contains("object blob digest mismatch") || err.contains("digest mismatch"),
+        "error must explain the digest mismatch, got: {err}"
+    );
+}
