@@ -31,14 +31,16 @@
 
 Sub-tasks: F1.1 (`9e3d6ba`) · F1.2 (`41a1406`) · F1.3 (`e5f7b41`) — ผ่าน combined spec+quality review (APPROVED/APPROVED/APPROVED); cargo test 9+7+44 green, fmt+clippy clean, docker smoke green (health + login 401/200 + console index + secret-scan + /ready)
 
-## Task F2 — Observability + operations wiring *(ปิด contract-only Task 6.2)*
+## Task F2 — Observability + operations wiring *(ปิด contract-only Task 6.2)* ✅ CLOSED (`6acd45a`, `12b9bb6`, `ec579c4`, `f5dbc96`)
 - Wire `LogRedactor` เข้า log path จริง; structured logs/metrics/traces/queue-depth/projection-lag/auth-failures/storage alerts
 - Rate/size/time limits บังคับ runaway ingest + provider cost/quota จริง
 
 **DoD (§13 Task 6.2):**
-1. Log redaction: token/source secret ไม่รั่วใน log จริง (integration test ยิง log แล้ว grep)
-2. Metrics endpoint expose ครบ; projection lag/auth failure นับได้จริง
-3. Ingest limits บังคับจริง (เกิน limit → reject)
+1. ✅ Log redaction: token/source secret ไม่รั่วใน log จริง — `RedactingMakeWriter` wrap ทุก writer path (stderr + file + json/compact), 6 integration tests (`tests/observability_integration_v1.rs`) ผ่าน
+2. ✅ Metrics endpoint expose ครบ; projection lag/auth failure นับได้จริง — `GET /metrics` Prometheus text format; `console_auth_failures_total`/`console_logins_total`/`ingest_total`/`mcp_calls_total{tool}`/`projection_lag_seconds`/`job_queue_depth{state}` counters ตามจริง; 5 integration tests (`tests/metrics_integration_v1.rs`) ผ่าน
+3. ✅ Ingest limits บังคับจริง — `IngestRateLimiter` (sliding window, full-sweep eviction, bounded memory) + size check บน MCP `brain_ingest_source`/`brain_capture`/`wiki_ingest`; `PAYLOAD_TOO_LARGE`/`RATE_LIMITED` errors; 9 integration + 5 unit tests ผ่าน
+
+Sub-tasks: F2.1 (`6acd45a`) · F2.2 (`12b9bb6`) · F2.3 (`ec579c4`) + memory-bound fix (`f5dbc96`) — ผ่าน combined spec+quality review (APPROVED ×3 + APPROVED_WITH_NITS ×1); cargo test 27+ green, fmt+clippy clean, /metrics smoke green, /metrics endpoint returns Prometheus text + counter increments verified live
 
 ## Task F3 — Backup/restore/upgrade + external security review
 - Encrypted automated backup (objects/ledger/Git/config); **clean-host restore drill จริงใน Docker**
