@@ -232,6 +232,29 @@ pub enum Commands {
         #[command(subcommand)]
         action: LogsAction,
     },
+    /// Encrypted backup + restore drills (Phase F3.1).
+    Recovery {
+        /// The recovery subcommand.
+        #[command(subcommand)]
+        action: RecoveryAction,
+    },
+}
+
+/// Subcommands for `llm-wiki recovery` (Phase F3.1).
+#[derive(Subcommand)]
+pub enum RecoveryAction {
+    /// Produce an AES-256-GCM encrypted full-store snapshot.
+    Backup {
+        /// Output directory (must not already exist; must live under the
+        /// store's allowed_parent — i.e. the state_dir, like the plaintext
+        /// `backup_consistent` snapshot). Each layer becomes `<name>.enc`
+        /// and a plaintext `manifest.json` is written alongside.
+        #[arg(long)]
+        output: String,
+        /// Output format: text | json
+        #[arg(long)]
+        format: Option<String>,
+    },
 }
 
 /// Subcommands for `llm-wiki logs`.

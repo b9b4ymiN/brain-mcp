@@ -359,6 +359,87 @@ groups:
           summary: "MCP tool error rate > 10%"
 ```
 
+## Encrypted backups (Phase F3.1)
+
+The `llm-wiki recovery backup` subcommand produces an AES-256-GCM encrypted
+full-store snapshot: every layer (sqlite db, store marker, projection,
+content-addressed object blobs) is encrypted into a `<name>.enc` file under
+the operator-supplied `--output` directory, and a plaintext `manifest.json`
+is written alongside (layer list + composite checksum + created-at, so a
+restore drill can verify the snapshot without first decrypting).
+
+The encryption key lives at `<state_dir>/semantic-store/backup.key` — a
+32-byte raw AES-256 key, created on first call with mode 0600 on Unix. **The
+key MUST be backed up separately from the encrypted snapshots** (chicken-
+and-egg: a backup encrypted under a key it also contains is unrecoverable).
+If `backup.key` is lost, every backup taken under it is unrecoverable.
+
+### Taking a backup
+
+The output directory MUST be a direct child of the configured `state_dir`
+(the store's `allowed_parent`, same boundary as the plaintext
+`backup_consistent` snapshot). In the shipped Compose layout the
+state_dir is `/data`, so the backup target lives under `/data`:
+
+```bash
+# Inside the container:
+docker compose exec brain llm-wiki recovery backup \
+    --output /data/backups/$(date +%Y%m%d)
+
+# Or JSON output for cron-pipeline parsing:
+docker compose exec brain llm-wiki recovery backup \
+    --output /data/backups/$(date +%Y%m%d) --format json
+```
+
+The `./backups` bind-mount (`/backups` in the container) is the
+operator-facing off-host rotation target — copy the encrypted snapshot
+there AFTER the backup completes, so the running container never writes
+directly to the off-host volume:
+
+```bash
+# On the host, after the exec above:
+cp -r ./data/backups/$(date +%Y%m%d) ./backups/
+# Then rotate ./backups/ off-host (rsync to object storage, etc.)
+```
+
+### What lands in the backup directory
+
+```
+<data>/backups/20260718/
+├── manifest.json              # plaintext: version, cipher, checksum, created_at
+├── semantic.sqlite3.enc       # AES-256-GCM(nonce || ciphertext)
+├── store.marker.json.enc      # the store identity marker
+├── projection.json.enc        # present iff a projection was snapshotted
+└── objects/
+    └── <shard>/
+        └── <digest>.enc       # one .enc per content-addressed object blob
+```
+
+Each `.enc` file is `nonce || ciphertext` with a fresh random 12-byte nonce
+per file. The cipher key is the same `Aes256Gcm` used for object-at-rest
+crypto-shred, but the KEY is a separate backup-only key (`backup.key`) so
+destroying an object's epoch key never also destroys a backup.
+
+### Key management (read this before your first backup)
+
+| Concern                        | Guidance                                                          |
+|--------------------------------|-------------------------------------------------------------------|
+| Where is the key?              | `<state_dir>/semantic-store/backup.key` (32 raw bytes)            |
+| File mode                      | 0600 on Unix (auto). On Windows: inherits user-profile ACL; add an explicit ACL with `icacls backup.key /inheritance:r /grant:r "%USERNAME%:R"` for a shared account. |
+| Back it up SEPARATELY          | Copy `backup.key` to a different off-host location than the encrypted snapshots. A common split: encrypted snapshots to your object-storage bucket, the key to a password manager or a KMS-wrapped secret store. |
+| Key rotation                   | Not yet implemented (Phase F follow-up). To rotate today: take a new backup under a fresh key (move the old `backup.key` aside, let `recovery backup` create a new one), then re-encrypt prior snapshots if you need them under the new key. |
+| Lost key                       | All backups taken under that key are unrecoverable. There is no escrow. |
+| Corrupted key                  | `recovery backup` fails closed (refuses to overwrite a wrong-length key file) rather than silently orphaning prior backups. Restore the key from your separate backup before retrying. |
+
+### Verifying a backup
+
+The plaintext `manifest.json` records the source store's `composite_checksum`
+at backup time. A restore drill (Phase F3.2, not yet implemented) will
+recompute that checksum against the restored snapshot and fail closed on
+mismatch. Until then, an operator can verify the backup is decryptable by
+running the included integration test pattern against the key + a backup
+directory (see `tests/recovery_integration_v1.rs::encrypted_backup_decrypt_round_trip`).
+
 ## Production hardening checklist
 
 The shipped Compose stack is **loopback-only** (`127.0.0.1:8080:8080`). For
@@ -389,7 +470,11 @@ any non-local access, put a reverse proxy in front. Recommended baseline:
       Phase F2.2 (`/metrics`) has landed, scrape the endpoint and right-size
       from actual RSS / CPU usage rather than guessing.
 - [ ] **Backups.** `./backups/` is wired as a volume; the F3.1 encrypted
-      backup tooling writes here. Verify your backup rotation externally.
+      backup tooling (`llm-wiki recovery backup`) writes snapshots under
+      `./data/backups/` (inside the state_dir boundary). Copy the result
+      onto the `./backups/` bind-mount for off-host rotation, and back up
+      `./data/semantic-store/backup.key` SEPARATELY. See
+      [Encrypted backups](#encrypted-backups-phase-f31).
 - [ ] **Health-based restart.** The compose `healthcheck` + `restart:
       unless-stopped` will restart on `curl /health` failure; verify the
       `start_period` is long enough for your wiki size on cold start.

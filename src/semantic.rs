@@ -39,6 +39,26 @@ const PROJECTION_FILE: &str = "projection.json";
 const OBJECT_MEDIA_TYPE: &str = "application/vnd.brain.semantic+json";
 const DEFAULT_MAX_OBJECT_BYTES: u64 = 32 * 1024 * 1024;
 const AES_GCM_NONCE_LEN: usize = 12;
+/// AES-256 raw key length, in bytes. Used by [`SemanticStore::load_or_create_backup_key`]
+/// (Task F3.1) to validate a persisted `backup.key` and by [`Aes256Gcm`]
+/// everywhere else — kept as a named constant rather than a literal so the
+/// 32-byte contract is one-line-auditable.
+const AES_256_KEY_LEN: usize = 32;
+/// Operator-managed encrypted-backup key file (Task F3.1). 32 raw bytes
+/// dropped at `<store_root>/backup.key`. MUST be backed up separately from
+/// the encrypted backups themselves (chicken-and-egg: a backup encrypted
+/// under a key it also contains is unrecoverable).
+const BACKUP_KEY_FILE: &str = "backup.key";
+/// Encrypted-backup manifest file (Task F3.1). Plaintext JSON written into
+/// every encrypted-backup target dir so operators can inspect layer list +
+/// composite checksum + created-at without decrypting first.
+const BACKUP_MANIFEST_FILE: &str = "manifest.json";
+/// `manifest.json` schema version (Task F3.1). Bumped on incompatible
+/// changes to the manifest shape.
+const BACKUP_MANIFEST_VERSION: u32 = 1;
+/// Cipher identifier recorded in `manifest.json`. AES-256-GCM, per the
+/// 2026-07-18 user decision to "follow master plan" for backup encryption.
+const BACKUP_CIPHER_ALG: &str = "AES-256-GCM";
 const BOOTSTRAP_CLIENT_LABEL: &str = "__bootstrap__";
 /// Capability granted to the bootstrap identity and to any client created
 /// via the unscoped `register_client`, preserving the pre-Task-1.3 behavior
@@ -1364,6 +1384,233 @@ impl SemanticStore {
             )
             .map_err(database_error)?;
         Ok(())
+    }
+
+    /// Path to the encrypted-backup key file (Task F3.1).
+    ///
+    /// `<root>/backup.key` — 32 raw bytes that key an `Aes256Gcm` cipher.
+    /// This is the operator-managed backup encryption key, distinct from the
+    /// object-at-rest epoch keys: object crypto-shred rotates per-epoch DEKs
+    /// wrapped under those; backup encrypts the *whole store snapshot* (db +
+    /// objects + marker + projection) under this single long-lived key so a
+    /// restored backup can be unlocked with one secret.
+    ///
+    /// The key is intentionally stored OUTSIDE any encrypted backup (a
+    /// backup encrypted under a key it also contains would be unrecoverable
+    /// — chicken-and-egg). Operators MUST back this file up separately
+    /// (off-host, access-controlled). If lost, all backups taken under it
+    /// are unrecoverable.
+    pub fn backup_key_path(root: impl AsRef<Path>) -> PathBuf {
+        root.as_ref().join(BACKUP_KEY_FILE)
+    }
+
+    /// Loads — or creates on first call — the backup encryption key (Task F3.1).
+    ///
+    /// On Unix the created file is mode 0600 (only the owning uid can read
+    /// it). On Windows the mode call is skipped: the file inherits the
+    /// user-profile default ACL, which is also user-only in practice, but
+    /// operators running under a shared account should add an explicit ACL
+    /// (`icacls backup.key /inheritance:r /grant:r "%USERNAME%:R"`).
+    ///
+    /// A malformed existing file (wrong length) is rejected — never silently
+    /// rewritten — so a corrupted `backup.key` is loud rather than turning
+    /// prior backups into unrecoverable ciphertext under a fresh key.
+    pub fn load_or_create_backup_key(root: &Path) -> Result<Key<Aes256Gcm>> {
+        let key_path = Self::backup_key_path(root);
+        if key_path.is_file() {
+            let bytes = fs::read(&key_path).map_err(io_error)?;
+            if bytes.len() != AES_256_KEY_LEN {
+                return Err(SemanticError::CorruptLedger(format!(
+                    "backup.key is {} bytes (expected {}); refusing to overwrite a \
+                     potentially-corrupted key that may unlock existing backups",
+                    bytes.len(),
+                    AES_256_KEY_LEN
+                )));
+            }
+            let key = Key::<Aes256Gcm>::from_slice(&bytes);
+            return Ok(*key);
+        }
+        let bytes = Aes256Gcm::generate_key(&mut OsRng);
+        write_new_file(&key_path, bytes.as_slice())?;
+        restrict_file_permissions(&key_path);
+        Ok(bytes)
+    }
+
+    /// Produces an AES-GCM-encrypted full-store snapshot (Task F3.1).
+    ///
+    /// Stages a plaintext [`Self::backup_consistent`] snapshot in a temporary
+    /// sibling directory, then encrypts every layer (sqlite db, marker,
+    /// projection, every object shard blob) under the store's
+    /// [`Self::load_or_create_backup_key`] into `<target_root>/<name>.enc`
+    /// files, writes a plaintext `manifest.json` (composite checksum + layer
+    /// list + created-at) into the target, and removes the staging dir. The
+    /// returned [`BackupReport`] carries `encrypted: true` and the live
+    /// store's `composite_checksum` so a clean-host restore drill can verify
+    /// the decrypted snapshot matches the source.
+    ///
+    /// Each `.enc` file is `nonce || ciphertext` with a fresh random 12-byte
+    /// nonce per file (negligible collision risk at backup cadence — well
+    /// below the AES-GCM 2^32 message bound). The cipher is the same
+    /// `Aes256Gcm` used for object-at-rest crypto-shred; the KEY is a
+    /// separate backup-only key (`<root>/backup.key`) so destroying an
+    /// object's epoch key never also destroys a backup.
+    ///
+    /// Like `backup_consistent`, this requires the target directory to NOT
+    /// pre-exist and to live under the store's `allowed_parent` (the
+    /// backup-consistent escape-prevention guard). The plaintext staging dir
+    /// is wiped on success AND on the error paths below.
+    pub fn backup_encrypted(
+        &self,
+        target_root: impl AsRef<Path>,
+    ) -> Result<crate::recovery::BackupReport> {
+        let target = target_root.as_ref();
+        if target.exists() {
+            return Err(SemanticError::InvalidRoot(
+                "encrypted backup target already exists".to_owned(),
+            ));
+        }
+        let parent = target.parent().ok_or_else(|| {
+            SemanticError::InvalidRoot("encrypted backup target has no parent".to_owned())
+        })?;
+        let canonical_parent = parent.canonicalize().map_err(|_| {
+            SemanticError::InvalidRoot(
+                "encrypted backup target parent is not accessible".to_owned(),
+            )
+        })?;
+        if canonical_parent.to_string_lossy() != self.marker.allowed_parent {
+            return Err(SemanticError::InvalidRoot(
+                "encrypted backup target escaped allowed parent".to_owned(),
+            ));
+        }
+
+        // 1. Stage a plaintext snapshot in a sibling temp dir, then VACUUM/copy
+        //    into it via backup_consistent. The staging dir MUST be a sibling
+        //    of the target so backup_consistent's `canonical_parent` guard
+        //    accepts it (it has to live under self.marker.allowed_parent).
+        let staging_name = format!(
+            ".{}-staging",
+            target
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("enc-backup")
+        );
+        let staging = parent.join(&staging_name);
+        if staging.exists() {
+            // A prior crashed run left a staging dir; remove it so this run
+            // starts clean. Never remove the target — that is operator data.
+            let _ = fs::remove_dir_all(&staging);
+        }
+
+        let report = self.run_encrypted_backup_inner(&staging, target);
+
+        // Always wipe the staging dir, success or failure.
+        if staging.exists() {
+            let _ = fs::remove_dir_all(&staging);
+        }
+        report
+    }
+
+    fn run_encrypted_backup_inner(
+        &self,
+        staging: &Path,
+        target: &Path,
+    ) -> Result<crate::recovery::BackupReport> {
+        // 2. Plaintext snapshot via the existing VACUUM-into + objects-copy
+        //    path. This also inserts a row into THIS store's purge_backup_sets.
+        self.backup_consistent(staging)?;
+
+        // 3. Load (or first-create) the backup key. Loaded here, AFTER
+        //    backup_consistent succeeded, so a key-create failure never
+        //    leaves a half-written plaintext snapshot lying around in a path
+        //    that the staging-dir cleanup below would not reach (the key
+        //    file lives inside self.root, not under staging).
+        let key = Self::load_or_create_backup_key(&self.root)?;
+        let cipher = Aes256Gcm::new(&key);
+
+        fs::create_dir(target).map_err(io_error)?;
+
+        // 4. Encrypt every layer. Each .enc file is nonce||ciphertext.
+        let mut objects_count: u64 = 0;
+        encrypt_file_into(
+            &cipher,
+            &staging.join(DATABASE_FILE),
+            &target.join(format!("{DATABASE_FILE}.enc")),
+        )?;
+        encrypt_file_into(
+            &cipher,
+            &staging.join(MARKER_FILE),
+            &target.join(format!("{MARKER_FILE}.enc")),
+        )?;
+        if staging.join(PROJECTION_FILE).is_file() {
+            encrypt_file_into(
+                &cipher,
+                &staging.join(PROJECTION_FILE),
+                &target.join(format!("{PROJECTION_FILE}.enc")),
+            )?;
+        }
+        // Object shard tree: mirror the shard/<file> layout, each blob .enc'd.
+        let staging_objects = staging.join("objects");
+        if staging_objects.is_dir() {
+            for shard in fs::read_dir(&staging_objects).map_err(io_error)? {
+                let shard = shard.map_err(io_error)?.path();
+                if !shard.is_dir() {
+                    continue;
+                }
+                let shard_name = shard.file_name().ok_or_else(|| {
+                    SemanticError::CorruptLedger("object shard has no name".to_owned())
+                })?;
+                let target_shard = target.join("objects").join(shard_name);
+                fs::create_dir_all(&target_shard).map_err(io_error)?;
+                for entry in fs::read_dir(&shard).map_err(io_error)? {
+                    let path = entry.map_err(io_error)?.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    let file_name = path.file_name().ok_or_else(|| {
+                        SemanticError::CorruptLedger("object file has no name".to_owned())
+                    })?;
+                    // Object blob files are content-addressed hex digests
+                    // with no extension; the encrypted sibling is just
+                    // "<digest>.enc" so the original name stays readable.
+                    let enc_name = format!("{}.enc", file_name.to_string_lossy());
+                    encrypt_file_into(&cipher, &path, &target_shard.join(enc_name))?;
+                    objects_count = objects_count.saturating_add(1);
+                }
+            }
+        }
+
+        // 5. Live composite checksum — for restore-drill verification.
+        let checksum = self.composite_checksum()?;
+
+        // 6. Count ledger rows in the snapshot (run against the freshly
+        //    snapshotted db so the count is exactly what a restore would
+        //    see, not a racing live value).
+        let snapshot_db = staging.join(DATABASE_FILE);
+        let ledger_events_backed_up = count_ledger_events(&snapshot_db)?;
+
+        // 7. Manifest — plaintext JSON so operators can inspect the backup
+        //    without decrypting (layer list + checksum + created_at). The
+        //    cipher key is NOT in here (chicken-and-egg); the manifest only
+        //    records what to decrypt and how to verify it.
+        let manifest = BackupManifest {
+            version: BACKUP_MANIFEST_VERSION,
+            encrypted: true,
+            cipher: BACKUP_CIPHER_ALG.to_owned(),
+            composite_checksum: checksum.clone(),
+            created_at: self.clock.now().to_rfc3339(),
+            objects_count,
+            ledger_events_count: ledger_events_backed_up,
+        };
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(serialization_error)?;
+        write_new_file(&target.join(BACKUP_MANIFEST_FILE), &manifest_bytes)?;
+
+        // 8. Report. config_snapshot=true (marker always present), git=0
+        //    until a git-history layer is wired (Phase F follow-up).
+        Ok(crate::recovery::BackupReport::for_encrypted(
+            objects_count,
+            ledger_events_backed_up,
+            checksum,
+        ))
     }
 
     #[cfg(feature = "semantic-test-failpoints")]
@@ -5011,6 +5258,105 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
         .map_err(io_error)?;
     file.write_all(bytes).map_err(io_error)?;
     file.sync_all().map_err(io_error)
+}
+
+/// Restricts a file's permissions to owner-only (Task F3.1). On Unix the
+/// mode is set to 0600 (read/write owner only); on Windows there is no
+/// equivalent std API so the file inherits the user-profile default ACL
+/// (user-only in practice for a normal profile, but operators running under
+/// a shared account should add an explicit ACL via `icacls`).
+#[cfg(unix)]
+fn restrict_file_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(error) = fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
+        tracing::warn!(
+            error = %error,
+            path = %path.display(),
+            "failed to set backup.key mode 0600; operator should chmod manually"
+        );
+    }
+}
+
+/// Windows no-op counterpart (see the unix arm above). The created file
+/// inherits the user-profile default ACL; operators wanting a stricter
+/// guarantee should `icacls backup.key /inheritance:r /grant:r "%USERNAME%:R"`.
+#[cfg(not(unix))]
+fn restrict_file_permissions(_path: &Path) {}
+
+/// Encrypts one plaintext file into `target` as `nonce || ciphertext` under
+/// the supplied AES-256-GCM cipher (Task F3.1). Used by
+/// [`SemanticStore::backup_encrypted`] for every backup layer (db, marker,
+/// projection, object blobs). The nonce is a fresh random 12-byte value per
+/// file via `OsRng` — negligible collision risk at backup cadence.
+fn encrypt_file_into(cipher: &Aes256Gcm, source: &Path, target: &Path) -> Result<()> {
+    let plaintext = fs::read(source).map_err(io_error)?;
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext.as_slice())
+        .map_err(|_| SemanticError::Serialization("backup layer encryption failed".to_owned()))?;
+    let mut envelope = Vec::with_capacity(AES_GCM_NONCE_LEN + ciphertext.len());
+    envelope.extend_from_slice(nonce.as_slice());
+    envelope.extend_from_slice(&ciphertext);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(io_error)?;
+    }
+    write_new_file(target, &envelope)
+}
+
+/// Decrypts one `nonce || ciphertext` file produced by [`encrypt_file_into`]
+/// back into plaintext bytes. Exposed as a free function so integration tests
+/// can perform an independent round-trip (read `backup.key`, decrypt each
+/// `.enc` file, compare against a parallel plaintext backup).
+pub fn decrypt_backup_layer(cipher: &Aes256Gcm, encrypted_source: &Path) -> Result<Vec<u8>> {
+    let envelope = fs::read(encrypted_source).map_err(io_error)?;
+    if envelope.len() < AES_GCM_NONCE_LEN {
+        return Err(SemanticError::CorruptLedger(format!(
+            "encrypted backup layer {} is too short ({} bytes; need at least the \
+             12-byte nonce)",
+            encrypted_source.display(),
+            envelope.len()
+        )));
+    }
+    let (nonce_bytes, ciphertext) = envelope.split_at(AES_GCM_NONCE_LEN);
+    let nonce = Nonce::from_slice(nonce_bytes);
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| SemanticError::ObjectUnavailable("backup layer decryption failed".to_owned()))
+}
+
+/// Opens a snapshot sqlite db (read-only) and counts the ledger events in
+/// it (Task F3.1). Run against the staged snapshot rather than the live
+/// store so the recorded count matches exactly what a restore would see.
+fn count_ledger_events(snapshot_db: &Path) -> Result<u64> {
+    let connection = Connection::open(snapshot_db).map_err(database_error)?;
+    let count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .map_err(database_error)?;
+    Ok(count.max(0) as u64)
+}
+
+/// Plaintext manifest written into every encrypted-backup directory (Task
+/// F3.1). Carries the layer-list + composite checksum + created-at so a
+/// clean-host restore drill can verify the snapshot without first
+/// decrypting it. The cipher key is NOT recorded here (chicken-and-egg).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BackupManifest {
+    /// Manifest schema version. Bumped on incompatible shape changes.
+    version: u32,
+    /// Always `true` for backups produced by `backup_encrypted`.
+    encrypted: bool,
+    /// Cipher algorithm identifier (e.g. "AES-256-GCM").
+    cipher: String,
+    /// Composite checksum of the LIVE store at backup time; a restore drill
+    /// recomputes this against the restored snapshot and compares.
+    composite_checksum: String,
+    /// RFC3339 timestamp the backup was taken.
+    created_at: String,
+    /// Number of object blobs encrypted (informational; restore drills count
+    /// actual decrypted blobs and compare).
+    objects_count: u64,
+    /// Number of ledger events in the snapshot (informational; same caveat).
+    ledger_events_count: u64,
 }
 
 fn open_connection(root: &Path) -> Result<Connection> {

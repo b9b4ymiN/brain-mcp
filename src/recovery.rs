@@ -22,6 +22,29 @@ pub struct BackupReport {
     pub checksum: String,
 }
 
+impl BackupReport {
+    /// Constructs a successful encrypted-backup report (Task F3.1).
+    ///
+    /// `objects` is the count of object blobs encrypted; `ledger_events` is
+    /// the count of ledger rows in the snapshot; `checksum` is the live
+    /// store's `composite_checksum()` (recorded so a restore drill can verify
+    /// the restored snapshot matches the source). The report always carries
+    /// `encrypted: true` — the unencrypted path does not go through this
+    /// producer. `git_commits_backed_up` is recorded as `0` for now: the
+    /// semantic store does not yet track git history (a Phase-F follow-up),
+    /// and the field is kept non-zero only when an actual git layer exists.
+    pub fn for_encrypted(objects: u64, ledger_events: u64, checksum: impl Into<String>) -> Self {
+        Self {
+            objects_backed_up: objects,
+            ledger_events_backed_up: ledger_events,
+            git_commits_backed_up: 0,
+            config_snapshot: true,
+            encrypted: true,
+            checksum: checksum.into(),
+        }
+    }
+}
+
 // ── Restore drill ────────────────────────────────────────────────────────────
 
 /// Result of a clean-host restore drill. §6.3 "automated clean-host restore

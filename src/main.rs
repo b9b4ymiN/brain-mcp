@@ -4,8 +4,8 @@ use anyhow::Result;
 use clap::Parser;
 
 use llm_wiki::cli::{
-    Cli, Commands, ConfigAction, ContentAction, IndexAction, LogsAction, SchemaAction,
-    SpacesAction, WebAction,
+    Cli, Commands, ConfigAction, ContentAction, IndexAction, LogsAction, RecoveryAction,
+    SchemaAction, SpacesAction, WebAction,
 };
 use llm_wiki::config;
 use llm_wiki::engine::WikiEngine;
@@ -895,6 +895,56 @@ fn main() -> Result<()> {
             LogsAction::Clear => {
                 let removed = ops::logs_clear(&config_path)?;
                 println!("removed {removed} log file(s)");
+            }
+        },
+
+        // ── Recovery (encrypted backup) ─────────────────────────────────
+        // Phase F3.1: produces an AES-256-GCM encrypted full-store snapshot
+        // under the operator-supplied --output dir. The output MUST be a
+        // child of the configured state_dir (the store's allowed_parent), so
+        // operators running under Docker Compose pass `/backups/<date>` only
+        // when `/backups` itself is a sibling of the data volume — the
+        // shipped compose instead mounts it as a sibling of `/data`, so the
+        // common shape is `--output /data/backups/<date>` (under the data
+        // volume) and an external cron copies the result onto the `/backups`
+        // bind-mount for off-host rotation.
+        Commands::Recovery { action } => match action {
+            RecoveryAction::Backup { output, format } => {
+                let (state_dir, semantic_root) = {
+                    let manager = WikiEngine::build(&config_path)?;
+                    let engine = manager.state.read();
+                    let state_dir = engine.state_dir.clone();
+                    let semantic_root = state_dir.join("semantic-store");
+                    (state_dir, semantic_root)
+                };
+                if !semantic_root.join("store.marker.json").exists() {
+                    anyhow::bail!(
+                        "semantic store not found at {}; start the server once (or run any \
+                         brain_* operation) to create it before taking an encrypted backup",
+                        semantic_root.display()
+                    );
+                }
+                let store = llm_wiki::semantic::SemanticStore::open(
+                    &semantic_root,
+                    llm_wiki::semantic::SemanticConfig::enabled_for(&state_dir),
+                )?;
+                let report = store.backup_encrypted(Path::new(&output))?;
+                if is_json(&format) {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    println!("Encrypted backup written to {output}");
+                    println!(
+                        "  objects: {}, ledger events: {}, encrypted: {}, checksum: {}",
+                        report.objects_backed_up,
+                        report.ledger_events_backed_up,
+                        report.encrypted,
+                        report.checksum
+                    );
+                    println!(
+                        "  NOTE: back up {}/backup.key SEPARATELY — it is the encryption key.",
+                        semantic_root.display()
+                    );
+                }
             }
         },
     }
