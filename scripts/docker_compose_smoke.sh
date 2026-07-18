@@ -27,6 +27,10 @@
 #   5. Polls /ready (Phase F1.3) until the readiness gate passes (db_reachable
 #      + migrations_applied + index_open) — proves the readiness gate is real.
 #   6. Login smoke: wrong secret -> 401, correct secret -> 200 + csrf_token.
+#   6b. /metrics smoke (Phase F2.2): asserts the endpoint returns Prometheus
+#       text exposition AND that the wrong-secret login above bumped
+#       console_auth_failures_total — proves the recorder is installed and
+#       the handler→recorder wire is connected.
 #   7. Console index check (`<title>Brain Console</title>`).
 #   8. SECURITY GATES:
 #        a. `docker inspect brain --format '{{.Config.Env}}'` MUST NOT contain
@@ -247,6 +251,33 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' \
 echo "[smoke]   -> HTTP $CODE"
 [[ "$CODE" = "401" ]] || { echo "[smoke] FAIL: expected 401 got $CODE"; exit 1; }
 
+# ── 6b. /metrics Prometheus endpoint (Phase F2.2) ────────────────────────────
+# /metrics is unauthenticated ops surface. The recorder was installed at
+# startup (init_recorder, before serve). Two gates:
+#   (a) the response is Prometheus text exposition (must contain `^# TYPE`),
+#   (b) the wrong-secret login above incremented console_auth_failures_total,
+#       which MUST appear as a sample line.
+# A missing `# TYPE` would mean the recorder failed to install (or the route
+# isn't mounted); a missing counter name would mean the wire from handler to
+# recorder is broken.
+echo "[smoke] checking /metrics (Prometheus text format + auth-failure counter) ..."
+METRICS_CT="$(curl -s -D - -o /tmp/brain_smoke_metrics.txt \
+    "http://127.0.0.1:${SMOKE_PORT}/metrics" \
+    | grep -i '^content-type:' | tr -d '\r' || true)"
+echo "[smoke]   /metrics content-type: $METRICS_CT"
+echo "$METRICS_CT" | grep -qi '^content-type:[[:space:]]*text/plain' \
+    || { echo "[smoke] FAIL: /metrics Content-Type is not text/plain"; exit 1; }
+
+grep -q '^# TYPE' /tmp/brain_smoke_metrics.txt \
+    || { echo "[smoke] FAIL: /metrics body missing Prometheus '# TYPE' lines"; \
+         echo "[smoke]   body was:"; sed 's/^/            /' /tmp/brain_smoke_metrics.txt; \
+         exit 1; }
+grep -q 'console_auth_failures_total' /tmp/brain_smoke_metrics.txt \
+    || { echo "[smoke] FAIL: /metrics body missing console_auth_failures_total"; \
+         echo "[smoke]   (login failure at step 6 should have bumped it)"; \
+         exit 1; }
+echo "[smoke]   /metrics OK — Prometheus text + console_auth_failures_total present"
+
 # ── 7. Auth gate: correct secret -> 200 + csrf_token ─────────────────────────
 echo "[smoke] checking /api/v1/auth/login with CORRECT secret (expect 200) ..."
 LOGIN_BODY=$(curl -s -w "\n%{http_code}" \
@@ -333,4 +364,5 @@ echo "$ID_OUT" | grep -Eq 'uid=1000\(brain\)' \
 
 echo ""
 echo "[smoke] PASS — all checks green (compose up, /health, /ready, login 401/200, console index,"
-echo "                 secret NOT in inspect Env, secret file mount present, image clean, non-root)"
+echo "                 /metrics text + counter, secret NOT in inspect Env, secret file mount"
+echo "                 present, image clean, non-root)"

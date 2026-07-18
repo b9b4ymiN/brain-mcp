@@ -738,6 +738,19 @@ fn main() -> Result<()> {
                 None
             };
 
+            // Task F2.2: install the global Prometheus metrics recorder BEFORE
+            // entering the tokio runtime / `serve`. Metrics are observability,
+            // not correctness — a failed install logs a warning and the server
+            // still boots (the `/metrics` route returns an empty body, which
+            // is a valid Prometheus payload). The recorder is process-global
+            // and idempotent; install attempts after the first are no-ops.
+            if let Err(e) = llm_wiki::observability::init_recorder() {
+                tracing::warn!(
+                    error = ?e,
+                    "failed to install metrics recorder; /metrics will be empty"
+                );
+            }
+
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(llm_wiki::server::serve(
                 &config_path,

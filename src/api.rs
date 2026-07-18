@@ -443,6 +443,10 @@ async fn login(State(state): State<ConsoleApiState>, body: Option<Json<LoginRequ
         return ApiError::new(StatusCode::BAD_REQUEST, "invalid_request").into_response();
     };
     if !constant_time_eq(body.secret.as_bytes(), state.bootstrap_secret.as_bytes()) {
+        // Task F2.2: failed Console login counter. Side-effect only; the 401
+        // response contract is unchanged. The metrics facade is a no-op when
+        // no recorder is installed.
+        metrics::counter!("console_auth_failures_total").increment(1);
         return ApiError::unauthorized().into_response();
     }
 
@@ -469,6 +473,10 @@ async fn login(State(state): State<ConsoleApiState>, body: Option<Json<LoginRequ
     let Ok(cookie_value) = HeaderValue::from_str(&cookie) else {
         return ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error").into_response();
     };
+    // Task F2.2: successful Console login counter. Incremented AFTER the
+    // session is minted and immediately before the 200 leaves — a crash between
+    // here and `return` is tolerable (we'd rather under-count than over-count).
+    metrics::counter!("console_logins_total").increment(1);
     let mut response = Json(json!({ "csrf_token": csrf_token })).into_response();
     response
         .headers_mut()
@@ -941,6 +949,7 @@ async fn entity_merge(
             },
         )
         .map_err(|e| map_semantic_error(&e))?;
+    metrics::counter!("console_mutations_total", "action" => "merge").increment(1);
     Ok(Json(json!({
         "status": "merged",
         "event_seq": outcome.event.event_seq,
@@ -1012,6 +1021,7 @@ async fn entity_split(
             );
             ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
         })?;
+    metrics::counter!("console_mutations_total", "action" => "split").increment(1);
     Ok(Json(json!({
         "status": "split",
         "event_seq": outcome.event.event_seq,
@@ -1054,6 +1064,7 @@ async fn entity_retract(
             },
         )
         .map_err(|e| map_semantic_error(&e))?;
+    metrics::counter!("console_mutations_total", "action" => "retract").increment(1);
     Ok(Json(json!({
         "status": "retracted",
         "event_seq": outcome.event.event_seq,
@@ -1085,6 +1096,7 @@ async fn purge_preview(
         .purge_preview(&body.object_ids)
         .map_err(|e| map_semantic_error(&e))?;
     let warning = DestructiveWarning::for_action(DestructiveAction::HardPurge);
+    metrics::counter!("console_mutations_total", "action" => "purge_preview").increment(1);
     Ok(Json(json!({
         "preview": preview,
         "warning": warning,
@@ -1135,6 +1147,7 @@ async fn purge_execute(
             &body.nonce,
         )
         .map_err(|e| map_semantic_error(&e))?;
+    metrics::counter!("console_mutations_total", "action" => "purge_execute").increment(1);
     Ok(Json(receipt).into_response())
 }
 
@@ -1184,6 +1197,9 @@ async fn reauth(
         return ApiError::invalid_request().into_response();
     };
     if !constant_time_eq(body.secret.as_bytes(), state.bootstrap_secret.as_bytes()) {
+        // Task F2.2: re-auth counts as an auth failure (same threat surface
+        // as login — wrong bootstrap secret submitted to a Console route).
+        metrics::counter!("console_auth_failures_total").increment(1);
         return ApiError::unauthorized().into_response();
     }
     let now = Utc::now();
@@ -1195,6 +1211,9 @@ async fn reauth(
     entry.reauthenticated_at = Some(now);
     let fresh_for_seconds = state.reauth_freshness.num_seconds();
     drop(sessions);
+    // Task F2.2: a successful re-auth is a fresh login-equivalent for
+    // audit purposes — count it under the same counter as primary logins.
+    metrics::counter!("console_logins_total").increment(1);
     Json(json!({
         "reauthenticated": true,
         "fresh_for_seconds": fresh_for_seconds,
@@ -1219,6 +1238,7 @@ async fn approve(
             },
         )
         .map_err(|e| map_semantic_error(&e))?;
+    metrics::counter!("console_mutations_total", "action" => "approve").increment(1);
     Ok(Json(json!({
         "status": "confirmed",
         "claim_id": outcome.generated.claim_id,
@@ -1242,6 +1262,7 @@ async fn reject(
             },
         )
         .map_err(|e| map_semantic_error(&e))?;
+    metrics::counter!("console_mutations_total", "action" => "reject").increment(1);
     Ok(Json(json!({
         "status": "rejected",
         "event_seq": outcome.event.event_seq,
@@ -1271,6 +1292,7 @@ async fn supersede(
             },
         )
         .map_err(|e| map_semantic_error(&e))?;
+    metrics::counter!("console_mutations_total", "action" => "supersede").increment(1);
     Ok(Json(json!({
         "status": "superseded",
         "claim_id": outcome.generated.claim_id,

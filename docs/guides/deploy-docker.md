@@ -110,11 +110,32 @@ curl -sf http://127.0.0.1:8080/health
 # db_reachable + migrations_applied + index_open all pass, 503 otherwise.
 # Returns {"status":"ready"|"not_ready", "checks":{...}}.
 curl -sf http://127.0.0.1:8080/ready
+
+# Metrics — Prometheus text exposition (Phase F2.2). Unauthenticated ops
+# surface; counters/gauges for Console auth, ingest, MCP tool dispatch,
+# projection lag, and job-queue depth. See "Scrape with Prometheus" below.
+curl -sf http://127.0.0.1:8080/metrics | head
 ```
 
 Point a load balancer at `/ready` (not `/health`): a slow store probe must
 trip routing, not a container restart. `/health` feeds the restart decision;
 `/ready` feeds the routing decision.
+
+### Endpoint summary
+
+| Route       | Method | Auth | Purpose                                                          |
+|-------------|--------|------|------------------------------------------------------------------|
+| `/health`   | GET    | none | Liveness probe (always 200 while process is up)                  |
+| `/ready`    | GET    | none | Readiness gate (200 only when DB + migrations + indexes healthy) |
+| `/metrics`  | GET    | none | Prometheus text exposition (Phase F2.2)                          |
+| `/mcp`      | POST   | MCP  | MCP streamable-HTTP transport                                    |
+| `/api/v1/*` | mixed  | cookie + CSRF | Console HTTP JSON API (mounted only when bootstrap secret set) |
+| `/`         | GET    | none | Console SPA static assets (strict CSP)                           |
+
+`/metrics` is intentionally unauthenticated at this layer — standard ops
+convention. The loopback bind default (`127.0.0.1:8080`) protects it on a dev
+box; production puts it behind a reverse proxy that auth-gates the route (or
+scrapes over a private Compose network).
 
 Tear down:
 
@@ -219,15 +240,19 @@ via `docker-compose.yml` (pointed at a per-run scratch tree under
    `db_reachable`, `migrations_applied`, and `index_open` all `true`. This is
    the Phase F1.3 readiness gate (distinct from liveness above).
 3. `POST /api/v1/auth/login` with the wrong secret returns **401**.
-4. `POST /api/v1/auth/login` with the right secret (read from
+4. `GET /metrics` returns Prometheus text exposition (`# TYPE` lines present)
+   AND contains `console_auth_failures_total` (proving the wrong-secret login
+   above bumped the counter — the recorder is installed and the
+   handler→recorder wire is connected). Phase F2.2.
+5. `POST /api/v1/auth/login` with the right secret (read from
    `/run/secrets/bootstrap_secret`) returns **200** + `{"csrf_token":"..."}`.
-5. `GET /` returns the Console SPA (`<title>Brain Console</title>`).
-6. **Security gate A:** the secret value is NOT in
+6. `GET /` returns the Console SPA (`<title>Brain Console</title>`).
+7. **Security gate A:** the secret value is NOT in
    `docker inspect brain --format '{{.Config.Env}}'`.
-7. **Security gate B:** `/run/secrets/bootstrap_secret` IS in the container's
+8. **Security gate B:** `/run/secrets/bootstrap_secret` IS in the container's
    `Mounts` (the file indirection is actually wired).
-8. `docker history --no-trunc` contains **no** bootstrap secret.
-9. The container reports `uid=1000(brain)`.
+9. `docker history --no-trunc` contains **no** bootstrap secret.
+10. The container reports `uid=1000(brain)`.
 
 Run it:
 
@@ -244,6 +269,94 @@ curl -i -X POST http://127.0.0.1:8080/api/v1/auth/login \
      -H 'Content-Type: application/json' \
      -d "{\"secret\":\"$(cat ./secrets/bootstrap_secret.txt)\"}"
 curl -sf http://127.0.0.1:8080/ | head -n 5
+```
+
+## Scrape with Prometheus
+
+The `/metrics` endpoint (Phase F2.2) returns the standard Prometheus text
+exposition format (`Content-Type: text/plain; version=0.0.4`). Counters and
+gauges are populated by the `metrics` facade macros at the Console auth,
+ingest, and MCP dispatch boundaries; the recorder is installed once at startup
+(`init_recorder()` in `src/observability.rs`, before the tokio runtime starts).
+
+Quick manual check after `docker compose up`:
+
+```bash
+curl -sf http://127.0.0.1:8080/metrics | head -n 20
+# Look for:
+#   # TYPE console_auth_failures_total counter
+#   # TYPE console_logins_total counter
+#   # TYPE ingest_total counter
+#   # TYPE mcp_calls_total counter
+#   # TYPE projection_lag_seconds gauge
+#   # TYPE job_queue_depth gauge
+```
+
+### Metric reference
+
+| Metric                                | Kind    | Labels                         | Source                                        |
+|---------------------------------------|---------|--------------------------------|-----------------------------------------------|
+| `console_auth_failures_total`         | counter | —                              | `api::login` / `api::reauth` (wrong secret)   |
+| `console_logins_total`                | counter | —                              | `api::login` / `api::reauth` (success)        |
+| `console_mutations_total`             | counter | `action`                       | Console mutation handlers (approve/reject/supersede/merge/split/retract/purge) |
+| `ingest_total`                        | counter | `wiki`, `dry_run`              | `ops::ingest::ingest_with_redact`             |
+| `ingest_pages_total`                  | counter | `wiki`, `dry_run`              | `ops::ingest::ingest_with_redact`             |
+| `mcp_calls_total`                     | counter | `tool` (+`status` variant)     | `mcp::McpServer::call_tool`                   |
+| `projection_lag_seconds`              | gauge   | —                              | `server::metrics_handler` (refreshed per scrape) |
+| `job_queue_depth`                     | gauge   | `state` = `active`/`queued`/`failed` | `server::metrics_handler` (refreshed per scrape) |
+
+The metrics facade is a no-op when no recorder is installed, so the call sites
+are safe to fire unconditionally; the recorder is the only thing that needs to
+install cleanly at startup, and a failed install is non-fatal (logged at WARN,
+the server still boots, `/metrics` returns an empty body).
+
+### Sample scrape config
+
+Add this to your Prometheus `scrape_configs` (run Prometheus in a sibling
+Compose service on the same network so it can reach `brain:8080` directly):
+
+```yaml
+scrape_configs:
+  - job_name: brain
+    scrape_interval: 15s
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["brain:8080"]
+        labels:
+          service: brain-mcp
+    # If your reverse proxy auth-gates /metrics in production, configure the
+    # auth here (e.g. bearer_token_file, basic_auth, or authorization).
+```
+
+If you run Prometheus on the host (not in Compose), point it at the published
+loopback port instead: `targets: ["127.0.0.1:8080"]`. Do NOT publish the
+metrics port on all interfaces without auth.
+
+### Alerts (suggested baseline)
+
+```yaml
+groups:
+  - name: brain
+    rules:
+      - alert: BrainHighAuthFailures
+        expr: rate(console_auth_failures_total[5m]) > 0.5
+        for: 5m
+        annotations:
+          summary: "Console login brute-force ({{ $value }} fails/s)"
+
+      - alert: BrainProjectionLagGrowing
+        expr: projection_lag_seconds > 100
+        for: 10m
+        annotations:
+          summary: "Projection lag above 100 events for 10m"
+
+      - alert: BrainMcpErrorRateHigh
+        expr: |
+          sum(rate(mcp_calls_total{status="error"}[5m]))
+          / sum(rate(mcp_calls_total[5m])) > 0.1
+        for: 5m
+        annotations:
+          summary: "MCP tool error rate > 10%"
 ```
 
 ## Production hardening checklist
@@ -272,8 +385,9 @@ any non-local access, put a reverse proxy in front. Recommended baseline:
 - [ ] **Log format JSON.** `examples/config.docker.toml` sets
       `logging.log_format = "json"` for aggregator-friendly parsing. Flip to
       `text` for local dev.
-- [ ] **Resource limits.** Add `mem_limit` / `cpus:` to the service once
-      Phase F2.2 (`/metrics`) lands so you can right-size from actual usage.
+- [ ] **Resource limits.** Add `mem_limit` / `cpus:` to the service — now that
+      Phase F2.2 (`/metrics`) has landed, scrape the endpoint and right-size
+      from actual RSS / CPU usage rather than guessing.
 - [ ] **Backups.** `./backups/` is wired as a volume; the F3.1 encrypted
       backup tooling writes here. Verify your backup rotation externally.
 - [ ] **Health-based restart.** The compose `healthcheck` + `restart:
@@ -309,8 +423,6 @@ docker logs --tail 100 brain
 ## What's next (Phase F2)
 
 - OAuth-gated Console auth (replaces the bootstrap secret for multi-user).
-- `/metrics` Prometheus endpoint for orchestrator-driven autoscaling
-  (Phase F2.2).
 - **arm64 build** (DEFERRED in F1.3, 2026-07-18). The amd64 buildx pipeline is
   in `scripts/docker_buildx_multiarch.sh`; the arm64 block is commented out
   pending QEMU binfmt setup or a native ARM runner. Re-enable when an Oracle

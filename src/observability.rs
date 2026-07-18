@@ -7,8 +7,69 @@
 
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
+use std::sync::OnceLock;
 use tracing::Metadata;
 use tracing_subscriber::fmt::MakeWriter;
+
+// ── Prometheus recorder (Task F2.2) ──────────────────────────────────────────
+//
+// The `metrics` facade macros (`counter!`, `gauge!`, `histogram!`,
+// `increment_counter!`, `set_gauge!`, ...) are zero-cost no-ops when no global
+// recorder is installed, so call sites in handlers can fire them
+// unconditionally. `init_recorder()` installs the Prometheus recorder ONCE at
+// startup; the resulting `PrometheusHandle` is stashed in a `OnceLock` so the
+// `/metrics` handler can reach it without a process-wide static lookup.
+//
+// We use `install_recorder()` rather than `install()` because the former
+// returns the handle (and does NOT spawn the built-in HTTP listener — we serve
+// `/metrics` from the existing axum router). The handle's `render()` returns
+// the standard Prometheus text exposition format
+// (`Content-Type: text/plain; version=0.0.4`).
+
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+
+/// Holds the handle returned by `PrometheusBuilder::install_recorder()`. The
+/// recorder itself is installed process-globally; this lock only guards the
+/// handle so [`render_prometheus`] can find it. `None` after a failed
+/// [`init_recorder`] — `render_prometheus()` then returns an empty string,
+/// which still satisfies the `/metrics` contract (status 200, valid empty
+/// exposition).
+static RECORDER_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
+
+/// Install the global Prometheus metrics recorder. Call ONCE at startup
+/// (in `main.rs`, before `serve(...)`). Safe to call more than once — only
+/// the first call wins; subsequent calls return `Ok(())` without re-installing
+/// (which would panic in `metrics::set_global_recorder`).
+///
+/// Non-fatal: the caller logs a warning on `Err` but MUST NOT abort startup.
+/// Metrics are observability, not correctness; a missing recorder only means
+/// `/metrics` returns an empty payload, not that the server is broken.
+pub fn init_recorder() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Fast path: already installed (e.g. a test that re-invoked init). Idempotent.
+    if RECORDER_HANDLE.get().is_some() {
+        return Ok(());
+    }
+
+    let handle = PrometheusBuilder::new().install_recorder()?;
+
+    // Race-safe: if two callers raced past the fast-path check, the second
+    // `set` here is a no-op (the cell already holds the first handle, which
+    // is the live one — the second `install_recorder()` above would have
+    // already errored on `set_global_recorder`).
+    let _ = RECORDER_HANDLE.set(handle);
+    Ok(())
+}
+
+/// Render the current Prometheus text-format exposition. Empty string when no
+/// recorder is installed (failed init or init never called). The body is
+/// suitable to return verbatim from a `/metrics` handler with
+/// `Content-Type: text/plain; version=0.0.4`.
+pub fn render_prometheus() -> String {
+    match RECORDER_HANDLE.get() {
+        Some(handle) => handle.render(),
+        None => String::new(),
+    }
+}
 
 // ── Metrics ──────────────────────────────────────────────────────────────────
 

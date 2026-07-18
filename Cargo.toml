@@ -100,6 +100,8 @@ aes-gcm = "0.10"
 agent-client-protocol = "0.12"
 tokio-util = { version = "0.7", features = ["compat"] }
 notify = "8"
+metrics = "0.24.6"
+metrics-exporter-prometheus = "0.18.3"
 
 [dev-dependencies]
 tempfile   = "3"

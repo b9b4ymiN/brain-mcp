@@ -83,6 +83,17 @@ pub fn ingest_with_redact(
         report.warnings.extend(edge_warnings);
     }
 
+    // Task F2.2: ingest counters at the ops boundary. `ingest_total` counts
+    // ingest operations (dry-run + real — both are useful signals for
+    // operator dashboards). `ingest_pages_total` counts the validated page
+    // count so dashboards can distinguish "1 ingest of 1000 pages" from
+    // "1000 ingests of 1 page". The labels (wiki/dry_run) let us slice by
+    // surface. The metrics facade is a no-op when no recorder is installed.
+    metrics::counter!("ingest_total", "wiki" => wiki_name.to_owned(), "dry_run" => dry_run.to_string())
+        .increment(1);
+    metrics::counter!("ingest_pages_total", "wiki" => wiki_name.to_owned(), "dry_run" => dry_run.to_string())
+        .increment(report.pages_validated as u64);
+
     Ok(report)
 }
 

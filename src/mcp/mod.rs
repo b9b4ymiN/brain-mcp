@@ -317,6 +317,16 @@ impl ServerHandler for McpServer {
                 return Err(McpError::internal_error(msg, None));
             }
 
+            // Task F2.2: count every tool dispatch by name. Incremented AFTER
+            // the auth gate so a denied tool does NOT inflate the success
+            // counter; a denied call surfaces as an error in the response
+            // (already counted by the existing tracing::warn above). The
+            // metrics facade is a no-op when no recorder is installed.
+            metrics::counter!("mcp_calls_total", "tool" => name.clone()).increment(1);
+            // Keep a clone for the post-dispatch per-status counter — `name`
+            // itself is moved into the `spawn_blocking` closure below.
+            let name_for_status = name.clone();
+
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(30),
                 tokio::task::spawn_blocking(move || tools::call(&server, &name, &args)),
@@ -354,8 +364,15 @@ impl ServerHandler for McpServer {
             }
 
             let mut tool_result = if result.is_error {
+                // Task F2.2: per-status MCP dispatch counter so dashboards can
+                // derive tool-level error rates from
+                // `mcp_calls_total{status="error"} / mcp_calls_total{status="ok"}`.
+                metrics::counter!("mcp_calls_total", "tool" => name_for_status.clone(), "status" => "error")
+                    .increment(1);
                 CallToolResult::error(result.content)
             } else {
+                metrics::counter!("mcp_calls_total", "tool" => name_for_status.clone(), "status" => "ok")
+                    .increment(1);
                 CallToolResult::success(result.content)
             };
             // Task 3.1 §7.2: propagate structured content (if the handler set

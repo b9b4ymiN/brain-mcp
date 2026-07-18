@@ -200,6 +200,7 @@ async fn serve_http(
             .nest_service("/mcp", service)
             .route("/health", axum::routing::get(health_handler))
             .route("/ready", axum::routing::get(ready_handler))
+            .route("/metrics", axum::routing::get(metrics_handler))
             .with_state(app_state.clone())
     } else {
         let service: StreamableHttpService<McpServer, NeverSessionManager> =
@@ -212,6 +213,7 @@ async fn serve_http(
             .nest_service("/mcp", service)
             .route("/health", axum::routing::get(health_handler))
             .route("/ready", axum::routing::get(ready_handler))
+            .route("/metrics", axum::routing::get(metrics_handler))
             .with_state(app_state)
     };
 
@@ -789,6 +791,73 @@ async fn ready_handler(State(state): State<AppState>) -> axum::response::Respons
         }),
     )
         .into_response()
+}
+
+// ── Prometheus metrics endpoint (Task F2.2) ──────────────────────────────────
+//
+// `GET /metrics` returns the standard Prometheus text exposition
+// (`text/plain; version=0.0.4`). NOT behind auth — standard ops convention:
+// Prometheus scrapers don't authenticate at this layer, the loopback bind
+// default (Phase B) protects it on a dev box, and production puts the route
+// behind a reverse proxy with auth at the proxy layer.
+//
+// On each scrape we also refresh the gauges that depend on live store state
+// (`projection_lag_seconds`, `job_queue_depth{state=...}`). Cheap enough for
+// the default 15-60s scrape interval — it's a few mutex reads + one SQLite
+// query for `ledger_head`. Counter increments live in the API handlers; this
+// handler only updates the slow-moving gauges.
+
+/// `projection_lag_seconds` is the delta between the ledger's `event_seq` head
+/// and the projection file's recorded `ledger_head` — i.e. how far the
+/// materialized view falls behind the source of truth. With no async
+/// projection worker wired in Phase F, both numbers come from the same write
+/// path and the lag is ~0; the gauge exists so a future async projector can
+/// surface drift without adding a new metric.
+fn refresh_store_gauges(state: &AppState) {
+    let Some(store) = state.store.as_ref() else {
+        // No semantic store attached (brain_* tools disabled). The gauges stay
+        // at their last value (or unset); /metrics still returns 200.
+        return;
+    };
+
+    let ledger_head = store.ledger_head().unwrap_or(0);
+    let projection_head = store.projection_state().map(|p| p.ledger_head).unwrap_or(0);
+    // `projection_lag_seconds` is a logical (event-seq) delta, not wall-clock
+    // seconds — but Prometheus convention names lag-of-anything-in-seconds even
+    // when the unit is "events behind", because that's what alerts + dashboards
+    // treat it as (a backlog that grows over time). Documented here so the name
+    // isn't misleading.
+    let lag = ledger_head.saturating_sub(projection_head) as f64;
+    metrics::gauge!("projection_lag_seconds").set(lag);
+
+    if let Ok(summary) = store.job_summary() {
+        metrics::gauge!("job_queue_depth", "state" => "active").set(summary.active as f64);
+        metrics::gauge!("job_queue_depth", "state" => "queued").set(summary.queued as f64);
+        metrics::gauge!("job_queue_depth", "state" => "failed").set(summary.failed as f64);
+    }
+}
+
+/// `/metrics` handler. Returns the Prometheus text exposition. Always 200 —
+/// a missing recorder (failed `init_recorder()`) yields an empty body, which
+/// is a valid (if unhelpful) Prometheus payload. Refreshes the store-derived
+/// gauges on each scrape so they reflect the current ledger/projection state.
+async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+    refresh_store_gauges(&state);
+    let body = crate::observability::render_prometheus();
+    (
+        StatusCode::OK,
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("text/plain; version=0.0.4"),
+            ),
+            (
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-cache"),
+            ),
+        ],
+        body,
+    )
 }
 
 #[cfg(test)]
