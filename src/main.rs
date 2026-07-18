@@ -9,6 +9,7 @@ use llm_wiki::cli::{
 };
 use llm_wiki::config;
 use llm_wiki::engine::WikiEngine;
+use llm_wiki::observability::RedactingMakeWriter;
 use llm_wiki::ops;
 use llm_wiki::search;
 
@@ -909,7 +910,7 @@ fn init_logging(
         tracing_subscriber::fmt()
             .compact()
             .with_env_filter(env_filter)
-            .with_writer(std::io::stderr)
+            .with_writer(RedactingMakeWriter::new(std::io::stderr))
             .init();
         return None;
     }
@@ -923,13 +924,13 @@ fn init_logging(
             tracing_subscriber::fmt()
                 .json()
                 .with_env_filter(env_filter)
-                .with_writer(std::io::stderr)
+                .with_writer(RedactingMakeWriter::new(std::io::stderr))
                 .init();
         } else {
             tracing_subscriber::fmt()
                 .compact()
                 .with_env_filter(env_filter)
-                .with_writer(std::io::stderr)
+                .with_writer(RedactingMakeWriter::new(std::io::stderr))
                 .init();
         }
         return None;
@@ -944,7 +945,7 @@ fn init_logging(
         tracing_subscriber::fmt()
             .compact()
             .with_env_filter(env_filter)
-            .with_writer(std::io::stderr)
+            .with_writer(RedactingMakeWriter::new(std::io::stderr))
             .init();
         return None;
     }
@@ -974,7 +975,7 @@ fn init_logging(
             tracing_subscriber::fmt()
                 .compact()
                 .with_env_filter(env_filter)
-                .with_writer(std::io::stderr)
+                .with_writer(RedactingMakeWriter::new(std::io::stderr))
                 .init();
             return None;
         }
@@ -985,10 +986,10 @@ fn init_logging(
     if logging_cfg.log_format == "json" {
         let stderr_layer = tracing_subscriber::fmt::layer()
             .json()
-            .with_writer(std::io::stderr);
+            .with_writer(RedactingMakeWriter::new(std::io::stderr));
         let file_layer = tracing_subscriber::fmt::layer()
             .json()
-            .with_writer(non_blocking);
+            .with_writer(RedactingMakeWriter::new(non_blocking));
         tracing_subscriber::registry()
             .with(env_filter)
             .with(stderr_layer)
@@ -997,10 +998,10 @@ fn init_logging(
     } else {
         let stderr_layer = tracing_subscriber::fmt::layer()
             .compact()
-            .with_writer(std::io::stderr);
+            .with_writer(RedactingMakeWriter::new(std::io::stderr));
         let file_layer = tracing_subscriber::fmt::layer()
             .compact()
-            .with_writer(non_blocking);
+            .with_writer(RedactingMakeWriter::new(non_blocking));
         tracing_subscriber::registry()
             .with(env_filter)
             .with(stderr_layer)

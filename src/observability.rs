@@ -6,6 +6,9 @@
 //! pipeline.
 
 use serde::{Deserialize, Serialize};
+use std::io::{self, Write};
+use tracing::Metadata;
+use tracing_subscriber::fmt::MakeWriter;
 
 // ── Metrics ──────────────────────────────────────────────────────────────────
 
@@ -38,6 +41,73 @@ impl LogRedactor {
     /// `[REDACTED]`.
     pub fn redact(input: &str) -> String {
         crate::provider::OutboundPolicy::check_text_redact(input)
+    }
+}
+
+// ── Tracing writer plumbing (Task F2.1) ──────────────────────────────────────
+
+/// `io::Write` adapter that runs every buffered chunk through
+/// [`LogRedactor::redact`] before forwarding to the inner writer. Used to plug
+/// redaction into a `tracing_subscriber::fmt` layer at the line boundary (one
+/// place to maintain, instead of every `info!`/`debug!` call site).
+///
+/// Reports the ORIGINAL buffer length on success (`Ok(buf.len())`) — never the
+/// redacted length. `tracing-subscriber` tracks bytes accepted vs. actually
+/// written; reporting a different length on a successful write would desync its
+/// accounting and could trigger spurious retries or lost trailing bytes when
+/// the redacted string is shorter than the input.
+pub struct RedactingWriter<W> {
+    inner: W,
+}
+
+impl<W: Write> Write for RedactingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        // Lossy decode: log payloads are UTF-8 by construction in tracing, and
+        // any byte-level corruption (rare) is preferable to dropping the line.
+        let text = String::from_utf8_lossy(buf);
+        let redacted = LogRedactor::redact(&text);
+        self.inner.write_all(redacted.as_bytes())?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// `MakeWriter` adapter that wraps each per-event writer produced by `inner`
+/// in a [`RedactingWriter`]. Satisfies the `for<'a> MakeWriter<'a>` higher-rank
+/// bound that `tracing_subscriber::fmt::Layer::with_writer` requires whenever
+/// `inner` does — this lets us redact across all existing writer kinds in
+/// `init_logging` (`std::io::stderr`, `tracing_appender::non_blocking::NonBlocking`,
+/// and the `Arc<Mutex<Vec<u8>>>` test writer) without changing the call sites.
+pub struct RedactingMakeWriter<M> {
+    inner: M,
+}
+
+impl<M> RedactingMakeWriter<M> {
+    /// Wrap an existing `MakeWriter` so its output is redacted line-by-line.
+    pub fn new(inner: M) -> Self {
+        Self { inner }
+    }
+}
+
+impl<'a, M> MakeWriter<'a> for RedactingMakeWriter<M>
+where
+    M: MakeWriter<'a>,
+{
+    type Writer = RedactingWriter<M::Writer>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        RedactingWriter {
+            inner: self.inner.make_writer(),
+        }
+    }
+
+    fn make_writer_for(&'a self, meta: &Metadata<'_>) -> Self::Writer {
+        RedactingWriter {
+            inner: self.inner.make_writer_for(meta),
+        }
     }
 }
 
@@ -79,5 +149,28 @@ mod tests {
         assert!(!l.is_size_allowed(200));
         assert!(l.is_rate_allowed(4));
         assert!(!l.is_rate_allowed(6));
+    }
+
+    #[test]
+    fn redacting_writer_redacts_bearer_and_reports_original_len() {
+        let mut sink: Vec<u8> = Vec::new();
+        let mut w = RedactingWriter { inner: &mut sink };
+        let line = "Authorization: Bearer sk-test-secret-1234567890ab";
+        let n = w.write(line.as_bytes()).expect("write");
+        // Reports the ORIGINAL (un-redacted) length, never the shorter one —
+        // tracing's internal byte accounting depends on this.
+        assert_eq!(n, line.len());
+        let out = String::from_utf8_lossy(&sink);
+        assert!(out.contains("[REDACTED]"), "got: {out}");
+        assert!(!out.contains("sk-test-secret-1234567890ab"), "got: {out}");
+    }
+
+    #[test]
+    fn redacting_writer_preserves_benign_text() {
+        let mut sink: Vec<u8> = Vec::new();
+        let mut w = RedactingWriter { inner: &mut sink };
+        let line = "hello world — nothing to redact here";
+        w.write_all(line.as_bytes()).expect("write_all");
+        assert_eq!(String::from_utf8_lossy(&sink), line);
     }
 }
