@@ -232,7 +232,7 @@ pub enum Commands {
         #[command(subcommand)]
         action: LogsAction,
     },
-    /// Encrypted backup + restore drills (Phase F3.1).
+    /// Encrypted backup + restore drills (Phase F3.1 + F3.2).
     Recovery {
         /// The recovery subcommand.
         #[command(subcommand)]
@@ -240,7 +240,7 @@ pub enum Commands {
     },
 }
 
-/// Subcommands for `llm-wiki recovery` (Phase F3.1).
+/// Subcommands for `llm-wiki recovery` (Phase F3.1 + F3.2).
 #[derive(Subcommand)]
 pub enum RecoveryAction {
     /// Produce an AES-256-GCM encrypted full-store snapshot.
@@ -251,6 +251,46 @@ pub enum RecoveryAction {
         /// and a plaintext `manifest.json` is written alongside.
         #[arg(long)]
         output: String,
+        /// Output format: text | json
+        #[arg(long)]
+        format: Option<String>,
+    },
+    /// Restore an encrypted backup into a fresh target directory (Task F3.2).
+    /// Low-level operator primitive — verifies composite_checksum + PurgeRegistry
+    /// sync against the manifest, leaves the restored store at `--target`.
+    Restore {
+        /// Backup directory (the one produced by `recovery backup --output`).
+        #[arg(long)]
+        backup_dir: String,
+        /// Fresh target directory to materialize the restored store into.
+        /// Must not already exist; must live under the store's allowed_parent
+        /// (the state_dir, like `--output` on `recovery backup`).
+        #[arg(long)]
+        target_dir: String,
+        /// Path to the operator-managed backup key file (32 raw bytes — the
+        /// `<state_dir>/semantic-store/backup.key` produced on first backup).
+        /// NOT embedded in the backup itself (chicken-and-egg); must be
+        /// supplied separately.
+        #[arg(long)]
+        key_file: String,
+        /// Output format: text | json
+        #[arg(long)]
+        format: Option<String>,
+    },
+    /// Run a clean-host restore drill (Task F3.2). Decrypts every layer of
+    /// `--backup_dir` into a throwaway sibling target, verifies composite
+    /// checksum + PurgeRegistry sync against the manifest, then writes
+    /// `<state_dir>/semantic-store/restore-drill.json` recording the
+    /// outcome (the file `backup_health` reads to report
+    /// `last_restore_drill_ok`). The drill target is wiped after the run.
+    Drill {
+        /// Backup directory (the one produced by `recovery backup --output`).
+        #[arg(long)]
+        backup_dir: String,
+        /// Path to the operator-managed backup key file (32 raw bytes).
+        /// See `recovery restore --key-file` for the contract.
+        #[arg(long)]
+        key_file: String,
         /// Output format: text | json
         #[arg(long)]
         format: Option<String>,

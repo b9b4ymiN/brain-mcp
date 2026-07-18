@@ -1,12 +1,16 @@
-//! Task F3.1 — Encrypted backup (AES-GCM) + BackupReport producer.
+//! Task F3.1 and F3.2: encrypted backup and restore drill.
 //!
 //! Integration coverage for `SemanticStore::backup_encrypted` and
-//! `SemanticStore::load_or_create_backup_key`. These tests stage a real
-//! snapshot via the existing `backup_consistent` VACUUM-into + objects-copy
-//! path, then assert the encrypted layers + manifest are produced, that a
-//! decrypt round-trip recovers the original plaintext, that the manifest's
-//! composite checksum matches the live store, and (on Unix) that the backup
-//! key file is created mode 0600.
+//! `SemanticStore::load_or_create_backup_key` (F3.1), and for
+//! `SemanticStore::restore_from_backup`, `SemanticStore::run_restore_drill`,
+//! and the `restore-drill.json` outcome file (F3.2). These tests stage a
+//! real snapshot via the existing `backup_consistent` VACUUM-into and
+//! objects-copy path, then assert the encrypted layers and manifest are
+//! produced, that a decrypt round-trip recovers the original plaintext,
+//! that the manifest's composite checksum matches the live store, that the
+//! restore drill flips `backup_health().last_restore_drill_ok` to true on
+//! success and FAILS CLOSED when the registry epoch or checksum diverge,
+//! and (on Unix) that the backup key file is created mode 0600.
 
 use std::fs;
 use std::path::Path;
@@ -358,4 +362,303 @@ fn corrupted_backup_key_is_rejected_not_silently_rewritten() {
         !backup_dir.exists(),
         "no backup dir created when key is invalid"
     );
+    // Carry fix 2 (Task F3.2): the plaintext staging dir — a sibling of the
+    // target named `.<target-name>-staging` — MUST be wiped on the error
+    // path too. A plaintext snapshot left behind on a failed run would leak
+    // unencrypted object bytes the next time anyone (or anything) lists the
+    // parent directory.
+    let staging_dir = parent.path().join(".enc-backup-staging");
+    assert!(
+        !staging_dir.exists(),
+        "staging dir must be wiped on the error path (got {})",
+        staging_dir.display()
+    );
+}
+
+// ── Task F3.2 — restore drill + registry fail-closed ────────────────────────
+
+/// Helper: take an encrypted backup, then load the live store's `backup.key`
+/// into a `Key<Aes256Gcm>` (the parameter shape `restore_from_backup` and
+/// `run_restore_drill` accept). Returns everything the F3.2 tests need.
+fn backup_and_key() -> (
+    TempDir,
+    std::path::PathBuf,
+    SemanticStore,
+    std::path::PathBuf,
+    Key<Aes256Gcm>,
+) {
+    let (parent, root, store) = fixture();
+    let backup_dir = parent.path().join("enc-backup");
+    store
+        .backup_encrypted(&backup_dir)
+        .expect("backup_encrypted");
+    let key_bytes = fs::read(root.join("backup.key")).expect("read backup.key");
+    let key = *Key::<Aes256Gcm>::from_slice(&key_bytes);
+    (parent, root, store, backup_dir, key)
+}
+
+/// Mutates `manifest.json` at `backup_dir/manifest.json` by applying a JSON
+/// patch to the `composite_checksum` field — used to force a checksum
+/// mismatch on restore without touching the encrypted layers.
+fn tamper_manifest_checksum(backup_dir: &Path, new_checksum: &str) {
+    let path = backup_dir.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).expect("read manifest")).expect("parse manifest");
+    manifest["composite_checksum"] = json!(new_checksum);
+    let bytes = serde_json::to_vec_pretty(&manifest).expect("serialize manifest");
+    fs::write(&path, bytes).expect("write manifest back");
+}
+
+/// Mutates `manifest.json` at `backup_dir/manifest.json` by applying a JSON
+/// patch to the `purge_epoch` field — used to force a registry epoch mismatch
+/// on restore without touching the encrypted layers.
+fn tamper_manifest_purge_epoch(backup_dir: &Path, new_epoch: u64) {
+    let path = backup_dir.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).expect("read manifest")).expect("parse manifest");
+    manifest["purge_epoch"] = json!(new_epoch);
+    let bytes = serde_json::to_vec_pretty(&manifest).expect("serialize manifest");
+    fs::write(&path, bytes).expect("write manifest back");
+}
+
+#[test]
+fn restore_drill_happy_path() {
+    let (_parent, _root, store, backup_dir, key) = backup_and_key();
+
+    // Before the drill: no outcome file → last_restore_drill_ok is false.
+    assert!(
+        !store.backup_health().expect("health").last_restore_drill_ok,
+        "drill must not have run yet"
+    );
+
+    let result = store
+        .run_restore_drill(&backup_dir, &key)
+        .expect("run_restore_drill");
+
+    assert!(
+        result.passed(),
+        "drill should pass on a freshly-taken, untampered backup (got {result:?})"
+    );
+    assert!(
+        result.purge_registry_synced,
+        "purge registry epoch should match (no purge activity in the fixture)"
+    );
+    assert!(
+        result.composite_checksum_matches,
+        "recomputed checksum should match the manifest's"
+    );
+
+    // The drill writes <root>/restore-drill.json with last_ok: true, and
+    // backup_health now reads it back as last_restore_drill_ok: true.
+    let drill_path = _root.join("restore-drill.json");
+    assert!(drill_path.is_file(), "restore-drill.json must be written");
+    let body: serde_json::Value =
+        serde_json::from_slice(&fs::read(&drill_path).expect("read drill file"))
+            .expect("drill file parses");
+    assert_eq!(body["last_ok"], json!(true), "outcome file last_ok=true");
+    assert!(
+        body["composite_checksum"].is_string(),
+        "outcome file records the recomputed checksum"
+    );
+    assert_eq!(
+        body["purge_registry_synced"],
+        json!(true),
+        "outcome file records registry sync"
+    );
+    assert!(
+        body["layers_restored"].is_array(),
+        "outcome file records layer list"
+    );
+    assert!(
+        store.backup_health().expect("health").last_restore_drill_ok,
+        "backup_health().last_restore_drill_ok must flip to true after a successful drill"
+    );
+}
+
+#[test]
+fn restore_drill_fails_when_registry_tampered() {
+    let (_parent, _root, store, backup_dir, key) = backup_and_key();
+
+    // Force a registry epoch mismatch: the manifest's purge_epoch is bumped
+    // to 99 (a value no freshly-taken backup could have — the fixture has no
+    // purge activity so the real epoch is 0). Restore must compare the
+    // decrypted db's actual registry head against this tampered value, see
+    // the divergence, and FAIL CLOSED.
+    tamper_manifest_purge_epoch(&backup_dir, 99);
+
+    let result = store
+        .run_restore_drill(&backup_dir, &key)
+        .expect("drill returns a result, not an error");
+
+    assert!(
+        !result.passed(),
+        "drill must fail when the registry epoch diverges (got {result:?})"
+    );
+    assert!(
+        !result.purge_registry_synced,
+        "purge_registry_synced flag must be false on tampered registry"
+    );
+
+    // The outcome file is written even on this registry-divergence path
+    // (restore_from_backup returns Ok with purge_registry_synced=false; the
+    // drill records last_ok=false because passed() is false).
+    let body: serde_json::Value = serde_json::from_slice(
+        &fs::read(_root.join("restore-drill.json")).expect("read drill file"),
+    )
+    .expect("drill file parses");
+    assert_eq!(
+        body["last_ok"],
+        json!(false),
+        "outcome file records failure on tampered registry"
+    );
+    assert!(
+        !store.backup_health().expect("health").last_restore_drill_ok,
+        "backup_health().last_restore_drill_ok stays false after a failed drill"
+    );
+}
+
+#[test]
+fn restore_drill_fails_when_checksum_mismatch() {
+    let (_parent, _root, store, backup_dir, key) = backup_and_key();
+
+    // Force a checksum mismatch: replace the manifest's composite_checksum
+    // with a known-bogus value. The decrypted db's recomputed checksum will
+    // not match → restore_from_backup returns Err → drill reports
+    // composite_checksum_matches=false.
+    tamper_manifest_checksum(&backup_dir, &"0".repeat(64));
+
+    let result = store
+        .run_restore_drill(&backup_dir, &key)
+        .expect("drill returns a result, not an error");
+
+    assert!(
+        !result.passed(),
+        "drill must fail when the composite checksum diverges (got {result:?})"
+    );
+    assert!(
+        !result.composite_checksum_matches,
+        "composite_checksum_matches flag must be false on tampered checksum"
+    );
+}
+
+#[test]
+fn restore_drill_fails_when_db_layer_missing() {
+    let (_parent, _root, store, backup_dir, key) = backup_and_key();
+
+    // Delete the encrypted db layer — a mandatory layer. Restore must fail
+    // trying to read it (file-not-found → Io error → drill reports both
+    // flags false + writes the outcome file with last_ok: false + the
+    // error string).
+    let db_layer = backup_dir.join("semantic.sqlite3.enc");
+    assert!(db_layer.is_file(), "test setup: db layer must exist");
+    fs::remove_file(&db_layer).expect("delete db layer");
+
+    let result = store
+        .run_restore_drill(&backup_dir, &key)
+        .expect("drill returns a result, not an error");
+    assert!(
+        !result.passed(),
+        "drill must fail when the db layer is missing (got {result:?})"
+    );
+    assert!(
+        !result.composite_checksum_matches,
+        "composite_checksum_matches must be false on decrypt failure"
+    );
+
+    // The outcome file is written even on this decrypt-failure path.
+    let body: serde_json::Value = serde_json::from_slice(
+        &fs::read(_root.join("restore-drill.json")).expect("read drill file"),
+    )
+    .expect("drill file parses");
+    assert_eq!(
+        body["last_ok"],
+        json!(false),
+        "outcome file records failure on missing db layer"
+    );
+    assert!(
+        body["error"].is_string() && body["error"].as_str().is_some_and(|s| !s.is_empty()),
+        "outcome file carries the decrypt-failure error message (got {body})"
+    );
+}
+
+#[test]
+fn restore_drill_writes_outcome_file_on_failure() {
+    let (_parent, _root, store, backup_dir, _key) = backup_and_key();
+
+    // Drill with a bogus cipher key: every layer decrypt fails, drill
+    // reports failure, AND the outcome file is still written with
+    // last_ok: false + an error message.
+    let bogus_key_bytes = [0u8; 32];
+    let bogus_key = Key::<Aes256Gcm>::from_slice(&bogus_key_bytes);
+
+    let result = store
+        .run_restore_drill(&backup_dir, bogus_key)
+        .expect("drill returns a result, not an error");
+    assert!(
+        !result.passed(),
+        "drill must fail with a bogus key (got {result:?})"
+    );
+
+    let drill_path = _root.join("restore-drill.json");
+    assert!(
+        drill_path.is_file(),
+        "outcome file must exist even after a failed drill"
+    );
+    let body: serde_json::Value =
+        serde_json::from_slice(&fs::read(&drill_path).expect("read drill file"))
+            .expect("drill file parses");
+    assert_eq!(
+        body["last_ok"],
+        json!(false),
+        "outcome file last_ok must be false after a failed drill"
+    );
+    assert!(
+        body["error"].is_string() && body["error"].as_str().is_some_and(|s| !s.is_empty()),
+        "outcome file must carry a non-empty error message on failure (got {body})"
+    );
+
+    // backup_health flips to false (or stays false) on failure.
+    assert!(
+        !store.backup_health().expect("health").last_restore_drill_ok,
+        "backup_health().last_restore_drill_ok must be false after a failed drill"
+    );
+}
+
+#[test]
+fn restore_from_backup_low_level_round_trip() {
+    let (parent, _root, store, backup_dir, key) = backup_and_key();
+
+    // The low-level restore API materializes a fresh store at --target.
+    let target_dir = parent.path().join("restored-store");
+    let receipt = store
+        .restore_from_backup(&backup_dir, &target_dir, &key)
+        .expect("restore_from_backup");
+
+    assert_eq!(receipt.state, "completed");
+    assert!(
+        receipt.layers_restored.iter().any(|name| name == "db"),
+        "db layer restored"
+    );
+    assert!(
+        receipt.layers_restored.iter().any(|name| name == "marker"),
+        "marker layer restored"
+    );
+    assert!(
+        receipt.layers_restored.iter().any(|name| name == "objects"),
+        "objects layer restored"
+    );
+    assert!(
+        receipt.purge_registry_synced,
+        "registry epoch matches on a fresh untampered backup"
+    );
+    assert!(
+        !receipt.composite_checksum.is_empty(),
+        "receipt carries the recomputed composite checksum"
+    );
+
+    // The restored store opens independently and reports the same identity
+    // shape as the source (a marker file the open path accepts).
+    let restored = SemanticStore::open(&target_dir, SemanticConfig::enabled_for(parent.path()))
+        .expect("open restored store");
+    let _ = restored; // opened successfully = marker + db + identity are consistent
 }

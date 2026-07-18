@@ -946,6 +946,122 @@ fn main() -> Result<()> {
                     );
                 }
             }
+            RecoveryAction::Restore {
+                backup_dir,
+                target_dir,
+                key_file,
+                format,
+            } => {
+                let (state_dir, semantic_root) = {
+                    let manager = WikiEngine::build(&config_path)?;
+                    let engine = manager.state.read();
+                    let state_dir = engine.state_dir.clone();
+                    let semantic_root = state_dir.join("semantic-store");
+                    (state_dir, semantic_root)
+                };
+                if !semantic_root.join("store.marker.json").exists() {
+                    anyhow::bail!(
+                        "semantic store not found at {}; start the server once (or run any \
+                         brain_* operation) to create it before restoring an encrypted backup",
+                        semantic_root.display()
+                    );
+                }
+                let store = llm_wiki::semantic::SemanticStore::open(
+                    &semantic_root,
+                    llm_wiki::semantic::SemanticConfig::enabled_for(&state_dir),
+                )?;
+                let key_bytes = std::fs::read(&key_file).map_err(|error| {
+                    anyhow::anyhow!(
+                        "failed to read backup key at {key_file}: {error}\n  the key is the \
+                         `<state_dir>/semantic-store/backup.key` produced on first backup; it is \
+                         NOT embedded in the backup itself"
+                    )
+                })?;
+                if key_bytes.len() != 32 {
+                    anyhow::bail!(
+                        "backup key at {key_file} is {} bytes (expected 32); refusing to use \
+                         a malformed key",
+                        key_bytes.len()
+                    );
+                }
+                let key = aes_gcm::Key::<aes_gcm::Aes256Gcm>::from_slice(&key_bytes);
+                let receipt = store.restore_from_backup(&backup_dir, &target_dir, key)?;
+                if is_json(&format) {
+                    println!("{}", serde_json::to_string_pretty(&receipt)?);
+                } else {
+                    println!("Restored backup {backup_dir} into {target_dir}");
+                    println!("  state: {}", receipt.state);
+                    println!("  composite_checksum: {}", receipt.composite_checksum);
+                    println!("  layers_restored: {}", receipt.layers_restored.join(", "));
+                    println!("  purge_registry_synced: {}", receipt.purge_registry_synced);
+                    println!("  restored_at: {}", receipt.restored_at.to_rfc3339());
+                    if !receipt.purge_registry_synced {
+                        println!(
+                            "  WARNING: PurgeRegistry epoch diverged between backup and restore \
+                             (fail-closed signal); the restored snapshot may be missing denials \
+                             that landed in the source store after backup"
+                        );
+                    }
+                }
+            }
+            RecoveryAction::Drill {
+                backup_dir,
+                key_file,
+                format,
+            } => {
+                let (state_dir, semantic_root) = {
+                    let manager = WikiEngine::build(&config_path)?;
+                    let engine = manager.state.read();
+                    let state_dir = engine.state_dir.clone();
+                    let semantic_root = state_dir.join("semantic-store");
+                    (state_dir, semantic_root)
+                };
+                if !semantic_root.join("store.marker.json").exists() {
+                    anyhow::bail!(
+                        "semantic store not found at {}; start the server once (or run any \
+                         brain_* operation) to create it before drilling",
+                        semantic_root.display()
+                    );
+                }
+                let store = llm_wiki::semantic::SemanticStore::open(
+                    &semantic_root,
+                    llm_wiki::semantic::SemanticConfig::enabled_for(&state_dir),
+                )?;
+                let key_bytes = std::fs::read(&key_file).map_err(|error| {
+                    anyhow::anyhow!(
+                        "failed to read backup key at {key_file}: {error}\n  the key is the \
+                         `<state_dir>/semantic-store/backup.key` produced on first backup; it is \
+                         NOT embedded in the backup itself"
+                    )
+                })?;
+                if key_bytes.len() != 32 {
+                    anyhow::bail!(
+                        "backup key at {key_file} is {} bytes (expected 32); refusing to use \
+                         a malformed key",
+                        key_bytes.len()
+                    );
+                }
+                let key = aes_gcm::Key::<aes_gcm::Aes256Gcm>::from_slice(&key_bytes);
+                let result = store.run_restore_drill(&backup_dir, key)?;
+                if is_json(&format) {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                } else {
+                    println!("Restore drill against {backup_dir}");
+                    println!("  passed: {}", result.passed());
+                    println!("  purge_registry_synced: {}", result.purge_registry_synced);
+                    println!(
+                        "  composite_checksum_matches: {}",
+                        result.composite_checksum_matches
+                    );
+                    println!(
+                        "  outcome file: {}/restore-drill.json",
+                        semantic_root.display()
+                    );
+                    if !result.passed() {
+                        std::process::exit(1);
+                    }
+                }
+            }
         },
     }
 

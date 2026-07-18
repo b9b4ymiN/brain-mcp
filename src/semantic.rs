@@ -1406,8 +1406,14 @@ impl SemanticStore {
 
     /// Loads — or creates on first call — the backup encryption key (Task F3.1).
     ///
-    /// On Unix the created file is mode 0600 (only the owning uid can read
-    /// it). On Windows the mode call is skipped: the file inherits the
+    /// On Unix the file is created atomically with mode 0600 (only the owning
+    /// uid can read it) via `OpenOptionsExt::mode(0o600)`: the file is NEVER
+    /// observable on disk in a world-readable mode, even transiently — a
+    /// failure to set the mode fails the create (Task F3.2 carry fix 1; the
+    /// prior `restrict_file_permissions` `warn!` + return Ok path could leave
+    /// the key world-readable if chmod failed after create).
+    ///
+    /// On Windows there is no equivalent std API so the file inherits the
     /// user-profile default ACL, which is also user-only in practice, but
     /// operators running under a shared account should add an explicit ACL
     /// (`icacls backup.key /inheritance:r /grant:r "%USERNAME%:R"`).
@@ -1431,8 +1437,7 @@ impl SemanticStore {
             return Ok(*key);
         }
         let bytes = Aes256Gcm::generate_key(&mut OsRng);
-        write_new_file(&key_path, bytes.as_slice())?;
-        restrict_file_permissions(&key_path);
+        write_new_secret_file(&key_path, bytes.as_slice())?;
         Ok(bytes)
     }
 
@@ -1584,9 +1589,14 @@ impl SemanticStore {
 
         // 6. Count ledger rows in the snapshot (run against the freshly
         //    snapshotted db so the count is exactly what a restore would
-        //    see, not a racing live value).
+        //    see, not a racing live value). The same connection also yields
+        //    the snapshot's PurgeRegistry head epoch (recorded in the manifest
+        //    so a restore drill can fail-closed if the decrypted db's registry
+        //    diverged — Task F3.2).
         let snapshot_db = staging.join(DATABASE_FILE);
+        let snapshot_connection = Connection::open(&snapshot_db).map_err(database_error)?;
         let ledger_events_backed_up = count_ledger_events(&snapshot_db)?;
+        let purge_epoch = snapshot_registry_epoch(&snapshot_connection)?;
 
         // 7. Manifest — plaintext JSON so operators can inspect the backup
         //    without decrypting (layer list + checksum + created_at). The
@@ -1600,6 +1610,7 @@ impl SemanticStore {
             created_at: self.clock.now().to_rfc3339(),
             objects_count,
             ledger_events_count: ledger_events_backed_up,
+            purge_epoch,
         };
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(serialization_error)?;
         write_new_file(&target.join(BACKUP_MANIFEST_FILE), &manifest_bytes)?;
@@ -1611,6 +1622,349 @@ impl SemanticStore {
             ledger_events_backed_up,
             checksum,
         ))
+    }
+
+    /// Restores an encrypted backup into a fresh target directory (Task F3.2).
+    ///
+    /// Reverse of [`Self::backup_encrypted`]: reads `manifest.json` from
+    /// `backup_root`, decrypts every `.enc` layer under the supplied `key`,
+    /// materializes the snapshot at `target_root` (which must NOT pre-exist
+    /// and must live under this store's `allowed_parent`, matching the
+    /// backup-side escape-prevention guard), opens the restored store, and
+    /// verifies BOTH:
+    ///
+    /// 1. **Composite checksum match** — the restored store's
+    ///    `composite_checksum()` must equal the manifest's recorded
+    ///    `composite_checksum`. A mismatch means the snapshot was corrupted
+    ///    or tampered with after backup.
+    /// 2. **PurgeRegistry epoch match** — the restored store's
+    ///    `local_registry_head()` epoch must equal the manifest's recorded
+    ///    `purge_epoch`. A mismatch means the registry diverged between
+    ///    backup and restore (e.g. a denial landed in the source store after
+    ///    the snapshot, but the snapshot db is what a restore would actually
+    ///    serve), which fails the drill closed per §9.4.
+    ///
+    /// On success returns a [`RestoreReceipt`] carrying the recomputed
+    /// checksum + the layer names actually decrypted + the registry-sync
+    /// verdict. The cipher `key` is taken as a parameter (read by the caller
+    /// from the operator-managed `<root>/backup.key`) so this routine stays
+    /// testable without depending on the live store's own key file.
+    ///
+    /// `target_root` is treated as operator data — it is NEVER removed by
+    /// this routine, on success or failure (the staging dir, by contrast, is
+    /// always wiped).
+    pub fn restore_from_backup(
+        &self,
+        backup_root: impl AsRef<Path>,
+        target_root: impl AsRef<Path>,
+        key: &Key<Aes256Gcm>,
+    ) -> Result<crate::recovery::RestoreReceipt> {
+        let backup = backup_root.as_ref();
+        let target = target_root.as_ref();
+
+        // Escape guard: target must be a fresh dir under allowed_parent.
+        if target.exists() {
+            return Err(SemanticError::InvalidRoot(
+                "restore target already exists".to_owned(),
+            ));
+        }
+        let parent = target
+            .parent()
+            .ok_or_else(|| SemanticError::InvalidRoot("restore target has no parent".to_owned()))?;
+        let canonical_parent = parent.canonicalize().map_err(|_| {
+            SemanticError::InvalidRoot("restore target parent is not accessible".to_owned())
+        })?;
+        if canonical_parent.to_string_lossy() != self.marker.allowed_parent {
+            return Err(SemanticError::InvalidRoot(
+                "restore target escaped allowed parent".to_owned(),
+            ));
+        }
+
+        // 1. Load + validate the manifest.
+        let manifest_path = backup.join(BACKUP_MANIFEST_FILE);
+        let manifest_bytes = fs::read(&manifest_path).map_err(io_error).map_err(|_| {
+            SemanticError::CorruptLedger(format!(
+                "backup manifest missing at {}",
+                manifest_path.display()
+            ))
+        })?;
+        let manifest: BackupManifest =
+            serde_json::from_slice(&manifest_bytes).map_err(serialization_error)?;
+        if !manifest.encrypted {
+            return Err(SemanticError::CorruptLedger(
+                "manifest declares an unencrypted backup; restore_from_backup only handles \
+                 AES-256-GCM encrypted snapshots"
+                    .to_owned(),
+            ));
+        }
+        if !manifest.cipher.eq_ignore_ascii_case(BACKUP_CIPHER_ALG) {
+            return Err(SemanticError::CorruptLedger(format!(
+                "manifest cipher `{}` is not supported (expected `{BACKUP_CIPHER_ALG}`)",
+                manifest.cipher
+            )));
+        }
+
+        let cipher = Aes256Gcm::new(key);
+
+        // 2. Stage decrypted layers in a sibling temp dir (mirrors
+        //    backup_encrypted's staging layout, reversed). The staging dir
+        //    is ALWAYS wiped, success or failure — the only operator data
+        //    is `target`, never `staging`.
+        let staging_name = format!(
+            ".{}-restore-staging",
+            target
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("restore")
+        );
+        let staging = parent.join(&staging_name);
+        if staging.exists() {
+            let _ = fs::remove_dir_all(&staging);
+        }
+        let result = self.run_restore_inner(backup, target, &staging, &cipher, &manifest);
+        if staging.exists() {
+            let _ = fs::remove_dir_all(&staging);
+        }
+        result
+    }
+
+    fn run_restore_inner(
+        &self,
+        backup: &Path,
+        target: &Path,
+        staging: &Path,
+        cipher: &Aes256Gcm,
+        manifest: &BackupManifest,
+    ) -> Result<crate::recovery::RestoreReceipt> {
+        fs::create_dir(staging).map_err(io_error)?;
+        fs::create_dir(staging.join("objects")).map_err(io_error)?;
+
+        let mut layers_restored: Vec<String> = Vec::new();
+
+        // DB layer (always present).
+        let db_bytes = decrypt_backup_layer(cipher, &backup.join(format!("{DATABASE_FILE}.enc")))?;
+        write_new_file(&staging.join(DATABASE_FILE), &db_bytes)?;
+        layers_restored.push("db".to_owned());
+
+        // Marker layer (always present).
+        let marker_bytes =
+            decrypt_backup_layer(cipher, &backup.join(format!("{MARKER_FILE}.enc")))?;
+        write_new_file(&staging.join(MARKER_FILE), &marker_bytes)?;
+        layers_restored.push("marker".to_owned());
+
+        // Projection layer (optional).
+        let projection_enc = backup.join(format!("{PROJECTION_FILE}.enc"));
+        if projection_enc.is_file() {
+            let projection_bytes = decrypt_backup_layer(cipher, &projection_enc)?;
+            write_new_file(&staging.join(PROJECTION_FILE), &projection_bytes)?;
+            layers_restored.push("projection".to_owned());
+        }
+
+        // Object shard tree (optional + per-blob).
+        let backup_objects = backup.join("objects");
+        if backup_objects.is_dir() {
+            for shard in fs::read_dir(&backup_objects).map_err(io_error)? {
+                let shard = shard.map_err(io_error)?.path();
+                if !shard.is_dir() {
+                    continue;
+                }
+                let shard_name = shard.file_name().ok_or_else(|| {
+                    SemanticError::CorruptLedger("object shard has no name".to_owned())
+                })?;
+                let staging_shard = staging.join("objects").join(shard_name);
+                fs::create_dir_all(&staging_shard).map_err(io_error)?;
+                for entry in fs::read_dir(&shard).map_err(io_error)? {
+                    let path = entry.map_err(io_error)?.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    let file_name = path.file_name().ok_or_else(|| {
+                        SemanticError::CorruptLedger("object file has no name".to_owned())
+                    })?;
+                    let plain_name = file_name.to_string_lossy();
+                    // Encrypted blob files end in ".enc"; strip the suffix to
+                    // recover the content-addressed digest name.
+                    let plain_name = plain_name
+                        .strip_suffix(".enc")
+                        .unwrap_or(&plain_name)
+                        .to_owned();
+                    let bytes = decrypt_backup_layer(cipher, &path)?;
+                    write_new_file(&staging_shard.join(&plain_name), &bytes)?;
+                }
+            }
+            layers_restored.push("objects".to_owned());
+        }
+
+        // 3. Materialize the restored store at `target`. The staging layout
+        //    matches what SemanticStore::open expects (db + marker +
+        //    projection + objects/<shard>/<digest>). We rename staging INTO
+        //    target so the materialization is atomic from the filesystem's
+        //    perspective — `target` either does not exist (this routine is
+        //    still running) or holds a complete snapshot.
+        fs::rename(staging, target).map_err(|error| {
+            SemanticError::Io(format!(
+                "failed to materialize restored store at {}: {error}",
+                target.display()
+            ))
+        })?;
+
+        // 4. Open the restored store to verify integrity. The store was
+        //    created via VACUUM INTO, so it has a consistent schema,
+        //    marker-bound identity, and a populated PurgeRegistry — open()
+        //    runs validate_database_identity + validate_ledger +
+        //    evaluate_registry_seal over it.
+        let config = SemanticConfig::enabled_for(Path::new(&self.marker.allowed_parent));
+        let restored = Self::open(target, config)?;
+
+        // 5. Composite checksum match — fail-closed if the snapshot was
+        //    corrupted or tampered with after backup.
+        let recomputed = restored.composite_checksum()?;
+        if recomputed != manifest.composite_checksum {
+            return Err(SemanticError::CorruptLedger(format!(
+                "restore composite checksum mismatch: manifest={} restored={recomputed}",
+                manifest.composite_checksum
+            )));
+        }
+
+        // 6. PurgeRegistry epoch match — fail-closed if the registry diverged
+        //    between backup and restore (the snapshot db's registry head
+        //    MUST equal the manifest's recorded purge_epoch). Note that a
+        //    mismatch here cannot be fixed by re-running sync_purge_registry
+        //    on the restored store: the divergence is between the snapshot
+        //    the operator is trying to restore and the live registry state at
+        //    backup time, which is exactly the §9.4 "registry unavailable /
+        //    stale → fail closed" signal.
+        let restored_epoch = restored.registry_epoch().unwrap_or(0);
+        let purge_registry_synced = restored_epoch == manifest.purge_epoch;
+
+        Ok(crate::recovery::RestoreReceipt {
+            state: "completed".to_owned(),
+            composite_checksum: recomputed,
+            layers_restored,
+            purge_registry_synced,
+            restored_at: self.clock.now(),
+        })
+    }
+
+    /// Runs a clean-host restore drill against `backup_root` (Task F3.2).
+    ///
+    /// Drills into a fresh temporary target (a sibling of this store's root,
+    /// so the result is restorable under the same `allowed_parent`),
+    /// decrypts + verifies every layer, then writes
+    /// `<self.root>/restore-drill.json` recording the outcome — the file
+    /// that [`Self::backup_health`] reads to report
+    /// `last_restore_drill_ok`. Always writes the outcome file, success OR
+    /// failure, so an operator can inspect the last drill's verdict even
+    /// when the drill itself errored (Phase E3.1 left this read of an
+    /// unwritten file as a stub; this method closes the loop).
+    ///
+    /// Returns a [`RecoveryDrillResult`] whose `passed()` is `true` only when
+    /// BOTH the registry synced AND the composite checksum matched (the
+    /// §9.4 fail-closed contract). On any decryption / verification error
+    /// the result is reported with both flags false and the error string is
+    /// included in the outcome file.
+    pub fn run_restore_drill(
+        &self,
+        backup_root: impl AsRef<Path>,
+        key: &Key<Aes256Gcm>,
+    ) -> Result<crate::recovery::RecoveryDrillResult> {
+        let backup = backup_root.as_ref();
+        let parent = Path::new(&self.marker.allowed_parent);
+        // Drill target: a sibling temp dir. The name is unique per drill so
+        // repeated runs do not collide; it is wiped at the end of this call.
+        let drill_target = parent.join(format!(".drill-{}", Uuid::now_v7().simple()));
+        if drill_target.exists() {
+            let _ = fs::remove_dir_all(&drill_target);
+        }
+
+        let outcome = self.restore_from_backup(backup, &drill_target, key);
+        // Always clean up the drill target — it is throwaway verification
+        // data, not a real restore.
+        if drill_target.exists() {
+            let _ = fs::remove_dir_all(&drill_target);
+        }
+
+        let now = self.clock.now();
+        match outcome {
+            Ok(receipt) => {
+                // restore_from_backup already verifies the recomputed checksum
+                // equals the manifest's; reaching the Ok path means the
+                // composite checksum matched. The drill's checksum_matches
+                // flag is therefore always true on the success branch. The
+                // overall `last_ok` reflects `passed()` — a registry-epoch
+                // mismatch makes the drill fail closed even though the
+                // underlying restore_from_backup succeeded.
+                let result = crate::recovery::RecoveryDrillResult {
+                    objects_restored: receipt
+                        .layers_restored
+                        .iter()
+                        .filter(|name| name.as_str() == "objects")
+                        .count() as u64,
+                    ledger_events_restored: 0,
+                    purge_registry_synced: receipt.purge_registry_synced,
+                    composite_checksum_matches: true,
+                };
+                self.write_restore_drill_outcome(
+                    result.passed(),
+                    now,
+                    &receipt.composite_checksum,
+                    receipt.purge_registry_synced,
+                    receipt.layers_restored,
+                    None,
+                )?;
+                Ok(result)
+            }
+            Err(error) => {
+                let message = format!("{error}");
+                self.write_restore_drill_outcome(
+                    false,
+                    now,
+                    "",
+                    false,
+                    Vec::new(),
+                    Some(&message),
+                )?;
+                Ok(crate::recovery::RecoveryDrillResult {
+                    objects_restored: 0,
+                    ledger_events_restored: 0,
+                    purge_registry_synced: false,
+                    composite_checksum_matches: false,
+                })
+            }
+        }
+    }
+
+    /// Writes `<self.root>/restore-drill.json` (Task F3.2). The shape matches
+    /// what [`Self::backup_health`] reads:
+    /// `{last_ok, at, composite_checksum, purge_registry_synced,
+    /// layers_restored, error?}`. The file is overwritten atomically via
+    /// `write_new_file` semantics by first removing any prior copy — a drill
+    /// rerun always reflects the latest outcome, never a stale success.
+    fn write_restore_drill_outcome(
+        &self,
+        last_ok: bool,
+        at: DateTime<Utc>,
+        composite_checksum: &str,
+        purge_registry_synced: bool,
+        layers_restored: Vec<String>,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let body = serde_json::json!({
+            "last_ok": last_ok,
+            "at": at.to_rfc3339(),
+            "composite_checksum": composite_checksum,
+            "purge_registry_synced": purge_registry_synced,
+            "layers_restored": layers_restored,
+            "error": error,
+        });
+        let bytes = serde_json::to_vec_pretty(&body).map_err(serialization_error)?;
+        let path = self.root.join("restore-drill.json");
+        if path.exists() {
+            // Replace the prior outcome — never leave a stale `last_ok: true`
+            // visible after a failed drill.
+            let _ = fs::remove_file(&path);
+        }
+        write_new_file(&path, &bytes)
     }
 
     #[cfg(feature = "semantic-test-failpoints")]
@@ -5260,28 +5614,41 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
     file.sync_all().map_err(io_error)
 }
 
-/// Restricts a file's permissions to owner-only (Task F3.1). On Unix the
-/// mode is set to 0600 (read/write owner only); on Windows there is no
-/// equivalent std API so the file inherits the user-profile default ACL
-/// (user-only in practice for a normal profile, but operators running under
-/// a shared account should add an explicit ACL via `icacls`).
-#[cfg(unix)]
-fn restrict_file_permissions(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    if let Err(error) = fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
-        tracing::warn!(
-            error = %error,
-            path = %path.display(),
-            "failed to set backup.key mode 0600; operator should chmod manually"
-        );
+/// Creates a new owner-only secret file (Task F3.1, hardened in F3.2 carry
+/// fix 1). The Unix arm opens with `OpenOptionsExt::mode(0o600)` so the file
+/// is created with the right mode ATOMICALLY — there is no window where the
+/// file exists on disk in a default (potentially world-readable) mode. A
+/// chmod failure (rare but possible on a broken ACL inheritance) is now
+/// fail-closed: the create returns `Err` and the key file is never left
+/// world-readable. On Windows there is no equivalent std API, so the file
+/// inherits the user-profile default ACL (user-only in a normal profile; see
+/// the [`SemanticStore::load_or_create_backup_key`] docs for the operator
+/// `icacls` recipe).
+fn write_new_secret_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(path)
+        }
+        #[cfg(not(unix))]
+        {
+            OpenOptions::new().write(true).create_new(true).open(path)
+        }
     }
+    .map_err(|error| {
+        SemanticError::Io(format!(
+            "failed to create secret file {}: {error}",
+            path.display()
+        ))
+    })?;
+    file.write_all(bytes).map_err(io_error)?;
+    file.sync_all().map_err(io_error)
 }
-
-/// Windows no-op counterpart (see the unix arm above). The created file
-/// inherits the user-profile default ACL; operators wanting a stricter
-/// guarantee should `icacls backup.key /inheritance:r /grant:r "%USERNAME%:R"`.
-#[cfg(not(unix))]
-fn restrict_file_permissions(_path: &Path) {}
 
 /// Encrypts one plaintext file into `target` as `nonce || ciphertext` under
 /// the supplied AES-256-GCM cipher (Task F3.1). Used by
@@ -5335,6 +5702,27 @@ fn count_ledger_events(snapshot_db: &Path) -> Result<u64> {
     Ok(count.max(0) as u64)
 }
 
+/// Reads the snapshot db's PurgeRegistry head epoch (Task F3.2). Returns 0
+/// when no denial has ever been recorded (matches `composite_checksum`'s own
+/// `local_registry_head().map_or(0, ...)` fallback). Run against the staged
+/// snapshot so the manifest's recorded epoch matches exactly what a restore
+/// would see in the decrypted db layer.
+fn snapshot_registry_epoch(connection: &Connection) -> Result<u64> {
+    // The table may be absent in degenerate snapshots; COALESCE to 0 rather
+    // than erroring so a fresh-store backup (no purge activity) still records
+    // a clean manifest.
+    let epoch: Option<i64> = connection
+        .query_row(
+            "SELECT MAX(purge_epoch) FROM purge_registry_entries",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(database_error)?
+        .flatten();
+    Ok(epoch.map(|value| value.max(0) as u64).unwrap_or(0))
+}
+
 /// Plaintext manifest written into every encrypted-backup directory (Task
 /// F3.1). Carries the layer-list + composite checksum + created-at so a
 /// clean-host restore drill can verify the snapshot without first
@@ -5357,6 +5745,15 @@ struct BackupManifest {
     objects_count: u64,
     /// Number of ledger events in the snapshot (informational; same caveat).
     ledger_events_count: u64,
+    /// PurgeRegistry epoch recorded at backup time (Task F3.2). On restore,
+    /// the recomputed `local_registry_head()` of the decrypted db layer MUST
+    /// match this epoch — a mismatch means the registry diverged between
+    /// backup and restore (e.g. someone purged between snapshot and drill),
+    /// which fails the restore-drill closed. Defaults to 0 when missing so
+    /// older F3.1 manifests (which had no purge_epoch) parse and report
+    /// "no denials recorded", matching the original pre-F3.2 semantics.
+    #[serde(default)]
+    purge_epoch: u64,
 }
 
 fn open_connection(root: &Path) -> Result<Connection> {

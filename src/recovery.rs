@@ -5,6 +5,7 @@
 //! drill syncs the PurgeRegistry before decrypt; schema upgrade has a
 //! reversible plan; RPO/RTO is recorded + monitored.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 // ── Backup ───────────────────────────────────────────────────────────────────
@@ -66,6 +67,34 @@ impl RecoveryDrillResult {
     pub fn passed(&self) -> bool {
         self.purge_registry_synced && self.composite_checksum_matches
     }
+}
+
+// ── Restore receipt (Task F3.2) ──────────────────────────────────────────────
+
+/// Outcome of `SemanticStore::restore_from_backup` (Task F3.2). Carries the
+/// verification results a restore-drill caller needs: the recomputed
+/// composite checksum (compared against the manifest's), the layers actually
+/// decrypted from the backup, and whether the restored store's PurgeRegistry
+/// state matched the manifest's recorded epoch (fail-closed if not — see
+/// [`SemanticStore::restore_from_backup`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreReceipt {
+    /// Always `"completed"` on the Ok path (the field is kept as a string so
+    /// the JSON shape can grow a `"partial"` state in a later phase without a
+    /// breaking wire change).
+    pub state: String,
+    /// Composite checksum recomputed against the restored snapshot; should
+    /// equal the manifest's `composite_checksum`.
+    pub composite_checksum: String,
+    /// Names of the layers actually decrypted + applied (`"db"`, `"marker"`,
+    /// `"projection"` when present, `"objects"` per shard).
+    pub layers_restored: Vec<String>,
+    /// True if the restored store's PurgeRegistry epoch matches the
+    /// manifest's recorded epoch (fail-closed signal — see the parent module
+    /// docs).
+    pub purge_registry_synced: bool,
+    /// RFC3339 timestamp the restore completed.
+    pub restored_at: DateTime<Utc>,
 }
 
 // ── Schema upgrade ───────────────────────────────────────────────────────────
