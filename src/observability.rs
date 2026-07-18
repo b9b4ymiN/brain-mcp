@@ -263,20 +263,42 @@ impl IngestRateLimiter {
     /// recorded against the window), `false` on reject (NOT recorded — a
     /// rejected attempt does not consume budget).
     ///
-    /// First evicts entries older than the trailing window for this client,
-    /// so a client that stops calling is naturally forgotten. The map is
-    /// append-only on the accept path; rejected calls do not write.
+    /// First evicts timestamps older than the trailing window across ALL
+    /// clients, dropping any client whose bucket emptied out. A client that
+    /// stops calling is naturally forgotten — once all its timestamps age
+    /// out, the map entry is removed on the next call from any client (so
+    /// client churn from rotating token subjects or one-shot workers cannot
+    /// grow the map without bound). Rejected calls do not write.
     pub fn check_and_record(&self, client_id: &str) -> bool {
         let now = Instant::now();
         let cutoff = now.checked_sub(self.window).unwrap_or(now);
         let mut inner = self.inner.lock();
-        let timestamps = inner.entry(client_id.to_owned()).or_default();
-        timestamps.retain(|t| *t > cutoff);
-        if timestamps.len() >= self.max_per_minute as usize {
-            return false;
+
+        // Evict stale timestamps across all clients, then drop any entries
+        // that emptied out — prevents unbounded map growth from client churn
+        // (rotating token subjects, one-shot workers that never return).
+        for timestamps in inner.values_mut() {
+            timestamps.retain(|t| *t > cutoff);
         }
-        timestamps.push(now);
+        inner.retain(|_, timestamps| !timestamps.is_empty());
+
+        // Now count this client's surviving in-window timestamps.
+        let count = inner.get(client_id).map(Vec::len).unwrap_or(0);
+        if count >= self.max_per_minute as usize {
+            return false; // rejected — does NOT consume budget
+        }
+
+        // Accepted — record the timestamp (re-insert entry if it was removed).
+        inner.entry(client_id.to_owned()).or_default().push(now);
         true
+    }
+
+    /// Number of clients currently tracked by the limiter (i.e. with at
+    /// least one in-window timestamp). Public for observability and for the
+    /// eviction regression test — the limiter bounds memory by removing
+    /// entries whose timestamps have all aged out.
+    pub fn client_count(&self) -> usize {
+        self.inner.lock().len()
     }
 }
 
@@ -395,5 +417,31 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         // After the window slides, the client is allowed again.
         assert!(limiter.check_and_record("client-D"));
+    }
+
+    #[test]
+    fn rate_limiter_evicts_empty_client_entries() {
+        // Regression: a client that stops calling must not leak its (now-empty)
+        // Vec into the map forever. After all its timestamps age out, the entry
+        // is dropped on the next call for ANY client.
+        let limiter = IngestRateLimiter::with_window(5, Duration::from_millis(50));
+
+        // Client A makes one call, then we wait past the 50ms window.
+        assert!(limiter.check_and_record("client-a"));
+        assert_eq!(limiter.client_count(), 1);
+        std::thread::sleep(Duration::from_millis(60));
+
+        // Client B's call triggers eviction of A's stale timestamps. After this
+        // A's entry must be gone — only B's remains, so the map stays bounded.
+        assert!(limiter.check_and_record("client-b"));
+        assert_eq!(
+            limiter.client_count(),
+            1,
+            "stale client-a entry should have been evicted, only client-b remains"
+        );
+
+        // Sanity: A's next call is accepted (fresh window) and re-inserts A.
+        assert!(limiter.check_and_record("client-a"));
+        assert_eq!(limiter.client_count(), 2);
     }
 }
