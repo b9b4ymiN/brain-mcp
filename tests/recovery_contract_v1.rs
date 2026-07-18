@@ -84,11 +84,20 @@ fn upgrade_plan_has_forward_and_rollback_steps() {
                 reversible: true,
             },
         ],
+        // Task F3.3 added `from_version` + `to_version` so execute/rollback
+        // know which on-disk schema_version to write. Defaults are 0/0 in
+        // serde (kept for backward-compat with serialized plans from
+        // before F3.3); the contract test pins them to 1/2 to mirror the
+        // hypothetical v1→v2 migration the steps describe.
+        from_version: 1,
+        to_version: 2,
     };
     assert!(
         plan.steps.iter().all(|s| s.reversible),
         "every step must be reversible"
     );
+    assert_eq!(plan.from_version, 1);
+    assert_eq!(plan.to_version, 2);
 }
 
 // =============================================================================

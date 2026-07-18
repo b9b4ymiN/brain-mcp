@@ -434,11 +434,116 @@ destroying an object's epoch key never also destroys a backup.
 ### Verifying a backup
 
 The plaintext `manifest.json` records the source store's `composite_checksum`
-at backup time. A restore drill (Phase F3.2, not yet implemented) will
-recompute that checksum against the restored snapshot and fail closed on
-mismatch. Until then, an operator can verify the backup is decryptable by
-running the included integration test pattern against the key + a backup
-directory (see `tests/recovery_integration_v1.rs::encrypted_backup_decrypt_round_trip`).
+at backup time. The restore drill (Phase F3.2) recomputes that checksum
+against the restored snapshot and fails closed on mismatch (registry-epoch
+divergence or per-blob digest mismatch also fail closed). Run a drill any
+time you want to confirm a backup is restorable:
+
+```bash
+docker compose exec brain llm-wiki recovery drill \
+    --backup-dir /data/backups/$(date +%Y%m%d) \
+    --key-file /data/semantic-store/backup.key
+```
+
+A passing drill writes `<state_dir>/semantic-store/restore-drill.json` with
+`last_ok: true` (the file `backup_health()` reads to report
+`last_restore_drill_ok`); a failing drill writes the same file with
+`last_ok: false` plus an error string explaining the mismatch.
+
+## Schema upgrades (Phase F3.3)
+
+When the on-disk schema version advances (currently `CURRENT_DISK_SCHEMA_VERSION = 3`),
+an older store refuses to **serve** traffic until an operator explicitly runs
+the upgrade — refuse-to-serve-until-upgraded, never auto-upgrade on open.
+The server's `open()` path errors out with a message naming the binary
+version and the subcommand to run; the upgrade CLI uses a separate
+`open_for_upgrade()` entry point so the migration can run against the older
+marker.
+
+Today the only supported migration is `2 → 3`, a **noop placeholder**: every
+step is a reversible noop, so a v2 store upgraded to v3 has byte-identical
+`ledger_head` + `purge_epoch` (the `composite_checksum`'s third input —
+`schema_version` — DOES change, so the checksum value differs across the
+bump; that is by design and is documented in
+`tests/recovery_integration_v1.rs::upgrade_v2_to_v3_noop_succeeds`). The
+runner is real (transactional step execution + atomic marker rewrite +
+reversible rollback) so the next genuine DDL break is a one-step addition.
+
+### Planning + executing an upgrade
+
+```bash
+# Plan only — leaves the store untouched, prints the step list:
+docker compose exec brain llm-wiki recovery upgrade --dry-run
+
+# Execute v2 → v3 (the default --from is the marker's current version,
+# --to defaults to CURRENT_DISK_SCHEMA_VERSION):
+docker compose exec brain llm-wiki recovery upgrade
+```
+
+After `recovery upgrade`, the running SERVER process must be restarted so
+its `open()` picks up the rewritten marker at the new version (a v3 marker
+opens normally; a v2 marker refuses to serve).
+
+### Rolling back an upgrade
+
+```bash
+# Reverse the most recent upgrade (v3 → v2). Uses the same plan that
+# execute produced; the marker file is rewritten back to the from-version.
+docker compose exec brain llm-wiki recovery upgrade --rollback
+```
+
+Rollback is also transactional: each step's reverse action runs in reverse
+order, the DB `meta.schema_version` row is rewound, and the marker file is
+atomically rewritten. Rollback is a **rehearsal tool** — running it in
+production after the server has already accepted v3 traffic leaves the
+store at v2 with a v3-era ledger, which then refuses to serve until you
+re-run `recovery upgrade`. Use it to verify the round trip in a staging
+environment first.
+
+### Why bump schema_version if the migration is a noop?
+
+The v2 → v3 bump is the proof-of-path for the upgrade runner. A future
+genuine DDL break adds one `UpgradeStep` whose forward action runs the DDL
+and whose reverse action undoes it; the transaction wrapper, marker
+rewriter, CLI subcommand, and integration-test rehearsal (`upgrade_rehearsal_round_trip`)
+all stay the same. Skipping the noop today would mean the next contributor
+has to build the runner AND ship the DDL in the same change.
+
+## RPO/RTO (Phase F3.3)
+
+Record the operator's Recovery Point / Time Objectives so an SLO dashboard
+can answer "is the store meeting its RPO/RTO?" without re-prompting on every
+poll. The record lands at `<state_dir>/semantic-store/rpo-rto.json`:
+
+```bash
+# Write: RPO=1440min (daily backup), RTO=60min, last measurement MET both.
+docker compose exec brain llm-wiki recovery rpo-rto \
+    --rpo 1440 --rto 60 --met
+
+# Same write, but mark the last measurement as NOT MET (e.g. a drill failed
+# or a backup was missed):
+docker compose exec brain llm-wiki recovery rpo-rto \
+    --rpo 1440 --rto 60 --not-met
+
+# Read: prints the current record (or "No RPO/RTO recorded yet").
+docker compose exec brain llm-wiki recovery rpo-rto
+```
+
+`--rpo` and `--rto` are both required when writing; `--met`/`--not-met` are
+mutually exclusive. The file is rewritten atomically (temp + rename) so a
+partial write never leaves a half-recorded SLO visible to readers.
+
+Suggested baseline:
+
+| Deployment class | RPO (data loss) | RTO (downtime) | Backup cadence       |
+|------------------|-----------------|----------------|----------------------|
+| Single-user dev  | 1440 min (24h)  | 60 min         | daily `recovery backup` |
+| Small team       | 360 min (6h)    | 30 min         | 6-hourly cron         |
+| Production       | 60 min          | 15 min         | hourly cron + PITR    |
+
+The dashboard-side check is a simple file read + comparison: if
+`last_met == false`, alert; if `recorded_at` is older than `rpo_minutes`,
+the backup cadence is slipping.
 
 ## Production hardening checklist
 
@@ -473,8 +578,19 @@ any non-local access, put a reverse proxy in front. Recommended baseline:
       backup tooling (`llm-wiki recovery backup`) writes snapshots under
       `./data/backups/` (inside the state_dir boundary). Copy the result
       onto the `./backups/` bind-mount for off-host rotation, and back up
-      `./data/semantic-store/backup.key` SEPARATELY. See
-      [Encrypted backups](#encrypted-backups-phase-f31).
+      `./data/semantic-store/backup.key` SEPARATELY. Run
+      `recovery drill` after each backup to verify the snapshot is restorable.
+      See [Encrypted backups](#encrypted-backups-phase-f31).
+- [ ] **RPO/RTO recorded.** Run `llm-wiki recovery rpo-rto --rpo <min> --rto
+      <min> --met` once after deployment to write the SLO record a dashboard
+      can poll. See [RPO/RTO](#rporto-phase-f33).
+- [ ] **Schema upgrades.** A store created under an older on-disk schema
+      version refuses to serve until an operator runs
+      `llm-wiki recovery upgrade` (refuse-to-serve-until-upgraded). Wire this
+      into the image-rollout runbook: a new image with a bumped
+      `CURRENT_DISK_SCHEMA_VERSION` will not start serving against an old
+      store until the upgrade is run. See
+      [Schema upgrades](#schema-upgrades-phase-f33).
 - [ ] **Health-based restart.** The compose `healthcheck` + `restart:
       unless-stopped` will restart on `curl /health` failure; verify the
       `start_period` is long enough for your wiki size on cold start.

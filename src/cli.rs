@@ -295,6 +295,62 @@ pub enum RecoveryAction {
         #[arg(long)]
         format: Option<String>,
     },
+    /// Plan, execute, or roll back a schema upgrade (Task F3.3). Today the
+    /// only supported migration is `2 → 3`, a noop placeholder that proves
+    /// the upgrade-path infrastructure end-to-end (transactional step
+    /// execution + atomic marker rewrite + reversible rollback).
+    ///
+    /// Default behaviour: plan + execute the upgrade in one shot. Use
+    /// `--dry-run` to print the plan without touching disk; use `--rollback`
+    /// to reverse a previously-applied plan (rewinds the marker + DB meta
+    /// row back to `--from`).
+    Upgrade {
+        /// Schema version to upgrade FROM. Defaults to the live marker's
+        /// `schema_version` (the only sensible value — planning against a
+        /// different version fails closed inside `plan_schema_upgrade`).
+        #[arg(long)]
+        from: Option<u8>,
+        /// Schema version to upgrade TO. Defaults to
+        /// `CURRENT_DISK_SCHEMA_VERSION` (the binary's on-disk version).
+        #[arg(long)]
+        to: Option<u8>,
+        /// Print the plan (steps + reversibility + version pair) without
+        /// executing anything. Leaves the store untouched.
+        #[arg(long, default_value = "false")]
+        dry_run: bool,
+        /// Reverse the plan instead of executing it. Expects the store to be
+        /// at the post-upgrade version (`--to`); rewinds marker + DB meta
+        /// row back to `--from`. Errors if the live marker is not at `--to`.
+        #[arg(long, default_value = "false")]
+        rollback: bool,
+        /// Output format: text | json
+        #[arg(long)]
+        format: Option<String>,
+    },
+    /// Record or read the operator's Recovery Point / Time Objectives
+    /// (Task F3.3). Writes `<state_dir>/semantic-store/rpo-rto.json`.
+    /// Without `--met`/`--not-met`, this command READS the current record
+    /// (or reports "no RPO/RTO recorded yet"); with one of those flags, it
+    /// writes a fresh record.
+    RpoRto {
+        /// RPO in minutes (max acceptable data loss). Required when writing.
+        #[arg(long)]
+        rpo: Option<u32>,
+        /// RTO in minutes (max acceptable downtime). Required when writing.
+        #[arg(long)]
+        rto: Option<u32>,
+        /// Record that the last backup/restore measurement MET both
+        /// objectives. Mutually exclusive with `--not-met`.
+        #[arg(long, default_value = "false")]
+        met: bool,
+        /// Record that the last measurement did NOT meet objectives.
+        /// Mutually exclusive with `--met`.
+        #[arg(long, default_value = "false")]
+        not_met: bool,
+        /// Output format: text | json
+        #[arg(long)]
+        format: Option<String>,
+    },
 }
 
 /// Subcommands for `llm-wiki logs`.

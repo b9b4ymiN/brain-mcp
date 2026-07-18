@@ -110,9 +110,26 @@ pub struct UpgradeStep {
 
 /// A schema-upgrade plan. §6.3 requires a rollback rehearsal, so every step
 /// must be `reversible: true`.
+///
+/// `from_version` and `to_version` are recorded on the plan so
+/// [`crate::semantic::SemanticStore::execute_schema_upgrade`] and
+/// [`crate::semantic::SemanticStore::rollback_schema_upgrade`] know which on-
+/// disk schema_version to write atomically at the end of the migration.
+/// `#[serde(default)]` keeps the older `{steps: [...]}` constructor in
+/// `tests/recovery_contract_v1.rs` compiling (it predates F3.3; the defaults
+/// of `from=0`/`to=0` are NEVER produced by `plan_schema_upgrade` — a real
+/// plan always carries the resolved versions).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchemaUpgradePlan {
     pub steps: Vec<UpgradeStep>,
+    /// On-disk schema_version the plan starts from. Default 0 = "unset" for
+    /// the legacy `{steps}` constructor only; a plan produced by
+    /// `plan_schema_upgrade` always sets this to the live marker version.
+    #[serde(default)]
+    pub from_version: u8,
+    /// On-disk schema_version the plan ends at after `execute_schema_upgrade`.
+    #[serde(default)]
+    pub to_version: u8,
 }
 
 impl SchemaUpgradePlan {

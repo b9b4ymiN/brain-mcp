@@ -75,18 +75,27 @@ const VALID_CLIENT_CAPABILITIES: &[&str] = &["confirm", "purge", "propose"];
 
 /// On-disk schema version. Bumped 1 → 2 in Task 2.2 when the entity tables
 /// (`entities`, `entity_aliases`) and the `claim_status.entity_id` column
-/// were added. There is no migration path yet (pre-production break, recorded
-/// like Task 1.1's clients-table precedent): a store created under an older
-/// schema_version refuses to open under a newer binary — see
-/// `validate_database_identity`.
+/// were added. Bumped 2 → 3 in Task F3.3 — the bump is the proof-of-path for
+/// the schema upgrade runner (`plan_schema_upgrade` +
+/// `execute_schema_upgrade` + `rollback_schema_upgrade`); the v2→v3 migration
+/// itself is a noop placeholder (every step is a reversible noop), so a
+/// store upgraded from 2 → 3 has identical ledger_head + purge_epoch (the
+/// composite_checksum's third input — `schema_version` — DOES change, so the
+/// checksum value differs across the bump; tests assert data-intact via
+/// ledger_head + purge_epoch equality, not raw checksum equality).
+///
+/// A store created under an older schema_version that has a known migration
+/// path (today only 2 → 3) refuses to serve until an operator runs
+/// `llm-wiki recovery upgrade`; an older version with NO migration path
+/// still fails closed (see `validate_database_identity`).
 ///
 /// NOTE: this is the *on-disk DDL* version, distinct from the *event wire*
 /// version stamped on each `EventEnvelope.schema_version`. The wire format
 /// of an event has not changed in Task 2.2 (same `EventEnvelope` JSON
 /// shape), so events keep `schema_version: 1` to stay valid against the
 /// hash-locked `event-schema-v1.json` contract. Only the on-disk schema
-/// (marker + DDL) moved to 2.
-pub const CURRENT_DISK_SCHEMA_VERSION: u8 = 2;
+/// (marker + DDL) moved to 3.
+pub const CURRENT_DISK_SCHEMA_VERSION: u8 = 3;
 /// Event wire-format version (unchanged since the schema was hash-locked in
 /// Task 0.2). Kept as a named constant rather than a literal so the next
 /// genuine wire break is a one-line change with a clear audit trail.
@@ -1175,6 +1184,40 @@ impl SemanticStore {
     }
 
     pub fn open(root: impl AsRef<Path>, config: SemanticConfig) -> Result<Self> {
+        Self::open_with_gate_behavior(root, config, GateBehavior::Serve)
+    }
+
+    /// Opens a store for the explicit purpose of running a schema upgrade
+    /// (Task F3.3). The schema-version gate that normally refuses to serve
+    /// an older store (refuse-to-serve-until-upgraded — see
+    /// [`Self::open`] + `validate_database_identity`) is RELAXED here: a
+    /// store whose `schema_version` has a known migration path to
+    /// `CURRENT_DISK_SCHEMA_VERSION` (today: 2 → 3) opens successfully so
+    /// `plan_schema_upgrade` + `execute_schema_upgrade` can run. A genuinely
+    /// unsupported version still fails closed.
+    ///
+    /// This is the entry point the `llm-wiki recovery upgrade` CLI subcommand
+    /// uses; the running SERVER (`Commands::Serve`) keeps using [`Self::open`]
+    /// so a v2 store cannot accidentally serve traffic under a v3 binary.
+    pub fn open_for_upgrade(root: impl AsRef<Path>, config: SemanticConfig) -> Result<Self> {
+        Self::open_with_gate_behavior(root, config, GateBehavior::UpgradeOnly)
+    }
+
+    /// Shared body of [`Self::open`] and [`Self::open_for_upgrade`]. The
+    /// `gate` parameter picks which schema-version branch the
+    /// `validate_database_identity` check tolerates:
+    ///
+    ///   * `Serve` — the running-server path. A marker at any version other
+    ///     than `CURRENT_DISK_SCHEMA_VERSION` fails closed (refuse-to-serve
+    ///     for known paths, hard-fail for unsupported).
+    ///   * `UpgradeOnly` — the upgrade-CLI path. A marker at a version with
+    ///     a known migration path is allowed through (so the upgrade can
+    ///     run); genuinely unsupported versions still fail closed.
+    fn open_with_gate_behavior(
+        root: impl AsRef<Path>,
+        config: SemanticConfig,
+        gate: GateBehavior,
+    ) -> Result<Self> {
         let (_, allowed_parent) = validate_requested_root(root.as_ref(), &config)?;
         validate_object_limit(&config)?;
         reject_link_or_reparse(root.as_ref())?;
@@ -1192,7 +1235,7 @@ impl SemanticStore {
             return Err(SemanticError::MarkerMismatch);
         }
         let connection = open_connection(&canonical_root)?;
-        validate_database_identity(&connection, &marker)?;
+        validate_database_identity(&connection, &marker, gate)?;
         validate_ledger(&connection)?;
         // Restore/open-time fail-closed check (ADR Decision 7): a stale,
         // unavailable, or fork-diverged purge registry must seal the store
@@ -2045,6 +2088,331 @@ impl SemanticStore {
             let _ = fs::remove_file(&path);
         }
         write_new_file(&path, &bytes)
+    }
+
+    // ── Phase F Task F3.3 — schema upgrade runner + RPO/RTO recorder ──────────
+    //
+    // The v2→v3 migration is a noop placeholder (every step is a reversible
+    // noop), but the runner is real: it wraps the migration in a SQLite
+    // transaction, atomically rewrites the marker file's schema_version, and
+    // supports a reversible rollback. This proves the upgrade path end-to-end
+    // so the next genuine DDL break is a one-step addition (a real UpgradeStep
+    // action) rather than a new piece of infrastructure.
+
+    /// Plans a schema upgrade from `from` to `to`. The only supported path
+    /// today is `from=2, to=3` (Task F3.3 noop placeholder). Any other
+    /// combination returns `Err(SemanticError::CorruptLedger(...))` with a
+    /// message naming the unsupported pair — `plan_schema_upgrade` is the
+    /// single source of truth for "which paths exist", so the
+    /// schema-version gate in `validate_database_identity` mirrors it via
+    /// `schema_upgrade_path_exists`.
+    ///
+    /// The plan always carries exactly one reversible step (`"noop placeholder
+    /// migration to prove upgrade path"`), so `is_reversible()` is true and
+    /// `execute_schema_upgrade` will accept it.
+    pub fn plan_schema_upgrade(
+        &self,
+        from: u8,
+        to: u8,
+    ) -> Result<crate::recovery::SchemaUpgradePlan> {
+        if !schema_upgrade_path_exists(from, to) {
+            return Err(SemanticError::CorruptLedger(format!(
+                "unsupported schema upgrade path: {from} → {to} (only 2 → 3 is implemented)"
+            )));
+        }
+        // Sanity: the plan's `from` must equal the live marker version, since
+        // execute_schema_upgrade writes `to_version` to disk and assumes the
+        // marker was at `from_version` going in. A mismatch means the caller
+        // is planning against the wrong store — fail closed rather than
+        // produce a plan that would silently bump a different store's version.
+        if from != self.marker.schema_version {
+            return Err(SemanticError::CorruptLedger(format!(
+                "plan from={from} does not match live marker schema_version={}; plan against \
+                 the store's actual version",
+                self.marker.schema_version
+            )));
+        }
+        Ok(crate::recovery::SchemaUpgradePlan {
+            steps: vec![crate::recovery::UpgradeStep {
+                description: "noop placeholder migration to prove upgrade path".to_owned(),
+                reversible: true,
+            }],
+            from_version: from,
+            to_version: to,
+        })
+    }
+
+    /// Executes a schema-upgrade plan transactionally. Safety contract:
+    ///
+    ///   * `plan.is_reversible()` MUST be true — refusing to execute a
+    ///     non-reversible plan means an operator can always roll back from a
+    ///     half-applied state. (Today every `plan_schema_upgrade` output is
+    ///     reversible; this is a defense-in-depth check against future
+    ///     contributors adding a non-reversible step.)
+    ///   * The plan's `from_version` MUST equal the live marker's
+    ///     `schema_version` — otherwise the marker file on disk is at a
+    ///     different version than the plan assumes, and writing `to_version`
+    ///     would silently corrupt the upgrade audit trail.
+    ///
+    /// On success: every step's forward action runs (noop for v2→v3), the
+    /// `meta.schema_version` row is updated to `to_version`, AND the marker
+    /// file on disk is rewritten atomically with the new `schema_version`.
+    /// Both writes happen INSIDE a SQLite transaction so the DB half cannot
+    /// commit without the step actions succeeding. The marker rewrite is
+    /// best-effort atomic at the filesystem level (temp-file + rename): if
+    /// it fails after the DB commit, the DB carries `to_version` but the
+    /// marker file is stale — the operator reruns `recovery upgrade` (idempotent:
+    /// plan_schema_upgrade will then return Err because from != live, but
+    /// `validate_database_identity` already accepts `marker == CURRENT`).
+    pub fn execute_schema_upgrade(&self, plan: &crate::recovery::SchemaUpgradePlan) -> Result<()> {
+        if !plan.is_reversible() {
+            return Err(SemanticError::CorruptLedger(
+                "refusing to execute a non-reversible schema upgrade plan (rollback would be \
+                 impossible)"
+                    .to_owned(),
+            ));
+        }
+        if plan.from_version != self.marker.schema_version {
+            return Err(SemanticError::CorruptLedger(format!(
+                "plan from_version={} does not match live marker schema_version={}; refusing to \
+                 apply a plan against the wrong starting version",
+                plan.from_version, self.marker.schema_version
+            )));
+        }
+        if plan.from_version == plan.to_version {
+            // No-op plan: nothing to do, but report success rather than
+            // touching disk. (plan_schema_upgrade never produces this shape,
+            // but an externally-constructed plan could.)
+            return Ok(());
+        }
+
+        let _maintenance = self.coordinator.maintenance.write();
+        if self.coordinator.active_transactions.load(Ordering::SeqCst) != 0 {
+            return Err(SemanticError::ActiveHandles);
+        }
+        let mut connection = open_connection(&self.root)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(database_error)?;
+        let active = ActiveTransaction::new(&self.coordinator);
+
+        // Run each step's forward action. The v2→v3 step is a noop, but the
+        // loop is here so a future genuine migration just adds an arm. Any
+        // step failure rolls the transaction back via `?` (Drop on the
+        // transaction issues ROLLBACK on a non-committed rusqlite txn).
+        let now = self.clock.now();
+        for (index, step) in plan.steps.iter().enumerate() {
+            run_upgrade_step_forward(
+                &transaction,
+                plan.from_version,
+                plan.to_version,
+                index,
+                step,
+                now,
+            )?;
+        }
+
+        // Update the DB-side schema_version row so validate_database_identity
+        // (which reads marker.schema_version, NOT the meta row — see below)
+        // and any future tooling that reads meta see the bumped version.
+        transaction
+            .execute(
+                "UPDATE meta SET value=?1 WHERE key='schema_version'",
+                params![plan.to_version.to_string()],
+            )
+            .map_err(database_error)?;
+
+        transaction.commit().map_err(database_error)?;
+        drop(active);
+        drop(_maintenance);
+
+        // Atomically rewrite the marker file with the new schema_version.
+        // validate_database_identity on the NEXT open() reads
+        // marker.schema_version, so this rewrite is what actually advances
+        // the on-disk version an operator sees.
+        self.rewrite_marker_with_version(plan.to_version)
+    }
+
+    /// Reverses a schema-upgrade plan: rewinds the DB meta row AND the marker
+    /// file back to `plan.from_version`. Like `execute_schema_upgrade`, runs
+    /// inside a SQLite transaction; any step failure rolls back.
+    ///
+    /// Use this only AFTER a successful `execute_schema_upgrade` (it is the
+    /// "undo" half of the F3.3 round-trip rehearsal). Calling rollback
+    /// without a prior execute leaves the store at from_version (a noop);
+    /// calling it after a downgrade that was never applied is also a noop
+    /// for the v2→v3 case because the step is reversible-via-noop.
+    pub fn rollback_schema_upgrade(&self, plan: &crate::recovery::SchemaUpgradePlan) -> Result<()> {
+        if !plan.is_reversible() {
+            return Err(SemanticError::CorruptLedger(
+                "refusing to roll back a non-reversible schema upgrade plan".to_owned(),
+            ));
+        }
+        // The marker must currently be at to_version (the state execute
+        // leaves it in). If it is not, the operator is calling rollback
+        // against the wrong state — fail closed rather than rewind to an
+        // unexpected from_version.
+        if plan.to_version != self.marker.schema_version {
+            return Err(SemanticError::CorruptLedger(format!(
+                "plan to_version={} does not match live marker schema_version={}; rollback \
+                 expects the store to be at the post-upgrade version",
+                plan.to_version, self.marker.schema_version
+            )));
+        }
+        if plan.from_version == plan.to_version {
+            return Ok(());
+        }
+
+        let _maintenance = self.coordinator.maintenance.write();
+        if self.coordinator.active_transactions.load(Ordering::SeqCst) != 0 {
+            return Err(SemanticError::ActiveHandles);
+        }
+        let mut connection = open_connection(&self.root)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(database_error)?;
+        let active = ActiveTransaction::new(&self.coordinator);
+
+        // Reverse each step in REVERSE order. For the v2→v3 noop, the
+        // forward and reverse actions are both noops, but the loop shape is
+        // here so a future genuine migration's reverse actions land in the
+        // right order.
+        for (forward_index, step) in plan.steps.iter().enumerate().rev() {
+            run_upgrade_step_reverse(
+                &transaction,
+                plan.from_version,
+                plan.to_version,
+                forward_index,
+                step,
+            )?;
+        }
+
+        transaction
+            .execute(
+                "UPDATE meta SET value=?1 WHERE key='schema_version'",
+                params![plan.from_version.to_string()],
+            )
+            .map_err(database_error)?;
+
+        transaction.commit().map_err(database_error)?;
+        drop(active);
+        drop(_maintenance);
+
+        self.rewrite_marker_with_version(plan.from_version)
+    }
+
+    /// Atomically rewrites `<root>/store.marker.json` with `new_version`
+    /// substituted for the current `schema_version` field. Every other
+    /// marker field is preserved (store_uuid / owner_id / actor_id /
+    /// client_id / deletion_nonce / allowed_parent — these ARE the store's
+    /// persistent identity; only `schema_version` is upgradable).
+    ///
+    /// Atomicity: write to `store.marker.json.tmp` then rename over the
+    /// existing marker. rename(2) on POSIX is atomic; on Windows it is
+    /// atomic with respect to readers but a concurrent writer could
+    /// interfere — the maintenance write-lock taken by the caller
+    /// (`execute_schema_upgrade` / `rollback_schema_upgrade`) prevents that.
+    fn rewrite_marker_with_version(&self, new_version: u8) -> Result<()> {
+        let mut fresh = self.marker.clone();
+        fresh.schema_version = new_version;
+        let bytes = canonical_bytes(&fresh)?;
+        let marker_path = self.root.join(MARKER_FILE);
+        let tmp_path = self.root.join(format!("{MARKER_FILE}.tmp"));
+        // write_new_file would refuse (create_new=true) if a `.tmp` from a
+        // prior crashed run lingers, so wipe any stale tmp first.
+        if tmp_path.exists() {
+            let _ = fs::remove_file(&tmp_path);
+        }
+        write_new_file(&tmp_path, &bytes)?;
+        fs::rename(&tmp_path, &marker_path).map_err(|error| {
+            SemanticError::Io(format!(
+                "failed to atomically rewrite marker at {}: {error}",
+                marker_path.display()
+            ))
+        })
+    }
+
+    /// Records the operator's Recovery Point / Time Objectives to
+    /// `<root>/rpo-rto.json`. The file is read back by [`Self::read_rpo_rto`]
+    /// and is the source of truth for an SLO/SLA dashboard that wants to
+    /// display "is the store meeting its RPO/RTO?" without re-prompting the
+    /// operator every poll.
+    ///
+    /// `rpo_minutes` is the max acceptable data loss (the cadence at which
+    /// `recovery backup` runs); `rto_minutes` is the max acceptable downtime
+    /// (the target restore time). `met` records whether the LAST
+    /// backup-or-restore measurement satisfied both. The file is overwritten
+    /// atomically (temp + rename) so a partial write never leaves a
+    /// half-recorded SLO visible to readers.
+    pub fn record_rpo_rto(
+        &self,
+        rpo_minutes: u32,
+        rto_minutes: u32,
+        met: bool,
+    ) -> Result<crate::recovery::RpoRto> {
+        let record = crate::recovery::RpoRto {
+            rpo_minutes,
+            rto_minutes,
+            last_met: met,
+        };
+        let body = serde_json::json!({
+            "rpo_minutes": record.rpo_minutes,
+            "rto_minutes": record.rto_minutes,
+            "last_met": record.last_met,
+            "recorded_at": self.clock.now().to_rfc3339(),
+        });
+        let bytes = serde_json::to_vec_pretty(&body).map_err(serialization_error)?;
+        let path = self.root.join("rpo-rto.json");
+        let tmp = self.root.join("rpo-rto.json.tmp");
+        if tmp.exists() {
+            let _ = fs::remove_file(&tmp);
+        }
+        write_new_file(&tmp, &bytes)?;
+        fs::rename(&tmp, &path).map_err(|error| {
+            SemanticError::Io(format!(
+                "failed to atomically rewrite rpo-rto.json at {}: {error}",
+                path.display()
+            ))
+        })?;
+        Ok(record)
+    }
+
+    /// Reads back the most recent `record_rpo_rto` write. Returns `Ok(None)`
+    /// if `<root>/rpo-rto.json` does not exist (a fresh store has no recorded
+    /// objectives yet). A present-but-unparseable file is `Err` rather than
+    /// `None` — the operator wrote SOMETHING, and silently treating it as
+    /// "no objectives" would hide corruption from the dashboard.
+    pub fn read_rpo_rto(&self) -> Result<Option<crate::recovery::RpoRto>> {
+        let path = self.root.join("rpo-rto.json");
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&path).map_err(io_error)?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(serialization_error)?;
+        let rpo_minutes = value
+            .get("rpo_minutes")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| {
+                SemanticError::Serialization("rpo-rto.json missing rpo_minutes".to_owned())
+            })? as u32;
+        let rto_minutes = value
+            .get("rto_minutes")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| {
+                SemanticError::Serialization("rpo-rto.json missing rto_minutes".to_owned())
+            })? as u32;
+        let last_met = value
+            .get("last_met")
+            .and_then(|v| v.as_bool())
+            .ok_or_else(|| {
+                SemanticError::Serialization("rpo-rto.json missing last_met".to_owned())
+            })?;
+        Ok(Some(crate::recovery::RpoRto {
+            rpo_minutes,
+            rto_minutes,
+            last_met,
+        }))
     }
 
     #[cfg(feature = "semantic-test-failpoints")]
@@ -5555,7 +5923,7 @@ impl StoreAdmin {
             return Err(SemanticError::MarkerMismatch);
         }
         let mut connection = open_connection(&self.root)?;
-        validate_database_identity(&connection, &marker)?;
+        validate_database_identity(&connection, &marker, GateBehavior::Serve)?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(database_error)?;
@@ -6106,7 +6474,11 @@ fn initialize_schema(
     Ok(())
 }
 
-fn validate_database_identity(connection: &Connection, marker: &StoreMarker) -> Result<()> {
+fn validate_database_identity(
+    connection: &Connection,
+    marker: &StoreMarker,
+    gate: GateBehavior,
+) -> Result<()> {
     let value: String = connection
         .query_row("SELECT value FROM meta WHERE key='store_uuid'", [], |row| {
             row.get(0)
@@ -6115,17 +6487,144 @@ fn validate_database_identity(connection: &Connection, marker: &StoreMarker) -> 
     if value != marker.store_uuid.to_string() {
         return Err(SemanticError::MarkerMismatch);
     }
-    // Schema-version gate (Task 2.2). There is no migration path yet, so a
-    // store created under a different schema_version must fail closed rather
-    // than silently run against DDL it was not initialised with — pre-
-    // production break, recorded like Task 1.1's clients-table precedent.
+    // Schema-version gate (Task 2.2 + Task F3.3). Two cases:
+    //
+    //   1. marker.schema_version == CURRENT_DISK_SCHEMA_VERSION → serve.
+    //
+    //   2. The on-disk version is OLDER and a known migration path exists
+    //      (today only 2 → 3, the F3.3 noop placeholder). The store refuses
+    //      to serve until an operator explicitly runs `llm-wiki recovery
+    //      upgrade`. This is refuse-to-serve-until-upgraded (rather than
+    //      auto-upgrade on open) so the upgrade is always an explicit,
+    //      logged operator action — never a side-effect of starting the
+    //      server against an old store. The error message names the binary
+    //      version + the CLI subcommand to run.
+    //
+    //   3. The on-disk version is genuinely unsupported (older than 2, or
+    //      newer than the binary). Hard-fail closed, same as Task 2.2's
+    //      original gate — a store the binary was never written against
+    //      must never silently run under DDL it cannot reason about.
+    //
+    // The `gate` parameter relaxes case (2) for the upgrade CLI path:
+    // `open_for_upgrade` passes `GateBehavior::UpgradeOnly`, which lets a
+    // known-path older version through so `plan_schema_upgrade` + friends
+    // can run. Case (3) ALWAYS fails closed regardless of gate — a
+    // genuinely unsupported version cannot even be upgraded.
+    //
     // This compares the on-disk DDL version, not the event wire version.
     if marker.schema_version != CURRENT_DISK_SCHEMA_VERSION {
+        let has_path =
+            schema_upgrade_path_exists(marker.schema_version, CURRENT_DISK_SCHEMA_VERSION);
+        if matches!(gate, GateBehavior::UpgradeOnly) && has_path {
+            // The upgrade CLI is explicitly running against an older store
+            // whose migration path is known — allow the open so the upgrade
+            // can run. The instance's marker carries the OLD version, which
+            // is exactly what plan_schema_upgrade(from) expects.
+            return Ok(());
+        }
+        if has_path {
+            return Err(SemanticError::CorruptLedger(format!(
+                "store schema_version {} is older than binary schema_version {}; a migration \
+                 path exists — run `llm-wiki recovery upgrade` (refusing to serve until the \
+                 operator explicitly upgrades)",
+                marker.schema_version, CURRENT_DISK_SCHEMA_VERSION
+            )));
+        }
         return Err(SemanticError::CorruptLedger(format!(
-            "store schema_version {} does not match binary schema_version {} (no migration path yet)",
+            "store schema_version {} does not match binary schema_version {} (no migration \
+             path yet — pre-production break)",
             marker.schema_version, CURRENT_DISK_SCHEMA_VERSION
         )));
     }
+    Ok(())
+}
+
+/// Which schema-version-gate branch the opener wants enforced. See
+/// [`SemanticStore::open_with_gate_behavior`].
+#[derive(Clone, Copy, Debug)]
+enum GateBehavior {
+    /// Running-server path: refuse to serve an older-version store even
+    /// when a migration path exists (operator must run `recovery upgrade`
+    /// first).
+    Serve,
+    /// Upgrade-CLI path: let a known-migration-path older version through
+    /// so the upgrade can run. Genuinely unsupported versions still fail.
+    UpgradeOnly,
+}
+
+/// True iff `plan_schema_upgrade(from, to)` would produce a plan (i.e. a
+/// known migration path exists for this version pair). Today only `2 → 3`
+/// (the F3.3 noop placeholder). Used by `validate_database_identity` to
+/// distinguish "refuse-to-serve-until-upgraded" (known path) from
+/// "genuinely unsupported version" (no path) — both still fail closed, but
+/// the error message differs so an operator sees the actionable next step.
+fn schema_upgrade_path_exists(from: u8, to: u8) -> bool {
+    matches!((from, to), (2, 3))
+}
+
+/// Runs one `UpgradeStep`'s forward action inside an open transaction
+/// (Task F3.3). The v2→v3 step is a noop placeholder — there is no DDL to
+/// apply, no rows to backfill, no JSON shape to migrate — so the body just
+/// records that the step ran by inserting a one-row audit log into
+/// `meta` under a stable key. The audit row is itself inside the same
+/// transaction, so a step failure rolls it back alongside the (future)
+/// DDL change. The `forward_index` lets a multi-step plan record per-step
+/// progress (`upgrade_step_<index>_at`).
+///
+/// Future genuine migrations: add an arm keyed on `(from_version,
+/// to_version, step.description)` here. Each arm runs its DDL/data migration
+/// against `transaction` and returns `Err` on any failure — the caller's
+/// `?` propagates and rusqlite's `Transaction` Drop issues ROLLBACK.
+fn run_upgrade_step_forward(
+    transaction: &Transaction,
+    from_version: u8,
+    to_version: u8,
+    forward_index: usize,
+    step: &crate::recovery::UpgradeStep,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    // Audit-trail row: records which step ran, against which version pair,
+    // and whether the step advertises itself reversible. The value is the
+    // step description (operator-readable in `SELECT key,value FROM meta`).
+    let audit_key = format!("upgrade_step_{forward_index}_to_v{to_version}");
+    transaction
+        .execute(
+            "INSERT OR REPLACE INTO meta(key,value) VALUES (?1, ?2)",
+            params![
+                audit_key,
+                format!(
+                    "{{\"from\":{from_version},\"to\":{to_version},\"reversible\":{},\"description\":\"{}\",\"at\":\"{}\"}}",
+                    step.reversible,
+                    step.description.replace('"', "\\\""),
+                    now.to_rfc3339()
+                )
+            ],
+        )
+        .map_err(database_error)?;
+    Ok(())
+}
+
+/// Runs one `UpgradeStep`'s reverse action inside an open transaction. The
+/// v2→v3 noop reverse is also a noop for the data layer, but it DOES wipe
+/// the per-step audit row written by `run_upgrade_step_forward` so the
+/// store's meta table reflects the rollback (an operator inspecting `meta`
+/// after rollback sees no leftover `upgrade_step_*_to_v3` rows). The
+/// per-step description is matched so a future multi-step plan's audit
+/// rows are wiped in reverse order.
+fn run_upgrade_step_reverse(
+    transaction: &Transaction,
+    from_version: u8,
+    to_version: u8,
+    forward_index: usize,
+    _step: &crate::recovery::UpgradeStep,
+) -> Result<()> {
+    let audit_key = format!("upgrade_step_{forward_index}_to_v{to_version}");
+    transaction
+        .execute("DELETE FROM meta WHERE key=?1", params![audit_key])
+        .map_err(database_error)?;
+    // Reference from_version to silence dead-code warnings on a future
+    // genuine migration that needs the target version to undo a DDL change.
+    let _ = from_version;
     Ok(())
 }
 

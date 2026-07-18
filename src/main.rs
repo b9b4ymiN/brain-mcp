@@ -1062,6 +1062,163 @@ fn main() -> Result<()> {
                     }
                 }
             }
+            RecoveryAction::Upgrade {
+                from,
+                to,
+                dry_run,
+                rollback,
+                format,
+            } => {
+                let (state_dir, semantic_root) = {
+                    let manager = WikiEngine::build(&config_path)?;
+                    let engine = manager.state.read();
+                    let state_dir = engine.state_dir.clone();
+                    let semantic_root = state_dir.join("semantic-store");
+                    (state_dir, semantic_root)
+                };
+                if !semantic_root.join("store.marker.json").exists() {
+                    anyhow::bail!(
+                        "semantic store not found at {}; start the server once (or run any \
+                         brain_* operation) to create it before planning a schema upgrade",
+                        semantic_root.display()
+                    );
+                }
+                // open_for_upgrade (not open): the schema-version gate's
+                // refuse-to-serve-until-upgraded branch would otherwise block
+                // opening a v2 store for the very upgrade that brings it to
+                // v3. A genuinely unsupported version still fails closed.
+                let store = llm_wiki::semantic::SemanticStore::open_for_upgrade(
+                    &semantic_root,
+                    llm_wiki::semantic::SemanticConfig::enabled_for(&state_dir),
+                )?;
+                let from_version = from.unwrap_or_else(|| store.schema_version());
+                let to_version = to.unwrap_or(llm_wiki::semantic::CURRENT_DISK_SCHEMA_VERSION);
+                let plan = store.plan_schema_upgrade(from_version, to_version)?;
+                if is_json(&format) {
+                    println!("{}", serde_json::to_string_pretty(&plan)?);
+                } else {
+                    println!(
+                        "Schema upgrade plan: v{from_version} → v{to_version} (reversible: {})",
+                        plan.is_reversible()
+                    );
+                    for (i, step) in plan.steps.iter().enumerate() {
+                        println!(
+                            "  step {i}: {} (reversible={})",
+                            step.description, step.reversible
+                        );
+                    }
+                }
+                if dry_run {
+                    if !is_json(&format) {
+                        println!("--dry-run: leaving store untouched");
+                    }
+                    return Ok(());
+                }
+                if rollback {
+                    store.rollback_schema_upgrade(&plan)?;
+                    if !is_json(&format) {
+                        println!(
+                            "Rolled back schema upgrade: v{to_version} → v{from_version}; reopen \
+                             the store to pick up the rewritten marker"
+                        );
+                    }
+                } else {
+                    store.execute_schema_upgrade(&plan)?;
+                    if !is_json(&format) {
+                        println!(
+                            "Applied schema upgrade: v{from_version} → v{to_version}; reopen the \
+                             store to pick up the rewritten marker"
+                        );
+                    }
+                }
+            }
+            RecoveryAction::RpoRto {
+                rpo,
+                rto,
+                met,
+                not_met,
+                format,
+            } => {
+                let (state_dir, semantic_root) = {
+                    let manager = WikiEngine::build(&config_path)?;
+                    let engine = manager.state.read();
+                    let state_dir = engine.state_dir.clone();
+                    let semantic_root = state_dir.join("semantic-store");
+                    (state_dir, semantic_root)
+                };
+                if !semantic_root.join("store.marker.json").exists() {
+                    anyhow::bail!(
+                        "semantic store not found at {}; start the server once (or run any \
+                         brain_* operation) to create it before recording RPO/RTO",
+                        semantic_root.display()
+                    );
+                }
+                let store = llm_wiki::semantic::SemanticStore::open(
+                    &semantic_root,
+                    llm_wiki::semantic::SemanticConfig::enabled_for(&state_dir),
+                )?;
+                // WRITE branch: at least one of --rpo / --rto supplied, OR an
+                // explicit --met / --not-met flag is set. Without ANY of these
+                // the command is a READ.
+                let wants_write = rpo.is_some() || rto.is_some() || met || not_met;
+                if wants_write {
+                    if met && not_met {
+                        anyhow::bail!("--met and --not-met are mutually exclusive");
+                    }
+                    let rpo_v = rpo.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "writing RPO/RTO requires both --rpo <minutes> and --rto <minutes>"
+                        )
+                    })?;
+                    let rto_v = rto.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "writing RPO/RTO requires both --rpo <minutes> and --rto <minutes>"
+                        )
+                    })?;
+                    let met_v = if met {
+                        true
+                    } else if not_met {
+                        false
+                    } else {
+                        // Preserve the prior `last_met` if neither flag is
+                        // set (operator is updating just the minute targets).
+                        store
+                            .read_rpo_rto()?
+                            .map(|prior| prior.last_met)
+                            .unwrap_or(false)
+                    };
+                    let record = store.record_rpo_rto(rpo_v, rto_v, met_v)?;
+                    if is_json(&format) {
+                        println!("{}", serde_json::to_string_pretty(&record)?);
+                    } else {
+                        println!(
+                            "Recorded RPO/RTO: rpo={}min rto={}min last_met={}",
+                            record.rpo_minutes, record.rto_minutes, record.last_met
+                        );
+                    }
+                } else {
+                    let record = store.read_rpo_rto()?;
+                    match record {
+                        Some(value) => {
+                            if is_json(&format) {
+                                println!("{}", serde_json::to_string_pretty(&value)?);
+                            } else {
+                                println!(
+                                    "RPO/RTO: rpo={}min rto={}min last_met={}",
+                                    value.rpo_minutes, value.rto_minutes, value.last_met
+                                );
+                            }
+                        }
+                        None => {
+                            if is_json(&format) {
+                                println!("null");
+                            } else {
+                                println!("No RPO/RTO recorded yet");
+                            }
+                        }
+                    }
+                }
+            }
         },
     }
 
