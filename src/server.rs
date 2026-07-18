@@ -8,7 +8,8 @@ use parking_lot::Mutex;
 
 use anyhow::Result;
 use axum::extract::State;
-use axum::response::Json;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Json};
 use rmcp::ServiceExt;
 use rmcp::transport::streamable_http_server::session::local::{LocalSessionManager, SessionConfig};
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
@@ -18,8 +19,10 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::config;
+use crate::deployment::ReadinessCheck;
 use crate::engine::WikiEngine;
 use crate::mcp::McpServer;
+use crate::semantic::SemanticStore;
 
 /// Configuration for the managed Hugo web UI spawned by `serve --web`.
 #[derive(Debug, Clone)]
@@ -34,6 +37,22 @@ struct WebTarget {
     wiki_name: String,
     repo_root: PathBuf,
     wiki_root: String,
+}
+
+// ── HTTP app state ───────────────────────────────────────────────────────────
+
+/// Shared state for the top-level ops routes (`/health`, `/ready`). Cheap to
+/// clone — every field is behind an `Arc`.
+///
+/// Both routes read from the live `WikiEngine`; `/ready` additionally probes
+/// the semantic store. The store handle is `Option` because the serve path
+/// may run with brain_* tools disabled (no store attached) — in that shape
+/// `/ready` reports `not_ready` with `db_reachable=false`, which is the
+/// correct answer for a brain service that cannot serve brain traffic.
+#[derive(Clone)]
+struct AppState {
+    engine: Arc<WikiEngine>,
+    store: Option<Arc<SemanticStore>>,
 }
 
 // ── serve_stdio ───────────────────────────────────────────────────────────────
@@ -161,6 +180,15 @@ async fn serve_http(
     let mut session_manager = LocalSessionManager::default();
     session_manager.session_config = session_config;
 
+    // HTTP app state for the top-level ops routes (`/health`, `/ready`). Clones
+    // the semantic-store handle out of the McpServer BEFORE `server` is moved
+    // into the MCP service closure below — same pattern the Console API mount
+    // uses two blocks up. `store` is None when brain_* tools are disabled.
+    let app_state = AppState {
+        engine: engine.clone(),
+        store: server.semantic_store.clone(),
+    };
+
     let router = if serve_cfg.mcp_stateful_mode {
         let service: StreamableHttpService<McpServer, LocalSessionManager> =
             StreamableHttpService::new(
@@ -171,7 +199,8 @@ async fn serve_http(
         axum::Router::new()
             .nest_service("/mcp", service)
             .route("/health", axum::routing::get(health_handler))
-            .with_state(engine.clone())
+            .route("/ready", axum::routing::get(ready_handler))
+            .with_state(app_state.clone())
     } else {
         let service: StreamableHttpService<McpServer, NeverSessionManager> =
             StreamableHttpService::new(
@@ -182,7 +211,8 @@ async fn serve_http(
         axum::Router::new()
             .nest_service("/mcp", service)
             .route("/health", axum::routing::get(health_handler))
-            .with_state(engine.clone())
+            .route("/ready", axum::routing::get(ready_handler))
+            .with_state(app_state)
     };
 
     let router = match console_api {
@@ -650,7 +680,26 @@ pub async fn serve(
     Ok(())
 }
 
-// ── Health endpoint ───────────────────────────────────────────────────────────
+// ── Liveness + readiness endpoints ───────────────────────────────────────────
+//
+// Two distinct probes (Phase F1.3), per the kubelet/SIGTERM convention:
+//
+//   * `/health` — LIVENESS. "Is the process up + the event loop responsive?"
+//     Returns 200 as long as the server is running and can take its engine
+//     state read lock. Cheap — does NOT touch the DB or check migrations. A
+//     load balancer uses this to decide whether to restart the container.
+//
+//   * `/ready`  — READINESS. "Are deps checked; is it safe to route traffic?"
+//     Returns 200 only when `ReadinessCheck::is_ready()` is true — i.e. the
+//     semantic store is reachable, its on-disk schema version matches
+//     `CURRENT_DISK_SCHEMA_VERSION`, and the engine's spaces all have open
+//     searchers. Expensive (probes the store). A load balancer uses this to
+//     decide whether to add the pod to the endpoints; on 503 it keeps the pod
+//     alive but stops routing.
+//
+// The split matters: a slow DB probe must NOT trip a liveness restart. Only
+// `/health` (cheap) feeds the restart decision; `/ready` (expensive) feeds
+// the routing decision.
 
 #[derive(Serialize)]
 struct HealthResponse {
@@ -667,11 +716,14 @@ struct WikiHealth {
 
 static START_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
-async fn health_handler(State(engine): State<Arc<WikiEngine>>) -> Json<HealthResponse> {
+/// Liveness probe. Always 200 while the server is up; the body is informational
+/// (uptime + per-wiki index state). See the module-level note above for the
+/// liveness/readiness split.
+async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
     let start = *START_TIME.get_or_init(std::time::Instant::now);
-    let state = engine.state.read();
+    let engine = state.engine.state.read();
     let mut wikis = Vec::new();
-    for (name, space) in &state.spaces {
+    for (name, space) in &engine.spaces {
         let searcher = space.index_manager.searcher().ok();
         let index_open = searcher.is_some();
         let index_doc_count = searcher.map(|s| s.num_docs()).unwrap_or(0);
@@ -685,6 +737,58 @@ async fn health_handler(State(engine): State<Arc<WikiEngine>>) -> Json<HealthRes
         uptime_secs: start.elapsed().as_secs(),
         wikis,
     })
+}
+
+/// Serialized view of a [`ReadinessCheck`] for the `/ready` response body. The
+/// field names are the load-bearing contract — operators and runbooks grep for
+/// `db_reachable` / `migrations_applied` / `index_open`.
+#[derive(Serialize)]
+struct ReadyResponse {
+    status: &'static str,
+    checks: ReadyChecks,
+}
+
+#[derive(Serialize)]
+struct ReadyChecks {
+    db_reachable: bool,
+    migrations_applied: bool,
+    index_open: bool,
+}
+
+impl ReadyChecks {
+    fn from_check(check: &ReadinessCheck) -> Self {
+        Self {
+            db_reachable: check.db_reachable,
+            migrations_applied: check.migrations_applied,
+            index_open: check.index_open,
+        }
+    }
+}
+
+/// Readiness probe. Builds a `ReadinessCheck` from live engine + store state
+/// (the real gate, not a contract), returns 200 + `{"status":"ready",...}`
+/// when `is_ready()`, or 503 + `{"status":"not_ready",...}` otherwise. See
+/// the module-level note for the liveness/readiness split.
+async fn ready_handler(State(state): State<AppState>) -> axum::response::Response {
+    let check = ReadinessCheck::from_runtime(&state.engine, state.store.as_ref());
+    let checks = ReadyChecks::from_check(&check);
+    let status_code = if check.is_ready() {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        status_code,
+        Json(ReadyResponse {
+            status: if check.is_ready() {
+                "ready"
+            } else {
+                "not_ready"
+            },
+            checks,
+        }),
+    )
+        .into_response()
 }
 
 #[cfg(test)]

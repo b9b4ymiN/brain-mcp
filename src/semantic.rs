@@ -66,7 +66,7 @@ const VALID_CLIENT_CAPABILITIES: &[&str] = &["confirm", "purge", "propose"];
 /// shape), so events keep `schema_version: 1` to stay valid against the
 /// hash-locked `event-schema-v1.json` contract. Only the on-disk schema
 /// (marker + DDL) moved to 2.
-const CURRENT_DISK_SCHEMA_VERSION: u8 = 2;
+pub const CURRENT_DISK_SCHEMA_VERSION: u8 = 2;
 /// Event wire-format version (unchanged since the schema was hash-locked in
 /// Task 0.2). Kept as a named constant rather than a literal so the next
 /// genuine wire break is a one-line change with a clear audit trail.

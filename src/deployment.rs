@@ -8,7 +8,12 @@
 //! Contract-level: no real `docker compose up` in-env. These types model the
 //! manifest a deployment runbook consumes.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
+
+use crate::engine::WikiEngine;
+use crate::semantic::{CURRENT_DISK_SCHEMA_VERSION, SemanticStore};
 
 // ── Platforms ────────────────────────────────────────────────────────────────
 
@@ -60,6 +65,85 @@ impl ReadinessCheck {
     /// would serve requests against an unmigrated/unindexed store.
     pub fn is_ready(&self) -> bool {
         self.db_reachable && self.migrations_applied && self.index_open
+    }
+
+    /// Build a `ReadinessCheck` from live engine + store state. This is what
+    /// the `/ready` HTTP handler calls on every probe — it is the load-bearing
+    /// wiring that turns the contract type into a real production gate (Phase
+    /// F1.3 — the F1 lesson again: the gate must be on the real serve path,
+    /// not just in a contract).
+    ///
+    /// Semantics:
+    /// - `db_reachable`: the semantic store is attached (Some) AND responds to
+    ///   a cheap probe (`schema_version()` reads the on-disk marker). A probe
+    ///   failure (e.g. the store file is gone/corrupt) flips the gate to false
+    ///   without taking the server down.
+    /// - `migrations_applied`: the store's on-disk schema version matches
+    ///   `CURRENT_DISK_SCHEMA_VERSION`. Pre-production, there is no forward
+    ///   migration path; a version mismatch means "this binary cannot serve
+    ///   this store" → not ready (matches `validate_database_identity`).
+    /// - `index_open`: the engine can take its state read lock AND at least
+    ///   one wiki space has an open searcher. We deliberately allow a
+    ///   *fresh* deploy (zero spaces) to report `index_open = true` — the
+    ///   service is ready to accept `spaces register`, the readiness gate is
+    ///   "can the process do useful work", not "is there data" (Task F1.3
+    ///   decision, 2026-07-18). When spaces ARE registered, each one must have
+    ///   an open searcher or the gate flips (a half-mounted space is not
+    ///   servable).
+    ///
+    /// `store` is `Option` because the serve path may run with brain_* tools
+    /// disabled (no semantic store attached). In that shape the readiness
+    /// gate fails on `db_reachable` and `migrations_applied`, which is
+    /// correct: a brain service without its semantic store is not ready to
+    /// serve brain traffic.
+    pub fn from_runtime(engine: &WikiEngine, store: Option<&Arc<SemanticStore>>) -> Self {
+        // db_reachable + migrations_applied both derive from the store handle.
+        // A `None` store means brain_* tools are disabled — not ready.
+        let (db_reachable, migrations_applied) = match store {
+            Some(s) => {
+                // Cheap probe: schema_version() reads the in-memory marker
+                // populated at open/create. If the store handle is alive, the
+                // backing database was reachable at open time. (We do NOT
+                // re-open the connection per probe — that would be too
+                // expensive for a health check and would defeat the
+                // liveness/readiness split.)
+                let reachable =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.schema_version()))
+                        .is_ok();
+                let migrated = reachable && s.schema_version() == CURRENT_DISK_SCHEMA_VERSION;
+                (reachable, migrated)
+            }
+            None => (false, false),
+        };
+
+        // index_open: engine state lock is acquireable AND, when spaces are
+        // registered, every space has an open searcher. Zero spaces = ready
+        // (fresh deploy, can still accept `spaces register`).
+        //
+        // `parking_lot::RwLock::read()` returns the guard directly (not a
+        // `Result`), so lock acquisition cannot fail at the type level — but
+        // we treat the rare poison/panic case as "not ready" defensively via
+        // `catch_unwind`. The inner closure does the real work.
+        let index_open = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let state = engine.state.read();
+            if state.spaces.is_empty() {
+                // Fresh deploy — engine is up, no spaces yet. Ready.
+                true
+            } else {
+                // Every mounted space must have an open searcher.
+                state
+                    .spaces
+                    .values()
+                    .all(|space| space.index_manager.searcher().is_ok())
+            }
+        }))
+        .unwrap_or(false);
+
+        Self {
+            db_reachable,
+            migrations_applied,
+            index_open,
+        }
     }
 }
 

@@ -99,9 +99,22 @@ docker compose logs -f brain
 
 ### 4. Verify
 
+Two probes (Phase F1.3), with distinct semantics:
+
 ```bash
+# Liveness — "is the process up?" Cheap; always 200 while the server runs.
+# Returns {"uptime_secs":..., "wikis":[...]}.
 curl -sf http://127.0.0.1:8080/health
+
+# Readiness — "deps checked; safe to route traffic?" Expensive; 200 ONLY when
+# db_reachable + migrations_applied + index_open all pass, 503 otherwise.
+# Returns {"status":"ready"|"not_ready", "checks":{...}}.
+curl -sf http://127.0.0.1:8080/ready
 ```
+
+Point a load balancer at `/ready` (not `/health`): a slow store probe must
+trip routing, not a container restart. `/health` feeds the restart decision;
+`/ready` feeds the routing decision.
 
 Tear down:
 
@@ -194,23 +207,27 @@ Two scripts, both safe to run from the repo root:
 | Script                                | Shape                   | When to use                                            |
 |---------------------------------------|-------------------------|--------------------------------------------------------|
 | `scripts/docker_build_smoke.sh`       | bare `docker run`       | F1.1 fast image-build gate (~4 min)                    |
-| `scripts/docker_compose_smoke.sh`     | full `docker compose`   | F1.2 production-shape gate (file secret + inspect Env) |
+| `scripts/docker_compose_smoke.sh`     | full `docker compose`   | F1.2/F1.3 production-shape gate (file secret + `/ready` + inspect Env) |
+| `scripts/docker_buildx_multiarch.sh`  | `docker buildx` amd64   | F1.3 multi-arch build pipeline (arm64 deferred)        |
 
 The compose smoke is the stronger gate. It builds fresh, brings the stack up
 via `docker-compose.yml` (pointed at a per-run scratch tree under
 `.docker-compose-smoke/`), and verifies:
 
 1. `GET /health` returns 200 with `{"uptime_secs":..., "wikis":[...]}`.
-2. `POST /api/v1/auth/login` with the wrong secret returns **401**.
-3. `POST /api/v1/auth/login` with the right secret (read from
+2. `GET /ready` returns 200 with `{"status":"ready","checks":{...}}` —
+   `db_reachable`, `migrations_applied`, and `index_open` all `true`. This is
+   the Phase F1.3 readiness gate (distinct from liveness above).
+3. `POST /api/v1/auth/login` with the wrong secret returns **401**.
+4. `POST /api/v1/auth/login` with the right secret (read from
    `/run/secrets/bootstrap_secret`) returns **200** + `{"csrf_token":"..."}`.
-4. `GET /` returns the Console SPA (`<title>Brain Console</title>`).
-5. **Security gate A:** the secret value is NOT in
+5. `GET /` returns the Console SPA (`<title>Brain Console</title>`).
+6. **Security gate A:** the secret value is NOT in
    `docker inspect brain --format '{{.Config.Env}}'`.
-6. **Security gate B:** `/run/secrets/bootstrap_secret` IS in the container's
+7. **Security gate B:** `/run/secrets/bootstrap_secret` IS in the container's
    `Mounts` (the file indirection is actually wired).
-7. `docker history --no-trunc` contains **no** bootstrap secret.
-8. The container reports `uid=1000(brain)`.
+8. `docker history --no-trunc` contains **no** bootstrap secret.
+9. The container reports `uid=1000(brain)`.
 
 Run it:
 
@@ -221,7 +238,8 @@ bash scripts/docker_compose_smoke.sh
 Manual equivalents after `docker compose up`:
 
 ```bash
-curl -sf http://127.0.0.1:8080/health
+curl -sf http://127.0.0.1:8080/health   # liveness — 200 while process is up
+curl -sf http://127.0.0.1:8080/ready    # readiness — 200 only when all gates pass
 curl -i -X POST http://127.0.0.1:8080/api/v1/auth/login \
      -H 'Content-Type: application/json' \
      -d "{\"secret\":\"$(cat ./secrets/bootstrap_secret.txt)\"}"
@@ -293,5 +311,8 @@ docker logs --tail 100 brain
 - OAuth-gated Console auth (replaces the bootstrap secret for multi-user).
 - `/metrics` Prometheus endpoint for orchestrator-driven autoscaling
   (Phase F2.2).
-- Multi-platform build (`linux/amd64` + `linux/arm64`) via `docker buildx`.
+- **arm64 build** (DEFERRED in F1.3, 2026-07-18). The amd64 buildx pipeline is
+  in `scripts/docker_buildx_multiarch.sh`; the arm64 block is commented out
+  pending QEMU binfmt setup or a native ARM runner. Re-enable when an Oracle
+  ARM host or CI runner is available.
 - Helm chart for kubernetes deployment.

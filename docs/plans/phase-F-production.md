@@ -6,18 +6,27 @@
 ## Decision (2026-07-16)
 - **Docker ต้องรันได้ทั้ง 2 arch จริง** — `docker buildx` multi-arch + QEMU emulation รัน arm64 container smoke บนเครื่องนี้ (ไม่ carry ไป Oracle)
 
+## Decision (2026-07-18, Task F1.3) — arm64 DEFERRED
+- **arm64 build/smoke deferred** per user direction. The one-time QEMU binfmt
+  setup (`docker run --rm --privileged multiarch/qemu-user-static --reset -p yes`)
+  was skipped, and no Oracle ARM host or CI runner is wired yet. F1.3 ships
+  **amd64 only** via `scripts/docker_buildx_multiarch.sh`; the arm64 block is
+  preserved commented-out in that script for a one-line re-enable. DoD #1/#2
+  amended below to "amd64 (arm64 DEFERRED)". Re-enable when an Oracle ARM host
+  or CI runner is available.
+
 ## Task F1 — Reproducible deployment (Docker Compose, multi-arch)
 - Dockerfile multi-stage (pinned base + toolchain) + `docker-compose.yml` (contract `DeploymentManifest` Task 6.1)
-- `docker buildx build --platform linux/amd64,linux/arm64`; รัน arm64 smoke ผ่าน QEMU
+- `docker buildx build --platform linux/amd64` (F1.3); arm64 DEFERRED — see 2026-07-18 decision above
 - Secrets ผ่าน Docker secrets/secret files — ไม่ bake ใน image/compose/repo
-- Health/readiness: ไม่ ready ก่อน DB+migration+index checks ผ่าน (contract `ReadinessCheck`)
+- Health/readiness: ไม่ ready ก่อน DB+migration+index checks ผ่าน (contract `ReadinessCheck`) — F1.3 wired the real `ReadinessCheck::from_runtime` behind `/ready` (liveness `/health` kept cheap)
 - TLS + bind: default loopback (Phase B); production 0.0.0.0 เฉพาะหลัง reverse proxy + auth (ผูก Phase D worker auth)
 
 **DoD (§13 Task 6.1):**
-1. `docker compose up` บน clean host ผ่าน smoke/health/MCP/Console checks — **amd64 และ arm64 (QEMU)**
-2. images build+test ทั้ง `linux/amd64` + `linux/arm64`; deps/toolchain/base pinned
+1. `docker compose up` บน clean host ผ่าน smoke/health/MCP/Console checks — **amd64 (arm64 DEFERRED — QEMU binfmt setup skipped per user 2026-07-18; re-enable when Oracle ARM host or CI runner available)**
+2. images build+test `linux/amd64` (arm64 DEFERRED per 2026-07-18 decision); deps/toolchain/base pinned (rust:1.95-bookworm, node:20-bookworm, debian:bookworm-slim)
 3. HTTPS/domain/secrets/volumes/migrations/backup จาก runbook บน clean host ได้
-4. health ไม่รายงาน ready ก่อน checks ผ่าน (negative test)
+4. health ไม่รายงาน ready ก่อน checks ผ่าน (negative test) — F1.3: `ReadinessCheck::is_ready()` returns false when any gate fails (unit tests in `tests/deployment_contract_v1.rs`)
 5. ไม่มี secret ใน image layers (scan gate)
 
 ## Task F2 — Observability + operations wiring *(ปิด contract-only Task 6.2)*

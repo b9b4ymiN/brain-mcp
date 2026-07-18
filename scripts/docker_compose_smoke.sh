@@ -24,14 +24,16 @@
 #   3. Generates a compose override + config.toml that point at the scratch
 #      tree, so we don't depend on a pre-existing `./config/config.toml`.
 #   4. Builds the image fresh (compose up --build) and waits for /health.
-#   5. Login smoke: wrong secret -> 401, correct secret -> 200 + csrf_token.
-#   6. Console index check (`<title>Brain Console</title>`).
-#   7. SECURITY GATES:
+#   5. Polls /ready (Phase F1.3) until the readiness gate passes (db_reachable
+#      + migrations_applied + index_open) — proves the readiness gate is real.
+#   6. Login smoke: wrong secret -> 401, correct secret -> 200 + csrf_token.
+#   7. Console index check (`<title>Brain Console</title>`).
+#   8. SECURITY GATES:
 #        a. `docker inspect brain --format '{{.Config.Env}}'` MUST NOT contain
 #           the bootstrap secret value (env leak check).
 #        b. `docker inspect brain --format '{{json .Mounts}}'` MUST contain
 #           a /run/secrets/bootstrap_secret mount (file indirection check).
-#   8. `docker compose down -v` cleanup.
+#   9. `docker compose down -v` cleanup.
 #
 # Designed to run under Git Bash on Windows. `MSYS_NO_PATHCONV=1` is not
 # needed for compose subcommands (no host-path bind args on the CLI); the
@@ -193,6 +195,49 @@ echo "[smoke]   /health -> $HEALTH_BODY"
 echo "$HEALTH_BODY" | grep -q '"uptime_secs"' || { echo "[smoke] FAIL: /health missing uptime_secs"; exit 1; }
 echo "$HEALTH_BODY" | grep -q '"wikis"'       || { echo "[smoke] FAIL: /health missing wikis";       exit 1; }
 
+# ── 5b. /ready readiness gate (Phase F1.3) ───────────────────────────────────
+# /health (liveness) was cheap and returned 200 as soon as the server was up.
+# /ready (readiness) is the real gate: it consults ReadinessCheck::is_ready()
+# (db_reachable && migrations_applied && index_open). A 200 here proves the
+# semantic store opened at the current schema version AND the engine's spaces
+# all have open searchers. A 503 here would mean the server is up (liveness
+# passes) but not safe to route traffic to — exactly the split the F1.3 gate
+# exists to enforce. We poll because the store open happens just after bind.
+echo "[smoke] waiting for /ready (up to 60s) ..."
+READY=""
+READY_BODY=""
+for i in $(seq 1 60); do
+    # /ready returns 200 + {"status":"ready",...} or 503 + {"status":"not_ready",...}.
+    # curl -sf only succeeds on 2xx, so a 503 falls through to the retry.
+    if READY_BODY="$(curl -sf "http://127.0.0.1:${SMOKE_PORT}/ready" 2>/dev/null)"; then
+        echo "[smoke] ready after ${i}s"
+        echo "[smoke]   /ready -> $READY_BODY"
+        READY="1"
+        break
+    fi
+    if (( i % 15 == 0 )); then
+        echo "[smoke]   ...still waiting at ${i}s. Last /ready body (if any):"
+        curl -s "http://127.0.0.1:${SMOKE_PORT}/ready" 2>/dev/null | sed 's/^/            /' || true
+    fi
+    sleep 1
+done
+
+if [[ -z "$READY" ]]; then
+    echo "[smoke] FAIL: /ready never returned 200 (readiness gate did not pass). Full container logs:"
+    docker logs brain_compose_smoke 2>&1 | sed 's/^/    /'
+    exit 1
+fi
+
+# Body shape checks: status=ready + the three named gates.
+echo "$READY_BODY" | grep -q '"status":"ready"' \
+    || { echo "[smoke] FAIL: /ready missing status=ready"; exit 1; }
+echo "$READY_BODY" | grep -q '"db_reachable":true' \
+    || { echo "[smoke] FAIL: /ready reports db_reachable != true"; exit 1; }
+echo "$READY_BODY" | grep -q '"migrations_applied":true' \
+    || { echo "[smoke] FAIL: /ready reports migrations_applied != true"; exit 1; }
+echo "$READY_BODY" | grep -q '"index_open":true' \
+    || { echo "[smoke] FAIL: /ready reports index_open != true"; exit 1; }
+
 # ── 6. Auth gate: wrong secret -> 401 ────────────────────────────────────────
 echo "[smoke] checking /api/v1/auth/login with WRONG secret (expect 401) ..."
 CODE=$(curl -s -o /dev/null -w '%{http_code}' \
@@ -287,5 +332,5 @@ echo "$ID_OUT" | grep -Eq 'uid=1000\(brain\)' \
     || { echo "[smoke] FAIL: container not running as brain(uid=1000): $ID_OUT"; exit 1; }
 
 echo ""
-echo "[smoke] PASS — all checks green (compose up, /health, login 401/200, console index,"
+echo "[smoke] PASS — all checks green (compose up, /health, /ready, login 401/200, console index,"
 echo "                 secret NOT in inspect Env, secret file mount present, image clean, non-root)"
