@@ -171,3 +171,79 @@ list of matches if any are found, `0` if clean. We grep the **built bundle**
   suite (`xss-csp.real.spec.ts`) seeds an XSS payload and asserts it renders
   as literal text, that no `alert` dialog opens, and that the CSP header is
   present and strict.
+
+## User Acceptance Testing (Phase E3.4)
+
+The Console ships three UAT specs that each walk the full Home → Search →
+Entity → Inbox-review → Galaxy → Operations flow on a distinct domain:
+
+| Spec                            | Domain     | Confirmed seed (drives Entity + timeline + ProvenancePanel)             | Pending seed (drives Inbox review)        |
+| ------------------------------- | ---------- | ----------------------------------------------------------------------- | ----------------------------------------- |
+| `uat-stocks.real.spec.ts`       | `stocks`   | `GULF target_price=55`                                                  | `PTT target_price=62`                     |
+| `uat-project.real.spec.ts`      | `project`  | `phase-e status=in_progress`, `phase-e task_count=14`, `phase-d status=closed` | `phase-e risk=schedule`             |
+| `uat-knowledge.real.spec.ts`    | `knowledge`| `rust type_system=static_strong`, `svelte-5 paradigm=runes`, `sqlite concurrency_model=wal` | `sqlite default_isolation=wal` |
+
+Each spec answers the four provenance questions (§5.3) on its domain via
+assertions on the `ProvenancePanel` text:
+
+1. **What does the system know?** — the "What" facet shows predicate + value.
+2. **Where does it come from?** — the "Source" facet shows a provenance kind
+   (`evidence` / `inference` / `user_assertion` / `mechanical`).
+3. **When is/was it true?** — the "When true" facet shows a valid interval
+   or the "current scope — no time bounds" hint.
+4. **What does it connect to?** — the "Connections" facet (Galaxy link) and
+   the Galaxy sub-view in Entity.
+5. **Which client edited it?** — the "Client that edited" facet shows the
+   `console` client registered at login.
+
+Each spec also exercises one destructive action (retract — reversible; the
+dialog opens and Escape cancels so the shared store is not mutated).
+
+The seed extension lives in `examples/seed_console_e2e.rs` under the "UAT
+3-domain extension" block. It is idempotent (every row has a stable
+`uat-…` operation_id; re-running the seed against an already-seeded store
+is a no-op-conflict treated as success). The stocks seed (the original
+GULF/PTT/AAPL/XSS rows) is unchanged.
+
+## a11y (Phase E3.4)
+
+`web/console/e2e/a11y.real.spec.ts` runs the mechanically-verifiable a11y
+checks against the real backend:
+
+- **Landmarks** — the shell exposes `<main>` + `<nav aria-label="Primary">`;
+  every primary page renders an `<h1>`.
+- **Keyboard nav** — Tab cycles through nav + page content without getting
+  stuck. The spec caps the Tab count at 60 and fails fast if the focus walk
+  only visits a single element (focus-trap-on-a-non-modal-page regression).
+- **Discernible button text** — every visible button has either
+  `textContent`, `aria-label`, or `title`.
+- **Contrast heuristic** — no inline `style="color: …"` overrides on text
+  elements across all 5 primary pages (the Console uses semantic CSS classes
+  exclusively).
+- **DestructiveDialog a11y** — `role="dialog"`, `aria-modal="true"`, a
+  non-empty `aria-label`, and the warning message carries `role="alert"`.
+- **Reduced-motion path** — under `prefers-reduced-motion: reduce`, the
+  Galaxy renderer falls back to `2d` or `list` (NEVER `3d`); the spec
+  emulates the preference via `browser.newContext({ reducedMotion: 'reduce' })`
+  and asserts the `.renderer-badge` text.
+
+### Manual-check items (not automatable in headless Playwright)
+
+The following require either computed layout or human judgement and are NOT
+covered by `a11y.real.spec.ts`. Re-check them on any major UI change:
+
+- **Exact WCAG AA contrast ratios (1.4.3).** Computing the contrast ratio
+  needs the computed background AND foreground colour of every text element
+  plus the colour math; the spec only asserts no inline `style="color:"`
+  overrides. Run a one-off axe-core or Lighthouse audit on `dist/` (dev
+  dependency only — axe-core is intentionally NOT a runtime/CI dep per the
+  Phase E constraints) and verify every text-on-background pair scores
+  ≥4.5:1 (or ≥3:1 for large text).
+- **Screen-reader announcement order.** NVDA/JAWS narration order on
+  ProvenancePanel facets, Inbox review dialogs, and Operations cards —
+  verify with a real screen reader on a built bundle.
+- **Touch target sizing (2.5.5 — 24×24 CSS px).** The Console is desktop-
+  first; verify on a mobile viewport if/when mobile is in scope.
+- **Focus visibility (2.4.7).** Every focusable element should show a
+  visible focus indicator. The Console relies on the browser default focus
+  ring + `:focus-visible` CSS in components — eyeball-verify on each page.

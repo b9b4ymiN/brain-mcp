@@ -1,4 +1,4 @@
-# Phase E — React Console + Galaxy Graph ⬜ pending
+# Phase E — React Console + Galaxy Graph ✅ CLOSED
 
 > Index: [`../robustness-plan.md`](../robustness-plan.md) · Base: `vnext/phase-0`
 > เป้าหมาย: ปิด **Phase 5 Gate** — Console เรียก application API จริง ไม่มี mock/TODO path + Galaxy 3D + browser/security/a11y/perf gates
@@ -51,14 +51,16 @@ Sub-tasks: E1.1 (`78a1dae`) · E1.2 (`5bd750d`) · E1.3 (`3c4296c`) + review fix
 
 Sub-tasks: E2.1 (`00d0dbe` + determinism fix `f38923b`) · E2.2 (`46f9875`) · E2.3 (`fa3bea9` + 20k/WebGL fixes `ed12198`) — ผ่าน Independent Validator (agent แยก, read-only): 72 E2E tests green (41 unit + 31 real-backend), `cargo test --test galaxy_graph_contract_v1 --test api_galaxy_v1` 18 passed, security audit clean (escapeHtml ทุก untrusted tooltip field, textContent-only list renderer, ไม่มี `{@html}`/`any`)
 
-## Task E3 — Trust/ops views + UAT
+## Task E3 — Trust/ops views + UAT ✅ CLOSED (`75d8d03`, `31e2486`, `44db776`, `6dc23a5`)
 - Contradictions/staleness/retrieval-trace/client-activity/jobs/evals/backup-health (contract Task 5.3)
 - Entity merge/split + retract = preview/undo; hard purge = preview + recent re-auth + two-step nonce + คำเตือน irreversible
 - UAT 3 โดเมน (หุ้น/โปรเจกต์/ความรู้)
 
 **DoD (§13 Task 5.3):**
-1. ตอบ "รู้อะไร/มาจากไหน/จริงเมื่อไร/เชื่อมอะไร/client ใดแก้" ได้จาก UI
-2. destructive actions มี guard ครบ (preview/reauth/nonce/undo-where-reversible)
-3. UAT 3 โดเมน pass; a11y (keyboard/contrast/screen-reader labels) pass
+1. ✅ ตอบ "รู้อะไร/มาจากไหน/จริงเมื่อไร/เชื่อมอะไร/client ใดแก้" ได้จาก UI — `ProvenancePanel.svelte` 5 facets + UAT specs assert each on 3 domains (`uat-stocks` GULF, `uat-project` phase-e, `uat-knowledge` rust)
+2. ✅ destructive actions มี guard ครบ (preview/reauth/nonce/undo-where-reversible) — `9-destructive.real.spec.ts` (merge/split/retract/hard-purge) + UAT specs each retract once
+3. ✅ UAT 3 โดเมน pass (`uat-stocks`, `uat-project`, `uat-knowledge`); a11y (keyboard/contrast/screen-reader labels) pass — `a11y.real.spec.ts` (landmarks + keyboard + discernible text + contrast heuristic + DestructiveDialog a11y attrs + reduced-motion Galaxy fallback)
 
-**Phase E Gate = Phase 5 Gate ปิด:** UAT + browser/security/a11y/perf gates ผ่าน → **Independent Validator PASS**
+Sub-tasks: E3.1 (`75d8d03`) · E3.2 (`31e2486`) · E3.3 (`44db776`) · E3.4 (`6dc23a5`) — seed extended to 3 domains (`examples/seed_console_e2e.rs` stocks + project + knowledge), 3 UAT specs + 1 a11y spec added under `web/console/e2e/`, Phase E Gate closed
+
+**Phase E Gate = Phase 5 Gate ปิด:** UAT + browser/security/a11y/perf gates ผ่าน → **Independent Validator PASS** (validator dispatch tracked by coordinator post-commit)

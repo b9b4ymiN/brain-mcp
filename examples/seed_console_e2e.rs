@@ -46,6 +46,17 @@
 //!   * Capture+Propose+Confirm:  GULF target_price=55 (a prior — feeds timeline
 //!     + gives Inbox supersede a prior to replace)
 //!
+//! UAT 3-domain extension (Task E3.4): in addition to the stocks domain, we
+//! seed two further domains so the UAT specs can walk the same Home → Search
+//! → Entity → Inbox → Galaxy → Operations flow on each:
+//!   * project (confirmed):  phase-e status="in_progress", phase-e
+//!     task_count=14, phase-d status="closed"
+//!   * project (pending):    phase-e risk="schedule" (drives Inbox review)
+//!   * knowledge (confirmed): rust type_system="static_strong",
+//!     svelte-5 paradigm="runes", sqlite concurrency_model="wal"
+//!   * knowledge (pending):  sqlite default_isolation="wal" (drives Inbox
+//!     review)
+//!
 //! Usage:
 //!     cargo run --example seed_console_e2e -- <state_dir>
 
@@ -254,9 +265,118 @@ fn main() -> ExitCode {
         }
     }
 
+    // ── UAT 3-domain extension (Task E3.4) ─────────────────────────────────
+    //
+    // stocks is seeded above. We add the "project" and "knowledge" domains so
+    // each UAT spec (`uat-project`, `uat-knowledge`) has both confirmed
+    // claims (Entity + timeline + ProvenancePanel) and at least one pending
+    // proposal (Inbox review). All operation_ids carry a `uat-` prefix so they
+    // are visibly distinct from the stocks seed and stay idempotent on rerun.
+
+    // project domain — confirmed claims (Entity + timeline).
+    let project_confirmed: &[(&str, &str, ClaimDraft)] = &[
+        (
+            "uat-project-phase-e-status",
+            "Phase E is in progress; the console + galaxy + UAT sweep are landing.",
+            draft("phase-e", "status", json!("in_progress"), "project"),
+        ),
+        (
+            "uat-project-phase-e-tasks",
+            "Phase E carries fourteen sub-tasks across E1/E2/E3.",
+            draft("phase-e", "task_count", json!(14), "project"),
+        ),
+        (
+            "uat-project-phase-d-status",
+            "Phase D closed before Phase E started.",
+            draft("phase-d", "status", json!("closed"), "project"),
+        ),
+    ];
+    for (op, evidence, draft) in project_confirmed {
+        match seed_confirmed(&store, &context, op, evidence, draft.clone()) {
+            Ok(id) => eprintln!("seed_console_e2e: confirmed {op} -> {id}"),
+            Err(e) => {
+                if !e.contains("IDEMPOTENCY_CONFLICT") {
+                    die(e);
+                }
+                eprintln!(
+                    "seed_console_e2e: confirmed {op} already seeded (idempotent) — skipping"
+                );
+            }
+        }
+    }
+
+    // project domain — one pending proposal for Inbox review.
+    let project_pending: &[(&str, &str, ClaimDraft)] = &[(
+        "uat-project-phase-e-risk",
+        "Phase E has a residual schedule risk on the UAT sweep.",
+        draft("phase-e", "risk", json!("schedule"), "project"),
+    )];
+    for (op, evidence, draft) in project_pending {
+        match seed_proposal(&store, &context, op, evidence, draft.clone()) {
+            Ok(id) => eprintln!("seed_console_e2e: pending {op} -> {id}"),
+            Err(e) => {
+                if !e.contains("IDEMPOTENCY_CONFLICT") {
+                    die(e);
+                }
+                eprintln!("seed_console_e2e: pending {op} already seeded (idempotent) — skipping");
+            }
+        }
+    }
+
+    // knowledge domain — confirmed claims (Entity + timeline + ProvenancePanel).
+    let knowledge_confirmed: &[(&str, &str, ClaimDraft)] = &[
+        (
+            "uat-knowledge-rust-type-system",
+            "Rust uses a static, strongly-checked type system.",
+            draft("rust", "type_system", json!("static_strong"), "knowledge"),
+        ),
+        (
+            "uat-knowledge-svelte5-paradigm",
+            "Svelte 5 introduces runes as its reactivity primitive.",
+            draft("svelte-5", "paradigm", json!("runes"), "knowledge"),
+        ),
+        (
+            "uat-knowledge-sqlite-concurrency",
+            "SQLite's WAL mode is the concurrency model we rely on for the semantic store.",
+            draft("sqlite", "concurrency_model", json!("wal"), "knowledge"),
+        ),
+    ];
+    for (op, evidence, draft) in knowledge_confirmed {
+        match seed_confirmed(&store, &context, op, evidence, draft.clone()) {
+            Ok(id) => eprintln!("seed_console_e2e: confirmed {op} -> {id}"),
+            Err(e) => {
+                if !e.contains("IDEMPOTENCY_CONFLICT") {
+                    die(e);
+                }
+                eprintln!(
+                    "seed_console_e2e: confirmed {op} already seeded (idempotent) — skipping"
+                );
+            }
+        }
+    }
+
+    // knowledge domain — one pending proposal for Inbox review.
+    let knowledge_pending: &[(&str, &str, ClaimDraft)] = &[(
+        "uat-knowledge-sqlite-default-isolation",
+        "Default isolation for the store is WAL under our config.",
+        draft("sqlite", "default_isolation", json!("wal"), "knowledge"),
+    )];
+    for (op, evidence, draft) in knowledge_pending {
+        match seed_proposal(&store, &context, op, evidence, draft.clone()) {
+            Ok(id) => eprintln!("seed_console_e2e: pending {op} -> {id}"),
+            Err(e) => {
+                if !e.contains("IDEMPOTENCY_CONFLICT") {
+                    die(e);
+                }
+                eprintln!("seed_console_e2e: pending {op} already seeded (idempotent) — skipping");
+            }
+        }
+    }
+
     // ── summary: print the pending count so the Playwright webServer log ──
     // shows the seed landed. A non-zero pending count is what unblocks the
-    // Inbox review test (DoD #2).
+    // Inbox review test (DoD #2). Grouped by domain so the UAT specs can see
+    // that each of the three UAT domains has at least one pending row.
     match store.list_pending_proposals() {
         Ok(list) => {
             eprintln!(

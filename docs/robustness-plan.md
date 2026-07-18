@@ -1,6 +1,6 @@
 # Robustness Plan — Index
 
-> สถานะ: **Phase A/B/C CLOSED · Phase D = NEXT**
+> สถานะ: **Phase A/B/C/E CLOSED · Phase D = NEXT**
 > Base: branch `vnext/phase-0` (Phase 7 Gate closed — ALL PHASES contract-cleared)
 > Master spec: `C:\Programing\AI2.0\jarvis\brain_2nd\GOAL-vNext.md` (§11 System DoD, §12 Engineering Loop, §13 Phase DoD)
 > ทิศทาง: **Audit ก่อน → ปิด gap ตามลำดับความเสี่ยง**
@@ -16,7 +16,7 @@
 | B — Security Hardening | [`plans/phase-B-security.md`](plans/phase-B-security.md) | ✅ CLOSED | S1+S2+S3 ปิด, audit 0 vuln |
 | C — `brain_*` Semantic Wiring | [`plans/phase-C-brain-wiring.md`](plans/phase-C-brain-wiring.md) | ✅ CLOSED | brain_* E2E จาก Claude Code |
 | D — Z.ai Adapter จริง | [`plans/phase-D-zai-adapter.md`](plans/phase-D-zai-adapter.md) | ⬜ **NEXT** | Phase 4 Gate runtime |
-| E — React Console + Galaxy | [`plans/phase-E-console-galaxy.md`](plans/phase-E-console-galaxy.md) | ⬜ pending | Phase 5 Gate |
+| E — React Console + Galaxy | [`plans/phase-E-console-galaxy.md`](plans/phase-E-console-galaxy.md) | ✅ **CLOSED** | Phase 5 Gate (UAT 3 โดเมน + a11y + Validator PASS) |
 | F — Production (Docker) | [`plans/phase-F-production.md`](plans/phase-F-production.md) | ⬜ pending | Phase 6 Gate |
 
 Evidence: [`baseline/audit-20260716-report.md`](baseline/audit-20260716-report.md) · [`baseline/review-phaseBC-20260716.md`](baseline/review-phaseBC-20260716.md) · [`final-report-20260716.md`](final-report-20260716.md)
@@ -32,7 +32,7 @@ Evidence: [`baseline/audit-20260716-report.md`](baseline/audit-20260716-report.m
 | D1 | `brain_*` MCP tools ยังไม่ wire เข้า `SemanticStore` | Task 3.1/3.2 | ✅ ปิด Phase C (บางส่วน; timeline/evidence/explain ยกไป E) |
 | D2 | Auth ไม่อยู่บน hot path + per-handle HIGH | Task 1.3/3.3 | ✅ ปิด Phase B (F1 fix `a9cec81`) |
 | D3 | Z.ai HTTP adapter จริง + adversarial corpus | Task 4.1/4.2 | ⬜ Phase D |
-| D4 | React Console + Galaxy + Playwright gates | Task 5.1–5.3 | ⬜ Phase E |
+| D4 | React Console + Galaxy + Playwright gates | Task 5.1–5.3 | ✅ ปิด Phase E (UAT 3 โดเมน + a11y) |
 | D5 | `docker compose up` + restore drill + external review | Task 6.1–6.3 | ⬜ Phase F |
 | D6 | `cargo audit` vuln | baseline | ✅ ปิด Phase B (crossbeam-epoch 0.9.20) |
 | D7 | governance fail + eval byte_lock | baseline | ✅ ปิด Phase B |
@@ -77,3 +77,4 @@ Evidence: [`baseline/audit-20260716-report.md`](baseline/audit-20260716-report.m
 | 2026-07-16 | **F1 fix `a9cec81`** — serve เปิด auth gate + dispatch-level tests; **Phase B/C CLOSED** |
 | 2026-07-16 | **Phase D/E/F detailed plan** + 3 decisions ล็อค (no-mock / E0 API layer / docker multi-arch) |
 | 2026-07-16 | **แยกแผนเป็นไฟล์ต่อ Phase** ใน `plans/`; ไฟล์นี้เป็น index |
+| 2026-07-18 | **Phase E CLOSED** — E3.4 UAT 3 โดเมน (stocks/project/knowledge) + a11y (keyboard/contrast-heuristic/landmarks/reduced-motion) + Phase E Gate ปิด; seed ขยาย 3 โดเมน, UAT specs + a11y spec green |
