@@ -114,8 +114,10 @@
   <!-- The galaxy canvas — full-bleed, transparent so the backdrop shows
        through where there are no nodes/edges. GalaxyGraph in immersive
        mode mounts its own renderer (3d → 2d → list fallback chain) into
-       this container. -->
-  <div class="home-galaxy">
+       this container. role="img" + aria-label gives SR users a one-line
+       summary (the overlay's counts are also live, but this anchors the
+       non-text content). -->
+  <div class="home-galaxy" role="img" aria-label="Knowledge galaxy: {nodeCount} nodes, {edgeCount} edges">
     <GalaxyGraph {session} zoom="far" immersive height={0} onNodeClick />
   </div>
 
@@ -142,7 +144,11 @@
         <p class="home-state home-state--empty">
           This universe is empty.
           <button type="button" class="home-retry" onclick={openSearch}>
-            Capture your first claim →
+            Capture your first claim
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="5" y1="12" x2="19" y2="12" />
+              <polyline points="12 5 19 12 12 19" />
+            </svg>
           </button>
         </p>
       {:else if loading || nodeCount === 0}
@@ -182,13 +188,19 @@
 <style>
   /* ── Hero shell — full viewport, contains the 4 stacked layers ─────── */
   .home-hero {
-    /* Break out of App.svelte's shell-main max-width. Home IS the page. */
+    /* Break out of App.svelte's shell-main max-width. Home IS the page.
+     * Using 100% (not 100vw) + symmetric margin break-out avoids the
+     * Windows scrollbar-overflow issue: 100vw includes the vertical
+     * scrollbar width on Windows/Firefox, so the hero was ~17px wider
+     * than the visible viewport. The 50% / -50vw pair centers regardless
+     * of the parent's max-width, and the right margin mirrors the left. */
     position: relative;
-    width: 100vw;
-    /* Pull back to the left edge of the viewport regardless of the
-     * parent's centered max-width container. */
+    width: 100%;
     margin-left: calc(50% - 50vw);
-    min-height: calc(100vh - 6rem); /* leave room for the shell header */
+    margin-right: calc(50% - 50vw);
+    /* --shell-header-height is the height of App.svelte's <header.shell>.
+     * Declared in tokens.css so changes there propagate here. */
+    min-height: calc(100vh - var(--shell-header-height, 6rem));
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -428,11 +440,11 @@
   /* ── Mobile ────────────────────────────────────────────────────────── */
   @media (max-width: 48rem) {
     .home-hero {
-      min-height: calc(100vh - 5rem);
+      min-height: calc(100vh - var(--shell-header-height-mobile, 5rem));
     }
 
     .home-overlay {
-      min-height: calc(100vh - 5rem);
+      min-height: calc(100vh - var(--shell-header-height-mobile, 5rem));
       padding: var(--space-md);
     }
 

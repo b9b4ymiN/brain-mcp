@@ -149,6 +149,10 @@
   // Ref to the dialog root so the focus-trap keydown handler can query its
   // focusable descendants (Fix I2).
   let dialogRoot = $state<HTMLDivElement | null>(null)
+  // Element that had focus before the dialog opened (the action button).
+  // Restored on cancel + after success so keyboard users don't drop to
+  // <body> (WCAG 2.4.3 modal best practice).
+  let lastFocused: HTMLElement | null = null
 
   /**
    * Fix I1: when the Supersede dialog has every checkbox unchecked, the
@@ -291,6 +295,7 @@
 
   // ── Dialog openers (one per action) ────────────────────────────────────
   function startApprove(proposal: ProposalSummary, before: unknown): void {
+    lastFocused = document.activeElement as HTMLElement | null
     dialog = {
       kind: 'approve',
       proposalId: proposal.proposal_id,
@@ -302,6 +307,7 @@
   }
 
   function startReject(proposal: ProposalSummary, before: unknown): void {
+    lastFocused = document.activeElement as HTMLElement | null
     dialog = {
       kind: 'reject',
       proposalId: proposal.proposal_id,
@@ -317,6 +323,7 @@
     before: unknown,
     claims: ClaimView[],
   ): void {
+    lastFocused = document.activeElement as HTMLElement | null
     dialog = {
       kind: 'supersede',
       proposalId: proposal.proposal_id,
@@ -383,6 +390,12 @@
   function cancelDialog(): void {
     if (acting) return
     dialog = null
+    // Restore focus to the action button that opened the dialog (WCAG
+    // 2.4.3 — without this, focus falls to <body> after Escape/Cancel).
+    queueMicrotask(() => {
+      lastFocused?.focus()
+      lastFocused = null
+    })
   }
 
   // ── Mutation execution (only reachable from the dialog's Yes button) ───
@@ -468,6 +481,13 @@
     session.pushFlash('success', message)
     dialog = null
     openId = null
+    // Restore focus to the action button on success too (same WCAG 2.4.3
+    // concern as cancelDialog — without this, focus drops to <body>
+    // after the dialog unmounts post-success).
+    queueMicrotask(() => {
+      lastFocused?.focus()
+      lastFocused = null
+    })
     void refreshList()
   }
 
@@ -540,7 +560,7 @@
   )
 </script>
 
-<section class="page page-inbox">
+<section class="page page-inbox" inert={dialog !== null}>
   <h1>Inbox</h1>
   <p class="tagline">Review pending proposals. Each decision is permanent.</p>
 
@@ -585,7 +605,7 @@
                   <DiffPreviewCmp diffs={diffs} />
 
                   <section class="evidence" aria-label="Evidence excerpt">
-                    <h3>Evidence</h3>
+                    <h2 class="evidence-heading">Evidence</h2>
                     <dl class="evidence-fields">
                       <div><dt>Provenance</dt><dd>{d.evidence.provenance_kind}</dd></div>
                       <div><dt>Source ID</dt><dd>{d.evidence.source_id ?? '—'}</dd></div>
@@ -600,7 +620,9 @@
 
                   {#if d.currentClaims.length > 0}
                     <p class="prior-claims">
-                      {d.currentClaims.length} current confirmed claim(s) in scope —
+                      {d.currentClaims.length === 1
+                        ? '1 current confirmed claim in scope —'
+                        : `${d.currentClaims.length} current confirmed claims in scope —`}
                       Supersede will replace them.
                     </p>
                   {:else}
@@ -844,10 +866,9 @@
     border-top: 1px solid var(--color-hairline);
   }
 
-  /* Evidence heading — sentence-case Inter title (kills tracked eyebrow).
-   * The prior text-transform:uppercase + letter-spacing:0.04em was the
-   * saturated AI scaffold tell. */
-  .evidence h3 {
+  /* Evidence heading — h2 (was h3, which skipped a level after the
+   * page h1). Sentence-case Inter title (kills tracked eyebrow). */
+  .evidence-heading {
     margin: 0 0 var(--space-xs);
     font-family: var(--font-body);
     font-size: var(--text-title);

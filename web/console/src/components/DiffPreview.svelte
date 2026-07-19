@@ -55,70 +55,87 @@
 </section>
 
 <style>
+  /* Token-driven. The prior tracked-uppercase `.diff-heading` and
+   * `.diff-row-head` were the saturated AI-scaffold eyebrow tell —
+   * sentence-case Inter now, emphasis via weight only. Hardcoded
+   * rgba(127,127,127,X) + rgba(190,70,70,X) → tokens. */
+
   .diff-preview {
-    margin: 0.5rem 0;
-    padding: 0.6rem 0.75rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.35);
-    background: rgba(127, 127, 127, 0.04);
+    margin: var(--space-xs) 0;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    border: var(--border-hairline);
+    background: var(--overlay-ink-04);
   }
 
+  /* Sentence-case title — no uppercase eyebrow (DESIGN.md No-Eyebrow Rule). */
   .diff-heading {
-    margin: 0 0 0.4rem;
-    font-size: 0.9rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    opacity: 0.75;
+    margin: 0 0 var(--space-xs);
+    font-family: var(--font-body);
+    font-size: var(--text-title);
+    font-weight: var(--weight-semibold);
+    color: var(--text-primary);
+    letter-spacing: 0;
+    text-transform: none;
+    line-height: var(--text-title-leading);
   }
 
   .diff-empty {
     margin: 0;
-    opacity: 0.7;
+    color: var(--text-secondary);
     font-style: italic;
+    font-family: var(--font-body);
+    font-size: var(--text-body);
   }
 
   .diff-table {
     display: grid;
-    gap: 0.2rem;
+    gap: var(--space-xs);
   }
 
   .diff-row {
     display: grid;
     grid-template-columns: minmax(7rem, 1fr) 1fr auto 1fr;
-    gap: 0.5rem;
+    gap: var(--space-sm);
     align-items: start;
-    padding: 0.25rem 0;
+    padding: var(--space-xs) 0;
     word-break: break-word;
+    font-family: var(--font-body);
+    font-size: var(--text-body);
+    color: var(--text-primary);
   }
 
+  /* Header row — sentence case, label weight only (kills tracked eyebrow). */
   .diff-row-head {
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    opacity: 0.65;
-    border-bottom: 1px solid rgba(127, 127, 127, 0.25);
-    padding-bottom: 0.4rem;
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    color: var(--text-secondary);
+    letter-spacing: 0;
+    text-transform: none;
+    border-bottom: 1px solid var(--color-hairline);
+    padding-bottom: var(--space-xs);
   }
 
   .diff-field {
-    font-weight: 600;
-    opacity: 0.85;
+    font-weight: var(--weight-semibold);
+    color: var(--text-primary);
   }
 
   .diff-before {
-    opacity: 0.65;
+    color: var(--text-secondary);
     text-decoration: line-through;
-    text-decoration-color: rgba(190, 70, 70, 0.55);
+    /* Token-driven strike color (was rgba(190,70,70,0.55)). */
+    text-decoration-color: var(--color-danger);
   }
 
   .diff-after {
-    color: inherit;
-    font-weight: 500;
+    color: var(--text-primary);
+    font-weight: var(--weight-medium);
   }
 
   .diff-arrow {
-    opacity: 0.6;
+    color: var(--text-tertiary);
     text-align: center;
     user-select: none;
   }

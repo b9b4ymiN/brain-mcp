@@ -364,18 +364,24 @@
         Trust, clients, jobs, evals, and backup health. Each panel refreshes independently.
       </p>
     </div>
-    <button type="button" class="ops-refresh-all" onclick={() => void refreshAll()}>
+    <button
+      type="button"
+      class="ops-refresh-all"
+      onclick={() => void refreshAll()}
+      disabled={trustLoading || clientsLoading || jobsLoading || backupLoading}
+      aria-busy={trustLoading || clientsLoading || jobsLoading || backupLoading}
+    >
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
         <path d="M21 3v5h-5" />
       </svg>
-      <span>Refresh all</span>
+      <span>{trustLoading || clientsLoading || jobsLoading || backupLoading ? 'Refreshing…' : 'Refresh all'}</span>
     </button>
   </header>
 
   <div class="ops-grid">
     <!-- ── Trust (primary surface — engineer acts on this) ────────────── -->
-    <section class="ops-panel ops-panel--primary" aria-label="Trust surface">
+    <section class="ops-panel ops-panel--primary" aria-label="Trust surface" aria-live="polite" aria-busy={trustLoading}>
       <header class="ops-panel-head">
         <h2>Trust</h2>
         <button
@@ -470,7 +476,7 @@
     </section>
 
     <!-- ── Jobs (inline metrics — no hero-metric template) ─────────────── -->
-    <section class="ops-panel" aria-label="Job queue">
+    <section class="ops-panel" aria-label="Job queue" aria-live="polite" aria-busy={jobsLoading}>
       <header class="ops-panel-head">
         <h2>Jobs</h2>
         <button
@@ -518,7 +524,7 @@
     </section>
 
     <!-- ── Clients (wide — table needs room) ──────────────────────────── -->
-    <section class="ops-panel ops-panel--wide" aria-label="Registered clients">
+    <section class="ops-panel ops-panel--wide" aria-label="Registered clients" aria-live="polite" aria-busy={clientsLoading}>
       <header class="ops-panel-head">
         <h2>Clients</h2>
         <button
@@ -611,7 +617,7 @@
     </section>
 
     <!-- ── Backup health (wide — pairs with Evals on desktop) ─────────── -->
-    <section class="ops-panel ops-panel--wide" aria-label="Backup health">
+    <section class="ops-panel ops-panel--wide" aria-label="Backup health" aria-live="polite" aria-busy={backupLoading}>
       <header class="ops-panel-head">
         <h2>Backup health</h2>
         <button
@@ -1026,9 +1032,11 @@
     font-weight: var(--weight-medium);
   }
 
+  /* Body-size tertiary text fails AA at 15px. Use secondary (4.83:1) —
+   * the "None." voice is already quiet via the word itself. */
   .ops-empty-inline {
     margin: 0;
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     font-size: var(--text-body);
   }
 

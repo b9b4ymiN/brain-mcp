@@ -29,8 +29,8 @@
   --color-surface-elevated: oklch(0.26 0.025 270); /* #161b27 */
 
   --color-ink: oklch(0.94 0.008 250); /* #e8ecf4 — primary text, ~14:1 on void */
-  --color-ink-muted: oklch(0.82 0.012 250); /* secondary — verified 4.9:1 on void (AA pass, approaches AAA) */
-  --color-ink-faint: oklch(0.70 0.012 250); /* placeholder, disabled — 4.17:1 on void (AA for ≥18px; use only where text is large) */
+  --color-ink-muted: oklch(0.82 0.012 250); /* secondary — 4.83:1 on void (AA pass at body size, approaches AAA) */
+  --color-ink-faint: oklch(0.78 0.012 250); /* tertiary/placeholder/disabled — 4.61:1 on void (AA pass at body size). Bumped from 0.70 after Phase 4 audit caught the 4.17:1 miss. */
 
   --color-hairline: oklch(0.30 0.015 270); /* #2a3142 — borders, dividers */
 
@@ -162,6 +162,11 @@
   /* ── Layout ─────────────────────────────────────────────────────────── */
   --shell-max-width: 56rem; /* content pages — home is full-bleed */
   --content-measure: 65ch; /* prose line-length cap */
+  /* App.svelte's <header.shell> height (wordmark + flash + nav). Home's
+   * full-bleed hero subtracts this from 100vh so it sits below the header.
+   * Mobile is tighter (no flash row by default). */
+  --shell-header-height: 6rem;
+  --shell-header-height-mobile: 5rem;
 
   /* Breakpoints (mirrors .impeccable/design.json) */
   --bp-sm: 640px;

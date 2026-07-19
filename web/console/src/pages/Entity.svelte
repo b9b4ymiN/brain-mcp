@@ -171,9 +171,15 @@
   async function toggleRow(claim: SubjectClaim): Promise<void> {
     const id = claim.claim_id
     const current = expanded[id]
-    // Already open or in flight → collapse back to idle.
+    // Already open or in flight → collapse: DELETE the key entirely (was
+    // previously set to {kind:'idle'} which kept aria-expanded=true and
+    // mounted an empty phantom expand-row). Deleting means the {#if
+    // rowState} block unmounts the expand-row, and aria-expanded resolves
+    // to false (rowState is undefined).
     if (current && current.kind !== 'idle') {
-      expanded = { ...expanded, [id]: { kind: 'idle' } }
+      const next = { ...expanded }
+      delete next[id]
+      expanded = next
       return
     }
     expanded = { ...expanded, [id]: { kind: 'loading' } }
@@ -183,10 +189,10 @@
         subject: claim.subject,
         predicate: claim.predicate,
       })
-      // Async-toggle race guard: the user may have collapsed the row (back
-      // to `idle`) while the fetch was in flight. If `loading` is no longer
-      // the current state for this id, do NOT overwrite — their collapse
-      // intent wins. This also covers the case of a second toggle that
+      // Async-toggle race guard: the user may have collapsed the row
+      // (deleted the key) while the fetch was in flight. If `loading`
+      // is no longer the current state for this id, do NOT overwrite —
+      // their collapse intent wins. This also covers the case of a second toggle that
       // re-opened the row (it would be `loading` again — different in-flight
       // request owns that slot, not us).
       if (expanded[id]?.kind !== 'loading') return
@@ -284,6 +290,7 @@
       <button
         type="button"
         class:active={viewMode === 'table'}
+        aria-pressed={viewMode === 'table'}
         onclick={() => (viewMode = 'table')}
       >
         Claims table
@@ -291,6 +298,7 @@
       <button
         type="button"
         class:active={viewMode === 'galaxy'}
+        aria-pressed={viewMode === 'galaxy'}
         onclick={() => (viewMode = 'galaxy')}
         disabled={claims.length === 0}
         title={claims.length === 0 ? 'Load a subject first' : 'Graph view focused on this entity'}
@@ -343,12 +351,12 @@
           <tbody>
             {#each claims as claim (claim.claim_id)}
               {@const rowState = expanded[claim.claim_id]}
-              {@const isOpen = rowState?.kind === 'open'}
+              {@const isOpen = rowState?.kind === 'open' || rowState?.kind === 'loading'}
               <tr
                 class="row"
                 class:row-open={isOpen}
                 tabindex="0"
-                aria-expanded={rowState !== undefined}
+                aria-expanded={isOpen}
                 aria-label={`Toggle timeline for ${claim.subject} ${claim.predicate}`}
                 onclick={() => void toggleRow(claim)}
                 onkeydown={(e) => onRowKeydown(e, claim)}

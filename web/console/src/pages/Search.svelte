@@ -174,17 +174,17 @@
               <a
                 class="hit-card"
                 href="#/entity"
-                aria-label={`Open entity ${hit.subject}`}
+                aria-labelledby={`hit-label-${hit.claim_id}`}
+                aria-describedby={`hit-desc-${hit.claim_id}`}
                 onclick={(e) => {
                   e.preventDefault()
                   openEntity(hit.subject)
                 }}
               >
                 <header class="hit-head">
-                  <span class="subject">{hit.subject}</span>
-                  <span class="predicate">{hit.predicate}</span>
+                  <span class="subject" id={`hit-label-${hit.claim_id}`}>{hit.subject} <span class="predicate">{hit.predicate}</span></span>
                 </header>
-                <dl class="hit-fields">
+                <dl class="hit-fields" id={`hit-desc-${hit.claim_id}`}>
                   <div><dt>Value</dt><dd>{formatValue(hit.value)}</dd></div>
                   <div><dt>Domain</dt><dd>{hit.domain}</dd></div>
                   <div><dt>Origin</dt><dd>{hit.origin}</dd></div>
@@ -249,17 +249,28 @@
     background: var(--surface-sunken);
     color: var(--text-primary);
     font-family: var(--font-body);
-    font-size: var(--text-body);
-    transition: border-color var(--duration-fast) var(--ease-out-quart);
+    /* 16px prevents iOS Safari auto-zoom-on-focus (which fires when the
+     * input font is < 16px). Body text elsewhere can stay at 15px. */
+    font-size: 16px;
+    transition: border-color var(--duration-fast) var(--ease-out-quart),
+      box-shadow var(--duration-fast) var(--ease-out-quart);
   }
 
   .search-form input::placeholder {
     color: var(--text-tertiary);
   }
 
-  .search-form input:focus {
+  /* Hover affordance: subtle border shift. Keyboard focus: full ring via
+   * the shared --focus-ring token (was border-color only, inconsistent
+   * with .hit-card's inset shadow fix). */
+  .search-form input:hover:not(:focus):not(:disabled) {
+    border-color: var(--color-ink-faint);
+  }
+
+  .search-form input:focus-visible {
     outline: none;
     border-color: var(--color-accent);
+    box-shadow: var(--focus-ring);
   }
 
   .search-form button {

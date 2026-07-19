@@ -1,6 +1,7 @@
 <script lang="ts">
   /**
-   * Reusable 4-state shell for read pages (Home / Search / Entity).
+   * Reusable 4-state shell for read pages (Home / Search / Entity /
+   * Operations / Inbox).
    *
    * Renders exactly one of: loading, error, empty, or the children snippet —
    * in that priority order. All dynamic strings are bound as text (auto-
@@ -17,6 +18,12 @@
    * the surrounding container for screen readers; this component itself tags
    * the loading paragraph with `role="status"` and the error with `role=
    * "alert"` per ARIA-APG patterns.
+   *
+   * Style: fully token-driven (matches DESIGN.md). Prior versions used
+   * `opacity: 0.75`/`0.7` to dim loading/empty — that multiplied against
+   * the text color's contrast ratio and pushed some states below AA. The
+   * dim voice is now carried by `--text-secondary` (a token at 4.9:1 on the
+   * void) rather than alpha over the primary text.
    */
   import type { Snippet } from 'svelte'
 
@@ -49,23 +56,29 @@
 
 <style>
   .state {
-    margin: 1rem 0;
-    padding: 0.75rem 1rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.35);
+    margin: var(--space-md) 0;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-hairline);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
   }
 
+  /* Loading voice: secondary text color, NOT opacity dim. The prior
+   * opacity:0.75 multiplied against the primary text's contrast and
+   * pushed "Loading…" below AA on some panels. */
   .state-loading {
-    opacity: 0.75;
+    color: var(--text-secondary);
   }
 
   .state-error {
-    background: rgba(190, 70, 70, 0.15);
-    border-color: rgba(190, 70, 70, 0.5);
+    background: var(--overlay-danger-soft);
+    border-color: var(--color-danger);
   }
 
   .state-empty {
-    opacity: 0.7;
+    color: var(--text-secondary);
     font-style: italic;
   }
 </style>

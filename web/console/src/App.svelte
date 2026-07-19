@@ -82,7 +82,7 @@
 
 <header class="shell">
   <a href="#main-content" class="skip-link">Skip to content</a>
-  <h1>Brain Console</h1>
+  <p class="shell-brand">Brain Console</p>
 
   {#if session.flash}
     <div class="flash flash-{session.flash.kind}" role="status" aria-live="polite">
@@ -182,13 +182,17 @@
     padding: var(--space-lg) var(--space-lg) 0;
   }
 
-  h1 {
+  /* Shell wordmark — a <p>, not <h1>. Each page owns its own <h1>
+   * (Home: the wordmark; others: the page title). Two <h1> per page
+   * violated the one-h1-per-page convention (WCAG 1.3.1). */
+  .shell-brand {
     margin: 0 0 var(--space-sm);
     font-family: var(--font-display);
-    font-size: var(--text-display);
+    font-size: var(--text-headline);
     font-weight: var(--weight-semibold);
-    letter-spacing: var(--text-display-tracking);
-    line-height: var(--text-display-leading);
+    letter-spacing: var(--text-headline-tracking);
+    line-height: var(--text-headline-leading);
+    color: var(--text-primary);
   }
 
   nav ul {
