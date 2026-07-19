@@ -51,6 +51,7 @@
   import type { SessionStore } from '../lib/session.svelte'
   import StateBox from '../components/StateBox.svelte'
   import HoloPanel from '../components/HoloPanel.svelte'
+  import DataTable from '../components/DataTable.svelte'
   import DestructiveDialog from '../components/DestructiveDialog.svelte'
   import { formatDate } from '../lib/format'
 
@@ -595,45 +596,24 @@
         empty={clients.length === 0}
         emptyText="No registered clients."
       >
-        <div class="ops-table-scroll">
-          <table class="ops-clients-table">
-            <thead>
-              <tr>
-                <th
-                  class="ops-sortable"
-                  class:ops-sorted={clientsSortKey === 'label'}
-                  aria-sort={clientsSortKey === 'label' ? (clientsSortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
-                  onclick={() => toggleClientsSort('label')}
-                >Label <span class="ops-sort-ind" aria-hidden="true">{clientsSortKey === 'label' ? (clientsSortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
-                <th>Client ID</th>
-                <th>Capabilities</th>
-                <th
-                  class="ops-sortable"
-                  class:ops-sorted={clientsSortKey === 'last_active_at'}
-                  aria-sort={clientsSortKey === 'last_active_at' ? (clientsSortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
-                  onclick={() => toggleClientsSort('last_active_at')}
-                >Last active <span class="ops-sort-ind" aria-hidden="true">{clientsSortKey === 'last_active_at' ? (clientsSortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
-                <th
-                  class="ops-sortable ops-numeric"
-                  class:ops-sorted={clientsSortKey === 'mutation_count'}
-                  aria-sort={clientsSortKey === 'mutation_count' ? (clientsSortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
-                  onclick={() => toggleClientsSort('mutation_count')}
-                >Mutations <span class="ops-sort-ind" aria-hidden="true">{clientsSortKey === 'mutation_count' ? (clientsSortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each sortedClients as c (c.client_id)}
-                <tr>
-                  <td>{c.label}</td>
-                  <td><code class="ops-mono">{c.client_id}</code></td>
-                  <td>{c.capabilities.join(', ')}</td>
-                  <td>{formatDate(c.last_active_at)}</td>
-                  <td><span class="ops-mono">{c.mutation_count}</span></td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          tableId="ops-clients"
+          rows={sortedClients as Record<string, unknown>[]}
+          rowKey={(r) => (r as ClientActivity).client_id}
+          columns={[
+            { key: 'label', label: 'Label' },
+            { key: 'client_id', label: 'Client ID', render: (r) => r.client_id },
+            { key: 'capabilities', label: 'Capabilities', render: (r) => r.capabilities.join(', ') },
+            { key: 'last_active_at', label: 'Last active', render: (r) => formatDate(r.last_active_at) },
+            { key: 'mutation_count', label: 'Mutations', numeric: true },
+          ]}
+          searchableKeys={['label', 'client_id', 'capabilities']}
+          filterable={true}
+          compactable={false}
+          pageable={true}
+          emptyText="No registered clients."
+          ariaLabel="Registered clients"
+        />
       </StateBox>
     </HoloPanel>
 

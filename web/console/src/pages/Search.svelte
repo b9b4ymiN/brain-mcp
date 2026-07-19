@@ -31,6 +31,7 @@
     setPendingSubject,
   } from '../lib/quickSearch'
   import StateBox from '../components/StateBox.svelte'
+  import DataTable from '../components/DataTable.svelte'
   import { formatValue } from '../lib/format'
 
   interface Props {
@@ -180,57 +181,27 @@
         empty={results.length === 0}
         emptyText="No claims matched this query."
       >
-        {#if results.length > 0}
-          <div class="result-filter-bar">
-            <label for="result-filter" class="visually-hidden">Filter results</label>
-            <div class="filter-input-wrap">
-              <svg class="filter-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <circle cx="11" cy="11" r="8" />
-                <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              </svg>
-              <input
-                id="result-filter"
-                type="search"
-                class="filter-input"
-                placeholder="Narrow results…"
-                bind:value={resultFilter}
-              />
-            </div>
-            <span class="filter-count">{filteredResults.length} of {results.length}</span>
-          </div>
-        {/if}
-
-        {#if filteredResults.length === 0 && resultFilter}
-          <p class="state state-empty">No results match "{resultFilter}".</p>
-        {:else}
-          <ul class="hit-list">
-            {#each filteredResults as hit (hit.claim_id)}
-            <li>
-              <a
-                class="hit-card"
-                href="#/entity"
-                aria-labelledby={`hit-label-${hit.claim_id}`}
-                aria-describedby={`hit-desc-${hit.claim_id}`}
-                onclick={(e) => {
-                  e.preventDefault()
-                  openEntity(hit.subject)
-                }}
-              >
-                <header class="hit-head">
-                  <span class="subject" id={`hit-label-${hit.claim_id}`}>{hit.subject} <span class="predicate">{hit.predicate}</span></span>
-                </header>
-                <dl class="hit-fields" id={`hit-desc-${hit.claim_id}`}>
-                  <div><dt>Value</dt><dd>{formatValue(hit.value)}</dd></div>
-                  <div><dt>Domain</dt><dd>{hit.domain}</dd></div>
-                  <div><dt>Origin</dt><dd>{hit.origin}</dd></div>
-                  <div><dt>Provenance</dt><dd>{hit.provenance}</dd></div>
-                  <div><dt>Entity ID</dt><dd>{hit.entity_id ?? '—'}</dd></div>
-                </dl>
-              </a>
-            </li>
-          {/each}
-        </ul>
-        {/if}
+        <DataTable
+          tableId="search-results"
+          rows={filteredResults as Record<string, unknown>[]}
+          rowKey={(r) => (r as SearchHit).claim_id}
+          columns={[
+            { key: 'subject', label: 'Subject' },
+            { key: 'predicate', label: 'Predicate', render: (r) => r.predicate },
+            { key: 'value', label: 'Value', render: (r) => formatValue(r.value) },
+            { key: 'domain', label: 'Domain', hideInCompact: true },
+            { key: 'origin', label: 'Origin', hideInCompact: true },
+            { key: 'provenance', label: 'Provenance', hideInCompact: true },
+            { key: 'entity_id', label: 'Entity ID', render: (r) => r.entity_id ?? '—', hideInCompact: true },
+          ]}
+          searchableKeys={['subject', 'predicate', 'value', 'domain', 'origin', 'provenance']}
+          filterable={true}
+          compactable={true}
+          pageable={true}
+          onRowClick={(r) => openEntity((r as SearchHit).subject)}
+          emptyText={resultFilter ? `No results match "${resultFilter}".` : 'No claims matched this query.'}
+          ariaLabel="Search results"
+        />
       </StateBox>
     {/if}
   </section>

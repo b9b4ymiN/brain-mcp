@@ -24,9 +24,10 @@
    * /galaxy fetch; Home owns the hero layout + overlay.
    */
   import { onMount } from 'svelte'
-  import { galaxy, inbox, ApiError, type GalaxyPayload, type ProposalSummary } from '../lib/api'
+  import { galaxy, inbox, ApiError, type GalaxyPayload, type ProposalSummary, type GalaxyNode } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
   import { navigate } from '../lib/router'
+  import { setPendingSubject } from '../lib/quickSearch'
   import GalaxyGraph from '../components/GalaxyGraph.svelte'
   import {
     setGalaxyCounts,
@@ -131,9 +132,9 @@
   }
 
   function enterGraph(): void {
-    // The galaxy sub-view is on Entity (GalaxyGraph's existing embed site
-    // with viewMode: 'galaxy'). Navigate there with no focus node — the
-    // user lands at the full graph.
+    // Navigate to Entity. The user can enter a subject there or switch
+    // to the galaxy sub-view. We don't stage a subject because "Enter
+    // the graph" is a global entry, not a specific-entity action.
     navigate('entity')
   }
 
@@ -141,11 +142,23 @@
     navigate('search')
   }
 
-  function onNodeClick(): void {
-    // GalaxyGraph forwards node clicks; on Home the affordance is to
-    // drop into the Entity detail. The node's id is already staged by
-    // GalaxyGraph's onNodeClick prop — here we just navigate.
+  function onNodeClick(node: GalaxyNode): void {
+    // Wire the galaxy node click: stage the clicked node's label as the
+    // pending subject (the node label IS the claim subject), then
+    // navigate to Entity. Entity's onMount consumes the staged subject
+    // via consumePendingSubject() and auto-loads the claims.
+    setPendingSubject(node.label)
     navigate('entity')
+  }
+
+  function openSubject(subject: string): void {
+    // Top-subject tag click: stage the subject before navigating.
+    setPendingSubject(subject)
+    navigate('entity')
+  }
+
+  function openInbox(): void {
+    navigate('inbox')
   }
 
   let nodeCount = $derived(payload?.node_count ?? 0)
@@ -162,7 +175,7 @@
        summary (the overlay's counts are also live, but this anchors the
        non-text content). -->
   <div class="home-galaxy" role="img" aria-label="Knowledge galaxy: {nodeCount} nodes, {edgeCount} edges">
-    <GalaxyGraph {session} zoom="far" immersive height={0} onNodeClick />
+    <GalaxyGraph {session} zoom="far" immersive height={0} onNodeClick={onNodeClick} />
   </div>
 
   <!-- Overlay — minimal, floats above the canvas. Z-index scale puts it
@@ -235,7 +248,7 @@
             <ul class="related-list">
               {#each pendingProposals as p (p.proposal_id)}
                 <li>
-                  <button type="button" class="related-item" onclick={() => navigate('inbox')}>
+                  <button type="button" class="related-item" onclick={openInbox}>
                     <span class="related-subject">{p.subject}</span>
                     <span class="related-predicate">{p.predicate}</span>
                   </button>
@@ -250,7 +263,7 @@
             <p class="related-label">Top subjects</p>
             <div class="subject-tags">
               {#each topSubjects as s (s.id)}
-                <button type="button" class="subject-tag" onclick={() => navigate('entity')}>
+                <button type="button" class="subject-tag" onclick={() => openSubject(s.label)}>
                   {s.label}
                   <span class="subject-degree" aria-hidden="true">{s.degree}</span>
                 </button>
