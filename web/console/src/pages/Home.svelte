@@ -29,6 +29,7 @@
   import { navigate } from '../lib/router'
   import { setPendingSubject } from '../lib/quickSearch'
   import GalaxyGraph from '../components/GalaxyGraph.svelte'
+  import DataTable from '../components/DataTable.svelte'
   import {
     setGalaxyCounts,
     setBusy,
@@ -54,6 +55,27 @@
       .filter((n) => n.degree > 0)
       .sort((a, b) => b.degree - a.degree)
       .slice(0, 8)
+  })
+
+  // ── Galaxy nodes as table rows (for the Home DataTable) ──────────────
+  // The galaxy payload's nodes become a browsable table alongside the
+  // visual graph. Each row carries label/kind/domain/id + the degree we
+  // already computed for topSubjects. Clicking a row → Entity page with
+  // the subject staged.
+  let galaxyRows = $derived.by<Record<string, unknown>[]>(() => {
+    if (!payload) return []
+    const degree = new Map<string, number>()
+    for (const edge of payload.edges) {
+      degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1)
+      degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1)
+    }
+    return payload.nodes.map((n) => ({
+      id: n.id,
+      label: n.label,
+      kind: n.kind,
+      domain: n.domain,
+      degree: degree.get(n.id) ?? 0,
+    }))
   })
 
   interface Props {
@@ -167,81 +189,100 @@
 </script>
 
 <div class="home-hero">
-  <!-- The galaxy canvas — full-bleed, transparent so the global
-       SpaceBackdrop (mounted in App.svelte) shows
-       through where there are no nodes/edges. GalaxyGraph in immersive
-       mode mounts its own renderer (3d → 2d → list fallback chain) into
-       this container. role="img" + aria-label gives SR users a one-line
-       summary (the overlay's counts are also live, but this anchors the
-       non-text content). -->
-  <div class="home-galaxy" role="img" aria-label="Knowledge galaxy: {nodeCount} nodes, {edgeCount} edges">
-    <GalaxyGraph {session} zoom="far" immersive height={0} onNodeClick={onNodeClick} />
-  </div>
+  <!-- LEFT: galaxy canvas (transparent so the global SpaceBackdrop shows
+       through). Full-height, immersive. Clicking a node → Entity. -->
+  <div class="home-split-left">
+    <div class="home-galaxy" role="img" aria-label="Knowledge galaxy: {nodeCount} nodes, {edgeCount} edges">
+      <GalaxyGraph {session} zoom="far" immersive height={0} onNodeClick={onNodeClick} />
+    </div>
 
-  <!-- Overlay — minimal, floats above the canvas. Z-index scale puts it
-       above the backdrop (z=0) and the canvas (z=1), below any future
-       modal (z=300+). -->
-  <div class="home-overlay">
-    <header class="home-brand">
-      <p class="home-eyebrow">Brain Console</p>
-      <h1 class="home-wordmark">The shape of what it knows.</h1>
-    </header>
+    <!-- Overlay (brand + stats + CTA) floats above the galaxy canvas. -->
+    <div class="home-overlay">
+      <header class="home-brand">
+        <p class="home-eyebrow">Brain Console</p>
+        <h1 class="home-wordmark">The shape of what it knows.</h1>
+      </header>
 
-    <div class="home-status">
-      {#if sessionExpired}
-        <p class="home-state home-state--error" role="alert">
-          Session expired — sign in again.
-        </p>
-      {:else if error}
-        <p class="home-state home-state--error" role="alert">
-          {error}
-          <button type="button" class="home-retry" onclick={retry}>Retry</button>
-        </p>
-      {:else if isEmpty}
-        <p class="home-state home-state--empty">
-          This universe is empty.
-          <button type="button" class="home-retry" onclick={openSearch}>
-            Capture your first claim
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <div class="home-status">
+        {#if sessionExpired}
+          <p class="home-state home-state--error" role="alert">
+            Session expired — sign in again.
+          </p>
+        {:else if error}
+          <p class="home-state home-state--error" role="alert">
+            {error}
+            <button type="button" class="home-retry" onclick={retry}>Retry</button>
+          </p>
+        {:else if isEmpty}
+          <p class="home-state home-state--empty">
+            This universe is empty.
+            <button type="button" class="home-retry" onclick={openSearch}>
+              Capture your first claim
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="5" y1="12" x2="19" y2="12" />
+                <polyline points="12 5 19 12 12 19" />
+              </svg>
+            </button>
+          </p>
+        {:else if loading || nodeCount === 0}
+          <p class="home-state home-state--loading" role="status" aria-live="polite">
+            <span class="home-pulse" aria-hidden="true"></span>
+            Reading the cosmos…
+          </p>
+        {:else}
+          <p class="home-meta">
+            <span class="home-stat">
+              <span class="home-stat-value">{nodeCount}</span>
+              <span class="home-stat-label">nodes</span>
+            </span>
+            <span class="home-stat-sep" aria-hidden="true">·</span>
+            <span class="home-stat">
+              <span class="home-stat-value">{edgeCount}</span>
+              <span class="home-stat-label">edges</span>
+            </span>
+          </p>
+        {/if}
+      </div>
+
+      {#if !sessionExpired && !error && !isEmpty && !loading && nodeCount > 0}
+        <div class="home-cta">
+          <button type="button" class="home-enter" onclick={enterGraph}>
+            Enter the graph
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <line x1="5" y1="12" x2="19" y2="12" />
               <polyline points="12 5 19 12 12 19" />
             </svg>
           </button>
-        </p>
-      {:else if loading || nodeCount === 0}
-        <p class="home-state home-state--loading" role="status" aria-live="polite">
-          <span class="home-pulse" aria-hidden="true"></span>
-          Reading the cosmos…
-        </p>
-      {:else}
-        <p class="home-meta">
-          <span class="home-stat">
-            <span class="home-stat-value">{nodeCount}</span>
-            <span class="home-stat-label">nodes</span>
-          </span>
-          <span class="home-stat-sep" aria-hidden="true">·</span>
-          <span class="home-stat">
-            <span class="home-stat-value">{edgeCount}</span>
-            <span class="home-stat-label">edges</span>
-          </span>
-        </p>
+        </div>
       {/if}
     </div>
+  </div>
 
-    {#if !sessionExpired && !error && !isEmpty && !loading && nodeCount > 0}
-      <div class="home-cta">
-        <button type="button" class="home-enter" onclick={enterGraph}>
-          Enter the graph
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <line x1="5" y1="12" x2="19" y2="12" />
-            <polyline points="12 5 19 12 12 19" />
-          </svg>
-        </button>
-      </div>
+  <!-- RIGHT: data panel (DataTable + inbox preview + top subjects).
+       Scrollable, holo-panel voice. This is the "instrument readout"
+       beside the galaxy viewport. -->
+  <div class="home-split-right">
+    {#if !sessionExpired && !error && !isEmpty && !loading && galaxyRows.length > 0}
+      <div class="home-data-panel">
+        <DataTable
+          tableId="home-galaxy-nodes"
+          rows={galaxyRows}
+          rowKey={(r) => r.id as string}
+          columns={[
+            { key: 'label', label: 'Subject' },
+            { key: 'kind', label: 'Kind' },
+            { key: 'domain', label: 'Domain', hideInCompact: true },
+            { key: 'degree', label: 'Links', numeric: true, defaultSort: 'desc' },
+          ]}
+          searchableKeys={['label', 'kind', 'domain']}
+          filterable={true}
+          compactable={false}
+          pageable={true}
+          onRowClick={(r) => openSubject(r.label as string)}
+          emptyText="No nodes in the graph."
+          ariaLabel="Galaxy nodes"
+        />
 
-      <!-- Related links — Inbox preview + top subjects. Floats above the
-           galaxy hero as a holo rail; doesn't break the immersive feel. -->
-      <div class="home-related">
         {#if inboxLoaded && pendingProposals.length > 0}
           <div class="related-panel">
             <p class="related-label">Review queue · {pendingProposals.length} pending</p>
@@ -277,24 +318,63 @@
 </div>
 
 <style>
-  /* ── Hero shell — full viewport, contains the 4 stacked layers ─────── */
+  /* ── Hero shell — split view: galaxy left, data panel right ────────── */
   .home-hero {
-    /* Break out of App.svelte's shell-main max-width. Home IS the page.
-     * Using 100% (not 100vw) + symmetric margin break-out avoids the
-     * Windows scrollbar-overflow issue: 100vw includes the vertical
-     * scrollbar width on Windows/Firefox, so the hero was ~17px wider
-     * than the visible viewport. The 50% / -50vw pair centers regardless
-     * of the parent's max-width, and the right margin mirrors the left. */
     position: relative;
     width: 100%;
     margin-left: calc(50% - 50vw);
     margin-right: calc(50% - 50vw);
-    /* --shell-header-height is the height of App.svelte's <header.shell>.
-     * Declared in tokens.css so changes there propagate here. */
     min-height: calc(100vh - var(--shell-header-height, 6rem));
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     overflow: hidden;
+  }
+
+  /* LEFT — galaxy canvas (60%). Relative positioning for the overlay. */
+  .home-split-left {
+    position: relative;
+    flex: 1 1 60%;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  /* RIGHT — data panel (40%). Scrollable, holo-panel voice. */
+  .home-split-right {
+    flex: 0 0 40%;
+    max-width: 32rem;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: var(--space-md);
+    background: color-mix(in oklch, var(--surface-flat) 70%, transparent);
+    backdrop-filter: blur(8px);
+    border-left: var(--border-holo);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+  }
+
+  .home-data-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+  }
+
+  /* Mobile: stack vertically (galaxy top, data bottom). */
+  @media (max-width: 64rem) {
+    .home-hero {
+      flex-direction: column;
+    }
+
+    .home-split-left {
+      flex: 0 0 50vh;
+    }
+
+    .home-split-right {
+      flex: 1;
+      max-width: none;
+      border-left: none;
+      border-top: var(--border-holo);
+    }
   }
 
   /* ── Galaxy layer — sits above the backdrop, fills the hero ────────── */

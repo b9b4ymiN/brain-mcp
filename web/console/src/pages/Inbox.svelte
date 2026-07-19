@@ -555,15 +555,78 @@
 
   // Visible proposals: keep decided rows out of the list once the refetch
   // catches up (defensive — the server should already have removed them).
-  let visibleProposals = $derived(
+  let pendingProposals = $derived(
     proposals.filter((p) => (reviewStates[p.proposal_id] ?? 'pending') === 'pending'),
   )
+
+  // ── Inbox filter + sort ─────────────────────────────────────────────
+  let inboxFilter = $state('')
+  let inboxSortKey = $state<'submitted_at' | 'subject' | 'domain'>('submitted_at')
+  let inboxSortDir = $state<'asc' | 'desc'>('desc')
+
+  function toggleInboxSort(key: 'submitted_at' | 'subject' | 'domain'): void {
+    if (inboxSortKey === key) {
+      inboxSortDir = inboxSortDir === 'asc' ? 'desc' : 'asc'
+    } else {
+      inboxSortKey = key
+      inboxSortDir = 'asc'
+    }
+  }
+
+  let visibleProposals = $derived.by<ProposalSummary[]>(() => {
+    let out = pendingProposals
+    const q = inboxFilter.trim().toLowerCase()
+    if (q.length > 0) {
+      out = out.filter((p) =>
+        [p.subject, p.predicate, String(p.value), p.domain]
+          .some((v) => v.toLowerCase().includes(q)),
+      )
+    }
+    const dir = inboxSortDir === 'asc' ? 1 : -1
+    return [...out].sort((a, b) => {
+      const av = a[inboxSortKey]
+      const bv = b[inboxSortKey]
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir
+      return String(av).localeCompare(String(bv)) * dir
+    })
+  })
 </script>
 
 <section class="page page-inbox" inert={dialog !== null}>
-  <p class="page-kicker">Review queue</p>
+  <p class="page-kicker">Review queue {#if pendingProposals.length > 0}· {pendingProposals.length} pending{/if}</p>
   <h1>Inbox</h1>
   <p class="tagline">Review pending proposals. Each decision is permanent.</p>
+
+  {#if pendingProposals.length > 0}
+    <div class="inbox-chrome">
+      <label for="inbox-filter" class="visually-hidden">Filter proposals</label>
+      <div class="filter-input-wrap">
+        <svg class="filter-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
+        <input
+          id="inbox-filter"
+          type="search"
+          class="filter-input"
+          placeholder="Filter proposals…"
+          bind:value={inboxFilter}
+        />
+      </div>
+      <button type="button" class="sort-btn" onclick={() => toggleInboxSort('submitted_at')} aria-pressed={inboxSortKey === 'submitted_at'}>
+        Date {#if inboxSortKey === 'submitted_at'}<span aria-hidden="true">{inboxSortDir === 'asc' ? '▲' : '▼'}</span>{/if}
+      </button>
+      <button type="button" class="sort-btn" onclick={() => toggleInboxSort('subject')} aria-pressed={inboxSortKey === 'subject'}>
+        Subject {#if inboxSortKey === 'subject'}<span aria-hidden="true">{inboxSortDir === 'asc' ? '▲' : '▼'}</span>{/if}
+      </button>
+      <button type="button" class="sort-btn" onclick={() => toggleInboxSort('domain')} aria-pressed={inboxSortKey === 'domain'}>
+        Domain {#if inboxSortKey === 'domain'}<span aria-hidden="true">{inboxSortDir === 'asc' ? '▲' : '▼'}</span>{/if}
+      </button>
+      {#if inboxFilter}
+        <span class="filter-count">{visibleProposals.length} match{visibleProposals.length === 1 ? '' : 'es'}</span>
+      {/if}
+    </div>
+  {/if}
 
   {#if sessionExpired}
     <p class="state state-error" role="alert">Session expired — sign in again.</p>
@@ -783,9 +846,96 @@
 
   .tagline {
     margin: var(--space-xs) 0 var(--space-md);
+  }
+
+  /* ── Inbox filter/sort chrome ────────────────────────────────────── */
+  .inbox-chrome {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    flex-wrap: wrap;
+    margin: 0 0 var(--space-md);
+  }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .filter-input-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 10rem;
+  }
+
+  .filter-icon {
+    position: absolute;
+    left: var(--space-sm);
+    color: var(--text-tertiary);
+    pointer-events: none;
+  }
+
+  .filter-input {
+    width: 100%;
+    min-height: 44px;
+    padding: var(--space-xs) var(--space-sm) var(--space-xs) calc(var(--space-sm) + 24px);
+    border-radius: var(--radius-md);
+    border: var(--border-holo);
+    background: var(--surface-sunken);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    transition: border-color var(--duration-fast) var(--ease-out-quart),
+      box-shadow var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .filter-input::placeholder { color: var(--text-tertiary); }
+  .filter-input:focus {
+    outline: none;
+    border-color: var(--holo-cyan);
+    box-shadow: var(--focus-ring);
+  }
+
+  .sort-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    min-height: 44px;
+    padding: var(--space-xs) var(--space-sm);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    background: transparent;
     color: var(--text-secondary);
-    font-size: var(--text-body);
-    max-width: var(--content-measure);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background var(--duration-fast) var(--ease-out-quart),
+      color var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .sort-btn:hover {
+    background: var(--overlay-ink-04);
+    color: var(--text-primary);
+  }
+
+  .sort-btn[aria-pressed='true'] {
+    background: var(--overlay-ink-06);
+    color: var(--holo-cyan);
+    border-color: color-mix(in oklch, var(--holo-cyan) 45%, var(--color-hairline));
+  }
+
+  .filter-count {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--text-tertiary);
+    white-space: nowrap;
   }
 
   .proposal-list {
