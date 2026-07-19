@@ -864,7 +864,10 @@
   }
 
   .subject-form button:hover:not(:disabled) {
-    background: var(--color-accent-deep);
+    /* Keep AA contrast (≥4.5:1) — the darker --color-accent-deep dropped to
+     * 3.94:1 on hover. Brighten via glow instead. */
+    background: var(--color-accent);
+    box-shadow: var(--glow-accent);
   }
 
   .subject-form button:disabled {

@@ -1336,8 +1336,10 @@
   }
 
   .action-yes:hover:not(:disabled) {
-    background: var(--color-accent-deep);
-    border-color: var(--color-accent-deep);
+    /* Keep AA on hover — glow instead of darken. */
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+    box-shadow: var(--glow-accent);
   }
 
   .action-no {
@@ -1346,7 +1348,8 @@
   }
 
   .action-no:hover:not(:disabled) {
-    background: var(--overlay-ink-06);
+    /* Opaque surface — the old --overlay-ink-06 wash was 1.0:1 on hover. */
+    background: var(--surface-active-nav);
     color: var(--text-primary);
   }
 </style>

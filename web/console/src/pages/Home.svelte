@@ -471,13 +471,17 @@
 
   .home-state--error {
     border-color: var(--color-danger);
-    background: var(--overlay-danger-soft);
+    /* Opaque danger-tinted surface — the old --overlay-danger-soft was 14%
+     * transparent and yielded 1.14:1 contrast over the void. */
+    background: var(--surface-danger-soft);
     backdrop-filter: none;
   }
 
   .home-state--empty {
     border-color: var(--color-accent);
-    background: var(--overlay-accent-soft);
+    /* Opaque accent-tinted surface. The old --overlay-accent-soft wash let
+     * the void show through and the empty message all but disappeared. */
+    background: var(--surface-accent-soft);
     backdrop-filter: none;
     flex-direction: column;
     align-items: flex-start;

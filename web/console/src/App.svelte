@@ -396,7 +396,12 @@
 
   .nav-item.active {
     color: var(--text-primary);
-    background: var(--overlay-ink-06);
+    /* Opaque surface so the active state is actually visible. The old
+     * --overlay-ink-06 wash measured 1.0:1 contrast (text-primary over a
+     * 6% white tint over void) — the "you are here" cue was invisible.
+     * Surface + inset amber underline reads as a lit cockpit panel. */
+    background: var(--surface-active-nav);
+    box-shadow: inset 0 -2px 0 var(--color-accent);
   }
 
   .nav-item.active .nav-tick {

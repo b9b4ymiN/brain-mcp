@@ -64,7 +64,8 @@
   --glow-success: 0 0 18px oklch(0.70 0.15 145 / 0.4);
 
   /* Semantic — always paired with a label, never color alone. */
-  --color-danger: oklch(0.62 0.20 25); /* #e85a5a */
+  --color-danger: oklch(0.62 0.20 25); /* #e85a5a — borders, glows, icons */
+  --color-danger-strong: oklch(0.50 0.20 25); /* #b32f2f — button fills; white text on this is 6.24:1 (AAA) */
   --color-success: oklch(0.70 0.15 145); /* #5fbb7a */
   --color-info: oklch(0.72 0.10 240); /* #6aa8d8 */
   --color-warning: var(--color-accent); /* amber doubles as warning */
@@ -85,6 +86,25 @@
     var(--holo-cyan));
   --border-holo: 1px solid color-mix(in oklch, var(--holo-cyan) 35%,
     var(--color-hairline));
+
+  /* Opaque tinted surfaces for text-bearing callouts, empty states, and
+   * soft-on-dark panels. The `--overlay-*-soft` tokens below are 14%-opacity
+   * *washes* meant for nebula tints / edge glows — they must NEVER sit under
+   * text, because a 14% wash over the void yields ~1.1:1 contrast (verified
+   * in the 2026-07-19 a11y audit). These surfaces are the opaque equivalents:
+   * surface-flat with a 20% hue infusion, providing genuine panel lift while
+   * still reading as "tinted," not "flat-gray." */
+  --surface-accent-soft: color-mix(in oklch, var(--color-surface-flat) 80%,
+    var(--color-accent));
+  --surface-danger-soft: color-mix(in oklch, var(--color-surface-flat) 80%,
+    var(--color-danger));
+  --surface-success-soft: color-mix(in oklch, var(--color-surface-flat) 80%,
+    var(--color-success));
+  --surface-info-soft: color-mix(in oklch, var(--color-surface-flat) 80%,
+    var(--color-info));
+  /* The "you-are-here" surface for active nav / selected pills. Opaque so the
+   * state is actually visible (the old --overlay-ink-06 read at 1.0:1). */
+  --surface-active-nav: var(--color-ink-deep);
 
   /* ── Semantic text ──────────────────────────────────────────────────── */
   --text-primary: var(--color-ink);

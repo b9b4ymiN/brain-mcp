@@ -368,7 +368,9 @@
   }
 
   .search-form button:hover:not(:disabled) {
-    background: var(--color-accent-deep);
+    /* Keep AA on hover — glow instead of darken. */
+    background: var(--color-accent);
+    box-shadow: var(--glow-accent);
   }
 
   .search-form button:disabled {

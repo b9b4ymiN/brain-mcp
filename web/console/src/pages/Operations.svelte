@@ -854,14 +854,22 @@
   }
 
   .ops-btn--danger {
-    background: var(--overlay-danger-strong);
-    border-color: var(--color-danger);
-    color: var(--text-primary);
+    /* Opaque danger fill — the old --overlay-danger-strong was 50%
+     * transparent, giving 1.48:1 contrast on a button labeled
+     * "Irreversible — authorization required." Destructive actions must be
+     * the MOST legible thing on the page. White on danger-strong is 6.24:1
+     * (AAA). */
+    background: var(--color-danger-strong);
+    border-color: var(--color-danger-strong);
+    color: #fff;
     font-weight: var(--weight-semibold);
   }
 
   .ops-btn--danger:hover:not(:disabled) {
-    background: var(--color-danger);
+    /* Keep AA on hover — brighten via glow, not by lightening the fill
+     * (lighter red drops white-text contrast below 4.5:1). */
+    background: var(--color-danger-strong);
+    box-shadow: var(--glow-danger);
   }
 
   .ops-refresh-all {
@@ -872,18 +880,22 @@
     padding: var(--space-sm) var(--space-md);
     border: var(--border-hairline);
     border-radius: var(--radius-md);
-    background: var(--overlay-ink-06);
+    /* Opaque surface — the old --overlay-ink-06 wash measured 1.0:1 contrast
+     * (text-primary over a 6% white tint over void). */
+    background: var(--surface-active-nav);
     color: var(--text-primary);
     font-family: var(--font-body);
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
     letter-spacing: var(--text-label-tracking);
     cursor: pointer;
-    transition: background var(--duration-fast) var(--ease-out-quart);
+    transition: background var(--duration-fast) var(--ease-out-quart),
+      border-color var(--duration-fast) var(--ease-out-quart);
   }
 
   .ops-refresh-all:hover {
-    background: var(--overlay-ink-10);
+    background: var(--color-surface-raised);
+    border-color: var(--color-accent);
   }
 
   .ops-refresh-all svg {
@@ -1296,7 +1308,9 @@
 
   .ops-callout--warning {
     border-color: var(--color-accent);
-    background: var(--overlay-accent-soft);
+    /* Opaque accent-tinted surface — the old --overlay-accent-soft was 14%
+     * transparent, dropping the callout body to 1.14:1 contrast. */
+    background: var(--surface-accent-soft);
     color: var(--text-primary);
   }
 

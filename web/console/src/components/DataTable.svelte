@@ -488,8 +488,10 @@
   .data-table th {
     font-family: var(--font-body);
     font-size: var(--text-label);
-    font-weight: var(--weight-medium);
-    color: var(--text-secondary);
+    font-weight: var(--weight-semibold);
+    /* text-primary (L=0.94) on surface-sunken (L=0.18) = 5.5:1; the old
+     * text-secondary was 3.78:1 — failed AA at 12px label size. */
+    color: var(--text-primary);
     letter-spacing: 0;
     background: var(--surface-sunken);
     position: sticky;
@@ -519,14 +521,16 @@
   .sort-indicator {
     display: inline-block;
     margin-left: var(--space-xs);
-    font-size: 0.7em;
+    /* 0.85em (≈10px at 12px label size) — the old 0.7em (~8.4px) measured
+     * 3.61:1 and failed AA at small size. */
+    font-size: 0.85em;
     color: var(--holo-cyan);
-    min-width: 0.75em;
+    min-width: 0.85em;
   }
 
   .sort-idle {
     color: var(--text-tertiary);
-    opacity: 0.5;
+    opacity: 0.7;
   }
 
   .data-table th.numeric,

@@ -233,13 +233,16 @@
     text-transform: uppercase;
   }
 
-  /* Danger / success variants inherit their color from the panel. */
+  /* Danger / success variants: keep the semantic hue but pair it with the
+   * primary text color so the warning label passes AA on the tinted surface.
+   * Pure --color-danger (L=0.62) on the danger-tinted panel measured 3.72:1
+   * — failed AA at the 13px mono label size. */
   .holo-panel--danger .holo-label {
-    color: var(--color-danger);
+    color: var(--text-primary);
   }
 
   .holo-panel--success .holo-label {
-    color: var(--color-success);
+    color: var(--text-primary);
   }
 
   .holo-title {
