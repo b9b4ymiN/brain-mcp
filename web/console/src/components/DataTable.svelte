@@ -2,9 +2,14 @@
   /**
    * DataTable — the reusable data-UX primitive for the cosmic console.
    *
-   * Used by: Entity (claims table), Search (hit list — as a card variant),
-   * Inbox (proposal list — as a card variant), Operations (clients table).
-   * One component, four surfaces.
+   * Used by: Search (hit results), Operations (clients table),
+   * Home (galaxy nodes table).
+   *
+   * Entity keeps its own hand-rolled table because it needs expand-row
+   * timeline functionality that this component doesn't support (the
+   * expand-row is a per-row async fetch + render, not a simple cell
+   * expansion). The sort/filter/compact/pager pattern in Entity is
+   * functionally identical to DataTable's, but needed inline.
    *
    * Capabilities (all client-side — the API exposes no sort/limit/offset):
    *   - Sort: click a sortable column header → ascending, click again →

@@ -49,11 +49,21 @@
     type DestructivePreviewItem,
   } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
+  import { navigate } from '../lib/router'
+  import { setPendingSubject } from '../lib/quickSearch'
   import StateBox from '../components/StateBox.svelte'
   import HoloPanel from '../components/HoloPanel.svelte'
   import DataTable from '../components/DataTable.svelte'
   import DestructiveDialog from '../components/DestructiveDialog.svelte'
   import { formatDate } from '../lib/format'
+
+  /** Navigate to Entity with a claim ID staged as the subject. Used by
+   *  the Trust flags (contradictions + stale) so clicking a flagged claim
+   *  opens its detail page. */
+  function openClaim(claimId: string): void {
+    setPendingSubject(claimId)
+    navigate('entity')
+  }
 
   interface Props {
     session: SessionStore
@@ -460,7 +470,9 @@
                       <li class="ops-flag ops-flag--danger">
                         <span class="ops-flag-ids">
                           {#each flag.claim_ids as id, j (`c-${i}-${j}`)}
-                            <code class="ops-mono">{id}</code>{#if j < flag.claim_ids.length - 1}<span class="ops-flag-sep">,</span>{/if}
+                            <button type="button" class="ops-claim-link" onclick={() => openClaim(id)} title="View claim {id} in Entity">
+                              <code class="ops-mono">{id}</code>
+                            </button>{#if j < flag.claim_ids.length - 1}<span class="ops-flag-sep">,</span>{/if}
                           {/each}
                         </span>
                       </li>
@@ -485,7 +497,9 @@
                     {#if flag.kind === 'stale'}
                       <li class="ops-flag ops-flag--warning">
                         <span class="ops-flag-days">{flag.days_since_modified}d</span>
-                        <code class="ops-mono">{flag.claim_id}</code>
+                        <button type="button" class="ops-claim-link" onclick={() => openClaim(flag.claim_id)} title="View claim {flag.claim_id} in Entity">
+                          <code class="ops-mono">{flag.claim_id}</code>
+                        </button>
                       </li>
                     {/if}
                   {/each}
@@ -1051,6 +1065,35 @@
     font-size: var(--text-mono);
     color: var(--color-accent);
     font-weight: var(--weight-medium);
+  }
+
+  /* Clickable claim link — wraps the claim ID in a button so the user
+   * can click to navigate to Entity for that claim. Inline appearance
+   * (no button chrome), hover shows a subtle cyan tint. */
+  .ops-claim-link {
+    display: inline;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: transparent;
+    text-underline-offset: 2px;
+    transition: text-decoration-color var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .ops-claim-link:hover {
+    text-decoration-color: var(--holo-cyan);
+  }
+
+  .ops-claim-link code {
+    color: var(--text-primary);
+  }
+
+  .ops-claim-link:hover code {
+    color: var(--holo-cyan);
   }
 
   /* Body-size tertiary text fails AA at 15px. Use secondary (4.83:1) —

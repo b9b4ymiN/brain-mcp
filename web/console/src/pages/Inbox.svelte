@@ -651,7 +651,7 @@
             >
               <span class="subject">{p.subject}</span>
               <span class="predicate">{p.predicate}</span>
-              <span class="value">{formatValue(p.value)}</span>
+              <span class="value" title={String(p.value)}>{formatValue(p.value)}</span>
               <span class="domain">{p.domain}</span>
               <span class="submitted">{formatDate(p.submitted_at)}</span>
             </div>

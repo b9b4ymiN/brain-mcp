@@ -123,6 +123,14 @@
   let showSubject = $derived(!compact)
   let showDomain = $derived(!compact)
   let showEntityId = $derived(!compact)
+
+  // Count visible columns for colspan (was hardcoded 6/9 — fragile if
+  // column visibility changes). The always-visible columns are: Predicate,
+  // Value, Kind, Origin, Provenance, Confidence = 6. Plus the 3 optional
+  // (Subject, Domain, Entity ID) when not in compact mode = 9.
+  let visibleColCount = $derived(
+    6 + (showSubject ? 1 : 0) + (showDomain ? 1 : 0) + (showEntityId ? 1 : 0),
+  )
   import GalaxyGraph from '../components/GalaxyGraph.svelte'
   import EntityDestructivePanel from '../components/EntityDestructivePanel.svelte'
   import ProvenancePanel from '../components/ProvenancePanel.svelte'
@@ -528,7 +536,7 @@
                 </tr>
                 {#if rowState}
                   <tr class="expand-row">
-                    <td colspan={compact ? 6 : 9}>
+                    <td colspan={visibleColCount}>
                       {#if rowState.kind === 'loading'}
                         <p class="state state-loading" role="status">Loading timeline…</p>
                       {:else if rowState.kind === 'error'}
