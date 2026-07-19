@@ -156,6 +156,20 @@
     cursorCanvas.height = window.innerHeight
   }
 
+  function onVisibilityChange(): void {
+    // Pause the rAF loop when the tab is hidden; resume on return. Saves
+    // battery + CPU on background tabs (the cursor trail would otherwise
+    // keep churning particles that no one is looking at).
+    if (document.hidden) {
+      if (rafId) {
+        cancelAnimationFrame(rafId)
+        rafId = 0
+      }
+    } else if ((parallaxEnabled || cursorEnabled) && !rafId) {
+      rafId = requestAnimationFrame(loop)
+    }
+  }
+
   onMount(() => {
     // Capability gate: pointer:fine + no reduced motion.
     const finePointer =
@@ -170,6 +184,7 @@
     if (parallaxEnabled || cursorEnabled) {
       window.addEventListener('mousemove', onMouseMove, { passive: true })
       window.addEventListener('resize', onResize)
+      document.addEventListener('visibilitychange', onVisibilityChange)
       if (cursorCanvas) {
         cursorCtx = cursorCanvas.getContext('2d')
         onResize()
@@ -181,6 +196,7 @@
   onDestroy(() => {
     window.removeEventListener('mousemove', onMouseMove)
     window.removeEventListener('resize', onResize)
+    document.removeEventListener('visibilitychange', onVisibilityChange)
     if (rafId) cancelAnimationFrame(rafId)
   })
 </script>

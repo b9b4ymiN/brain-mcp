@@ -240,7 +240,7 @@
     <span class="footer-spacer"></span>
     <span class="footer-cell footer-cell--meta">
       <span class="footer-key">BUILD</span>
-      <span class="footer-val">v0.1</span>
+      <span class="footer-val">v{__APP_VERSION__}</span>
     </span>
   </footer>
 {/if}

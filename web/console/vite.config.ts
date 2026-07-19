@@ -1,5 +1,6 @@
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { defineConfig } from 'vite'
+import pkg from './package.json' with { type: 'json' }
 
 // Console dev/build config.
 //
@@ -18,6 +19,12 @@ const BACKEND = 'http://127.0.0.1:8080'
 export default defineConfig({
   plugins: [svelte()],
   appType: 'spa',
+  // Bake the console package version into the bundle so the footer BUILD
+  // cell can show a real number instead of the hardcoded 'v0.1' that
+  // drifted out of sync. Tree-shaken to the actual string at build time.
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+  },
   build: {
     outDir: 'dist',
   },
