@@ -70,6 +70,15 @@
     onNodeClick?: (node: GalaxyNode) => void
     /** Container height in CSS pixels. */
     height?: number
+    /**
+     * Immersive mode — used when the graph is the page's full-bleed hero
+     * (the Home landing). Hides the toolbar chrome (zoom/renderer controls,
+     * the LOD meta line, the StateBox wrapper), lets the canvas fill its
+     * container at 100% height, and renders error/empty states as a glass
+     * overlay instead of an inline banner. The parent owns the hero layout
+     * (overlay panels, brand, CTA); this component just draws the graph.
+     */
+    immersive?: boolean
   }
 
   let {
@@ -79,6 +88,7 @@
     domain,
     onNodeClick,
     height = 500,
+    immersive = false,
   }: Props = $props()
 
   // ── state ──────────────────────────────────────────────────────────────
@@ -206,7 +216,10 @@
     // container (destroyed flag) or a superseded request (seq/fetchSeq).
     void createRenderer(kind, {
       width: containerEl.clientWidth || 600,
-      height,
+      // Immersive (Home hero): transparent clear so the SpaceBackdrop
+      // shows through. Otherwise opaque #000 (Entity page).
+      height: immersive ? containerEl.clientHeight || 600 : height,
+      transparent: immersive,
     }).then((instance) => {
       if (destroyed) {
         // Component unmounted while we were importing. Tear down the
@@ -332,76 +345,78 @@
   let isEmpty = $derived(payload !== null && payload.nodes.length === 0)
 </script>
 
-<section class="galaxy-graph">
-  <div class="galaxy-toolbar">
-    <div class="zoom-controls" role="group" aria-label="Galaxy zoom level">
-      <button
-        type="button"
-        class:active={activeZoom === 'far'}
-        onclick={() => setZoom('far')}
-      >
-        Far
-      </button>
-      <button
-        type="button"
-        class:active={activeZoom === 'mid'}
-        onclick={() => setZoom('mid')}
-      >
-        Mid
-      </button>
-      <button
-        type="button"
-        class:active={activeZoom === 'close'}
-        onclick={() => setZoom('close')}
-      >
-        Close
-      </button>
+<section class="galaxy-graph" class:immersive>
+  {#if !immersive}
+    <div class="galaxy-toolbar">
+      <div class="zoom-controls" role="group" aria-label="Galaxy zoom level">
+        <button
+          type="button"
+          class:active={activeZoom === 'far'}
+          onclick={() => setZoom('far')}
+        >
+          Far
+        </button>
+        <button
+          type="button"
+          class:active={activeZoom === 'mid'}
+          onclick={() => setZoom('mid')}
+        >
+          Mid
+        </button>
+        <button
+          type="button"
+          class:active={activeZoom === 'close'}
+          onclick={() => setZoom('close')}
+        >
+          Close
+        </button>
+      </div>
+      <div class="renderer-controls" role="group" aria-label="Galaxy renderer">
+        <button
+          type="button"
+          class:active={requestedKind === '3d'}
+          aria-pressed={requestedKind === '3d'}
+          onclick={() => setRequestedKind('3d')}
+          title="3D force graph (needs WebGL + motion OK)"
+        >
+          3D
+        </button>
+        <button
+          type="button"
+          class:active={requestedKind === '2d'}
+          aria-pressed={requestedKind === '2d'}
+          onclick={() => setRequestedKind('2d')}
+          title="2D canvas force graph"
+        >
+          2D
+        </button>
+        <button
+          type="button"
+          class:active={requestedKind === 'list'}
+          aria-pressed={requestedKind === 'list'}
+          onclick={() => setRequestedKind('list')}
+          title="Accessible DOM list (no GPU)"
+        >
+          List
+        </button>
+        {#if activeKind !== null}
+          <span class="renderer-badge" title="Active renderer (3D needs WebGL + motion OK)">
+            {activeKind}
+          </span>
+        {/if}
+      </div>
     </div>
-    <div class="renderer-controls" role="group" aria-label="Galaxy renderer">
-      <button
-        type="button"
-        class:active={requestedKind === '3d'}
-        aria-pressed={requestedKind === '3d'}
-        onclick={() => setRequestedKind('3d')}
-        title="3D force graph (needs WebGL + motion OK)"
-      >
-        3D
-      </button>
-      <button
-        type="button"
-        class:active={requestedKind === '2d'}
-        aria-pressed={requestedKind === '2d'}
-        onclick={() => setRequestedKind('2d')}
-        title="2D canvas force graph"
-      >
-        2D
-      </button>
-      <button
-        type="button"
-        class:active={requestedKind === 'list'}
-        aria-pressed={requestedKind === 'list'}
-        onclick={() => setRequestedKind('list')}
-        title="Accessible DOM list (no GPU)"
-      >
-        List
-      </button>
-      {#if activeKind !== null}
-        <span class="renderer-badge" title="Active renderer (3D needs WebGL + motion OK)">
-          {activeKind}
-        </span>
-      {/if}
-    </div>
-  </div>
 
-  {#if activeKind !== null && activeKind !== '3d' && !manualPreference}
-    {#if !webglAvailable()}
-      <p class="renderer-reason" role="note">
-        Showing {activeKind.toUpperCase()} — WebGL unavailable.
-      </p>
-    {:else if prefersReducedMotion()}
-      <p class="renderer-reason" role="note">
-        Showing {activeKind.toUpperCase()} — reduced motion is on.
-      </p>
+    {#if activeKind !== null && activeKind !== '3d' && !manualPreference}
+      {#if !webglAvailable()}
+        <p class="renderer-reason" role="note">
+          Showing {activeKind.toUpperCase()} — WebGL unavailable.
+        </p>
+      {:else if prefersReducedMotion()}
+        <p class="renderer-reason" role="note">
+          Showing {activeKind.toUpperCase()} — reduced motion is on.
+        </p>
+      {/if}
     {/if}
   {/if}
 
@@ -412,6 +427,15 @@
       {error}
       <button type="button" class="retry" onclick={retry}>Retry</button>
     </p>
+  {:else if immersive}
+    {#snippet children()}
+      <div
+        class="galaxy-canvas"
+        style="height: {height}px;"
+        bind:this={containerEl}
+      ></div>
+    {/snippet}
+    {@render children()}
   {:else}
     <StateBox
       loading={loading}
@@ -454,105 +478,124 @@
 </section>
 
 <style>
+  /* ── GalaxyGraph — token-driven, with immersive variant ──────────────
+   * Token migration: every prior rgba(127,127,127,X) + #eee + #000 now
+   * reads from lib/tokens.css. The .galaxy-list h3 was a tracked-uppercase
+   * eyebrow (the saturated AI scaffold tell) — now sentence-case Inter.
+   * Immersive mode (Home hero): no toolbar, canvas fills container, no
+   * border on the canvas (it sits on the SpaceBackdrop already). */
+
   .galaxy-graph {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: var(--space-md);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+  }
+
+  /* Immersive: collapse the gap, no toolbar chrome above. */
+  .galaxy-graph.immersive {
+    gap: 0;
+    height: 100%;
   }
 
   .galaxy-toolbar {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 1rem;
+    gap: var(--space-md);
+    flex-wrap: wrap;
   }
 
-  .zoom-controls {
-    display: inline-flex;
-    border-radius: 0.375rem;
-    overflow: hidden;
-    border: 1px solid rgba(127, 127, 127, 0.45);
-  }
-
-  .zoom-controls button {
-    padding: 0.4rem 0.875rem;
-    border: none;
-    border-right: 1px solid rgba(127, 127, 127, 0.35);
-    background: rgba(127, 127, 127, 0.06);
-    color: inherit;
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .zoom-controls button:last-child {
-    border-right: none;
-  }
-
-  .zoom-controls button.active {
-    background: rgba(127, 127, 127, 0.3);
-    font-weight: 600;
-  }
-
+  .zoom-controls,
   .renderer-controls {
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
-    border-radius: 0.375rem;
+    border-radius: var(--radius-md);
     overflow: hidden;
-    border: 1px solid rgba(127, 127, 127, 0.45);
+    border: var(--border-hairline);
+  }
+
+  .zoom-controls button,
+  .renderer-controls button {
+    min-height: 44px;
+    padding: var(--space-xs) var(--space-md);
+    border: none;
+    color: var(--text-secondary);
+    background: transparent;
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    letter-spacing: var(--text-label-tracking);
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-quart),
+      color var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .zoom-controls button {
+    border-right: 1px solid var(--color-hairline);
   }
 
   .renderer-controls button {
-    padding: 0.4rem 0.75rem;
-    border: none;
-    border-right: 1px solid rgba(127, 127, 127, 0.35);
-    background: rgba(127, 127, 127, 0.06);
-    color: inherit;
-    font: inherit;
-    font-size: 0.8rem;
-    cursor: pointer;
+    border-right: 1px solid var(--color-hairline);
+    font-size: var(--text-mono);
+    font-family: var(--font-mono);
   }
 
+  .zoom-controls button:last-child,
   .renderer-controls button:last-of-type {
     border-right: none;
   }
 
+  .zoom-controls button:hover,
+  .renderer-controls button:hover {
+    background: var(--overlay-ink-06);
+    color: var(--text-primary);
+  }
+
+  .zoom-controls button.active,
   .renderer-controls button.active {
-    background: rgba(127, 127, 127, 0.3);
-    font-weight: 600;
+    background: var(--overlay-ink-15);
+    color: var(--text-primary);
+    font-weight: var(--weight-semibold);
   }
 
   .renderer-reason {
     margin: 0;
-    padding: 0.4rem 0.6rem;
-    font-size: 0.8rem;
-    border-radius: 0.25rem;
-    background: rgba(180, 140, 60, 0.12);
-    border: 1px solid rgba(180, 140, 60, 0.35);
-    opacity: 0.9;
+    padding: var(--space-xs) var(--space-sm);
+    font-family: var(--font-body);
+    font-size: var(--text-mono);
+    color: var(--text-primary);
+    border-radius: var(--radius-sm);
+    background: var(--overlay-accent-soft);
+    border: 1px solid var(--color-accent);
   }
 
   .renderer-badge {
-    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    opacity: 0.65;
-    padding: 0.2rem 0.5rem;
-    border: 1px solid rgba(127, 127, 127, 0.35);
-    border-radius: 0.25rem;
+    color: var(--text-secondary);
+    padding: var(--space-xs) var(--space-sm);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
+    margin-left: var(--space-xs);
   }
 
   .galaxy-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 1rem;
-    font-size: 0.8rem;
-    opacity: 0.8;
+    gap: var(--space-md);
     margin: 0;
+    color: var(--text-secondary);
+    font-family: var(--font-body);
+    font-size: var(--text-mono);
   }
 
   .galaxy-meta code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
   }
 
   .galaxy-stage {
@@ -562,26 +605,43 @@
   .galaxy-stage.has-sidepanel {
     display: grid;
     grid-template-columns: 1fr 18rem;
-    gap: 0.75rem;
+    gap: var(--space-md);
+  }
+
+  @media (max-width: 48rem) {
+    .galaxy-stage.has-sidepanel {
+      grid-template-columns: 1fr;
+    }
   }
 
   .galaxy-canvas {
     width: 100%;
-    border: 1px solid rgba(127, 127, 127, 0.3);
-    border-radius: 0.375rem;
-    background: #000;
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-md);
+    /* The canvas itself is the void — the SpaceBackdrop (Home) sits
+     * behind it. On Entity (no backdrop) the void is the canvas bg. */
+    background: var(--surface-body);
     overflow: hidden;
     box-sizing: border-box;
   }
+
+  /* Immersive: no border, no radius — the canvas IS the page. */
+  .galaxy-graph.immersive .galaxy-canvas {
+    border: none;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  /* ── List renderer (DOM fallback, no GPU) ──────────────────────────── */
   .galaxy-graph :global(.galaxy-list) {
     list-style: none;
     margin: 0;
-    padding: 0.5rem;
+    padding: var(--space-sm);
     display: grid;
-    gap: 0.25rem;
+    gap: var(--space-xs);
     max-height: 100%;
     overflow: auto;
-    color: #eee;
+    color: var(--text-primary);
   }
 
   .galaxy-graph :global(.galaxy-list-nodes) {
@@ -591,119 +651,154 @@
   .galaxy-graph :global(.galaxy-list-node) {
     display: flex;
     justify-content: space-between;
-    gap: 0.5rem;
-    padding: 0.25rem 0.4rem;
-    border-radius: 0.25rem;
+    gap: var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-sm);
     cursor: pointer;
+    color: var(--text-primary);
+    transition: background var(--duration-fast) var(--ease-out-quart);
   }
 
   .galaxy-graph :global(.galaxy-list-node:hover),
   .galaxy-graph :global(.galaxy-list-node:focus-visible) {
-    background: rgba(255, 255, 255, 0.1);
+    background: var(--overlay-ink-10);
     outline: none;
+    box-shadow: inset 0 0 0 1px var(--color-accent);
   }
 
   .galaxy-graph :global(.galaxy-list-node-label) {
-    font-weight: 600;
+    font-family: var(--font-body);
+    font-weight: var(--weight-semibold);
   }
 
   .galaxy-graph :global(.galaxy-list-node-meta) {
-    opacity: 0.7;
-    font-size: 0.85rem;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
   }
 
   .galaxy-graph :global(.galaxy-list-edges) {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.8rem;
-    opacity: 0.7;
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--text-secondary);
   }
 
   .galaxy-graph :global(.galaxy-list-edge) {
-    padding: 0.15rem 0.4rem;
+    padding: var(--space-xs) var(--space-sm);
   }
 
   .galaxy-graph :global(.galaxy-list-empty) {
-    opacity: 0.6;
+    color: var(--text-tertiary);
     font-style: italic;
-    padding: 0.25rem 0.4rem;
-    color: #eee;
+    padding: var(--space-xs) var(--space-sm);
   }
 
+  /* List heading — was tracked-uppercase eyebrow; now sentence-case. */
   .galaxy-graph :global(.galaxy-list h3) {
-    color: #eee;
-    margin: 0.5rem 0.5rem 0;
-    font-size: 0.85rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    opacity: 0.7;
+    color: var(--text-secondary);
+    margin: var(--space-sm) var(--space-sm) 0;
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    letter-spacing: 0;
+    text-transform: none;
   }
 
+  /* ── Side panel (selected node detail) ────────────────────────────── */
   .galaxy-sidepanel {
-    background: rgba(127, 127, 127, 0.08);
-    border: 1px solid rgba(127, 127, 127, 0.35);
-    border-radius: 0.375rem;
-    padding: 0.75rem 1rem;
-    margin-top: 0.5rem;
+    background: var(--surface-flat);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    padding: var(--space-md);
+    margin-top: var(--space-xs);
   }
 
   .galaxy-sidepanel h3 {
-    margin: 0 0 0.5rem;
-    font-size: 1rem;
+    margin: 0 0 var(--space-xs);
+    font-family: var(--font-display);
+    font-size: var(--text-title);
+    font-weight: var(--weight-semibold);
+    color: var(--text-primary);
     word-break: break-word;
+    letter-spacing: 0;
   }
 
   .galaxy-sidepanel dl {
-    margin: 0 0 0.75rem;
+    margin: 0 0 var(--space-sm);
     display: grid;
     grid-template-columns: max-content 1fr;
-    gap: 0.2rem 0.75rem;
-    font-size: 0.85rem;
+    gap: var(--space-xs) var(--space-md);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
   }
 
   .galaxy-sidepanel dt {
-    opacity: 0.65;
+    color: var(--text-secondary);
+    font-size: var(--text-label);
   }
 
   .galaxy-sidepanel dd {
     margin: 0;
+    color: var(--text-primary);
     word-break: break-all;
   }
 
   .galaxy-sidepanel code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.8rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--text-secondary);
   }
 
   .galaxy-sidepanel button {
-    padding: 0.4rem 0.75rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.45);
-    background: rgba(127, 127, 127, 0.15);
-    color: inherit;
-    font: inherit;
+    min-height: 44px;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    border: var(--border-hairline);
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    letter-spacing: var(--text-label-tracking);
     cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-quart);
   }
 
+  .galaxy-sidepanel button:hover {
+    background: var(--overlay-ink-06);
+  }
+
+  /* ── State banners (error/session-expired only — immersive mode) ──── */
   .state {
-    margin: 0.5rem 0;
-    padding: 0.6rem 0.75rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.35);
+    margin: var(--space-xs) 0;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-hairline);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
   }
 
   .state-error {
-    background: rgba(190, 70, 70, 0.15);
-    border-color: rgba(190, 70, 70, 0.5);
+    background: var(--overlay-danger-soft);
+    border-color: var(--color-danger);
   }
 
   .retry {
-    margin-left: 0.75rem;
-    padding: 0.2rem 0.6rem;
-    border-radius: 0.25rem;
-    border: 1px solid rgba(127, 127, 127, 0.45);
-    background: rgba(127, 127, 127, 0.1);
-    color: inherit;
-    font: inherit;
+    margin-left: var(--space-md);
+    min-height: 44px;
+    padding: var(--space-xs) var(--space-md);
+    border-radius: var(--radius-md);
+    border: var(--border-hairline);
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
     cursor: pointer;
+  }
+
+  .retry:hover {
+    background: var(--overlay-ink-06);
   }
 </style>

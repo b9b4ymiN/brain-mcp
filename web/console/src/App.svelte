@@ -115,7 +115,7 @@
   {/if}
 </header>
 
-<main class="shell-main" id="main-content" tabindex="-1">
+<main class="shell-main" class:home-current={currentPage === 'home'} id="main-content" tabindex="-1">
   {#if !session.isLoggedIn}
     <section class="login">
       <h2>Sign in</h2>
@@ -251,6 +251,14 @@
     margin: 0 auto;
     padding: 0 var(--space-lg) var(--space-xl);
     outline: none;
+  }
+
+  /* Home is full-bleed — the galaxy hero IS the page. Drop the max-width
+   * + horizontal padding so the hero can break out to the viewport edges.
+   * Vertical padding stays so the hero doesn't touch the header. */
+  .shell-main.home-current {
+    max-width: none;
+    padding: 0 0 var(--space-xl);
   }
 
   .login {

@@ -127,7 +127,9 @@ export function createRenderer3d(opts: RendererOpts): GraphRenderer {
       instance
         .width(opts.width)
         .height(opts.height)
-        .backgroundColor('#000')
+        // transparent: clear with alpha 0 so the SpaceBackdrop shows
+        // through (Home hero). Otherwise opaque #000 (Entity page).
+        .backgroundColor(opts.transparent === true ? '#00000000' : '#000')
         .graphData({ nodes, links })
         .nodeLabel((node) => {
           // PRIMARY XSS defense — float-tooltip routes strings through

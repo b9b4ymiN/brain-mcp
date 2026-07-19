@@ -92,6 +92,14 @@ export interface GraphRenderer {
 export interface RendererOpts {
   width: number
   height: number
+  /**
+   * When true, the renderer clears its canvas with alpha 0 (transparent)
+   * instead of an opaque black. Used by the Home hero so the
+   * SpaceBackdrop (CSS starfield + nebula) shows through the empty
+   * regions of the graph. Defaults false (opaque #000) to preserve the
+   * Entity page's prior behavior.
+   */
+  transparent?: boolean
 }
 
 // ── capability detection ────────────────────────────────────────────────────
