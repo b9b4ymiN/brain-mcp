@@ -940,45 +940,14 @@
     .ops-grid {
       grid-template-columns: repeat(3, 1fr);
     }
-    /* Trust (primary) + Clients (table) span 2 cols — breaks the grid's
-       uniformity. The remaining panels (Jobs, Evals, Backup) are 1 col. */
-    .ops-panel--primary,
-    .ops-panel--wide {
+    /* Trust (1st child = primary, 2-col span) + Clients (3rd child =
+       wide table, 2-col span). The remaining panels (Jobs, Evals, Backup)
+       are 1 col. Targets HoloPanel-emitted sections via :global since the
+       panels are now HoloPanel instances, not local .ops-panel. */
+    .ops-grid > :global(:nth-child(1)),
+    .ops-grid > :global(:nth-child(3)) {
       grid-column: span 2;
     }
-  }
-
-  /* ── Panel base (Flat-By-Default: no shadow at rest) ───────────────── */
-  .ops-panel {
-    padding: var(--space-md);
-    border: var(--border-hairline);
-    border-radius: var(--radius-lg);
-    background: var(--surface-flat);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
-
-  /* Primary tier — Trust gets a hair more visual weight (surface-elevated)
-     without crossing into "different card chassis" territory. */
-  .ops-panel--primary {
-    background: var(--surface-raised);
-  }
-
-  .ops-panel-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-sm);
-  }
-
-  .ops-panel-head h2 {
-    margin: 0;
-    font-family: var(--font-display);
-    font-size: var(--text-title);
-    font-weight: var(--weight-semibold);
-    letter-spacing: 0;
-    line-height: var(--text-title-leading);
   }
 
   /* Section labels — sentence case (kills the tracked-uppercase eyebrow).
@@ -1308,54 +1277,8 @@
     color: var(--text-primary);
   }
 
-  /* ── Hard purge (destructive — isolated, distinct visual tier) ───────
-     Full danger border (never a side-stripe). Separated from the benign
-     panels by spacing and by a full-width chassis change. */
-  .ops-destructive {
-    margin-top: var(--space-md);
-    padding: var(--space-lg);
-    border: 1px solid var(--color-danger);
-    border-radius: var(--radius-lg);
-    background: var(--overlay-danger-soft);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-md);
-  }
-
-  .ops-destructive-head {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--space-md);
-  }
-
-  .ops-destructive-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    width: 44px;
-    height: 44px;
-    border-radius: var(--radius-md);
-    background: var(--overlay-danger-strong);
-    color: var(--text-primary);
-  }
-
-  .ops-destructive-title h2 {
-    margin: 0;
-    font-family: var(--font-display);
-    font-size: var(--text-title);
-    font-weight: var(--weight-semibold);
-    color: var(--text-primary);
-    letter-spacing: 0;
-  }
-
-  .ops-destructive-sub {
-    margin: var(--space-xs) 0 0;
-    color: var(--color-danger);
-    font-size: var(--text-body);
-    font-weight: var(--weight-medium);
-  }
-
+  /* ── Hard purge form elements (the panel chassis is now HoloPanel
+     variant=danger; these are the form/textarea/button styles only). */
   .ops-destructive-flow {
     margin: 0;
     color: var(--text-secondary);

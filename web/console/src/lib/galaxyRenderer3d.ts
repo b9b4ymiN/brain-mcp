@@ -173,14 +173,37 @@ export function createRenderer3d(opts: RendererOpts): GraphRenderer {
 
       // The lib's `.d.ts` exposes `ForceGraph3D` as the default export of
       // type `IForceGraph3D<N, L>` — an interface parameterised on the
-      // NODE/LINK types with a `new(element)` signature returning
-      // `ForceGraph3DInstance<N, L>`. To specialise the instance, we narrow
-      // the constructor value to the parameterised type first (TS can't
-      // infer generics off a bare `new` call on a value-typed symbol).
+      // NODE/LINK types with a `new(element, configOptions?)` signature
+      // returning `ForceGraph3DInstance<N, L>`. To specialise the instance,
+      // we narrow the constructor value to the parameterised type first
+      // (TS can't infer generics off a bare `new` call on a value-typed
+      // symbol). The second arg (configOptions) carries rendererConfig —
+      // critical for the transparent-canvas path (Home hero): without
+      // {alpha:true}, the WebGLRenderer defaults to alpha:false and paints
+      // an opaque black rectangle over the SpaceBackdrop even though we
+      // set backgroundColor('#00000000').
       const Ctor = ForceGraph3D as unknown as new (
         element: HTMLElement,
+        configOptions?: { rendererConfig?: Record<string, unknown> },
       ) => ForceGraph3DInstance<GalaxyGraphNode, GalaxyGraphLink>
-      const instance = new Ctor(host)
+      const instance = new Ctor(
+        host,
+        opts.transparent === true
+          ? { rendererConfig: { alpha: true } }
+          : undefined,
+      )
+
+      // ── Kill library default UI overlays ──────────────────────────
+      // The library renders two default overlays we must suppress:
+      //
+      // 1. `.scene-nav-info` — "Left-click: rotate, Mouse-wheel/middle-
+      //    click: zoom, Right-click: pan" at bottom center. Killed via
+      //    the public `.showNavInfo(false)` setter.
+      // 2. `.graph-info-msg` — "Loading..." centered in lavender (22px
+      //    sans-serif). No public setter — must DOM-remove the element
+      //    after construction.
+      instance.showNavInfo(false)
+      host.querySelector('.graph-info-msg')?.remove()
 
       // Compute degree per node (edge count) → drives nodeVal so hub
       // nodes visibly read larger (DESIGN.md §5: "size by weight"). The

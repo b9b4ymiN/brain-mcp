@@ -106,6 +106,44 @@ textarea:focus-visible,
   scrollbar-color: var(--color-hairline) transparent;
 }
 
+/* ── Suppress 3d-force-graph library default overlays ──────────────────
+ * Belt-and-suspenders alongside the JS DOM-removal in galaxyRenderer3d.ts.
+ * Even if the JS race loses (element not yet in DOM when we query), these
+ * CSS rules guarantee the library's default chrome never renders. */
+.scene-nav-info {
+  display: none !important;
+}
+
+.graph-info-msg {
+  display: none !important;
+}
+
+/* ── Theme the library's float-tooltip to the cosmic system ────────────
+ * The library default (float-tooltip.mjs) ships dark-ish chrome
+ * (rgba(0,0,0,0.6) bg, #eee text, sans-serif, no border) which happens
+ * to fit a dark theme by coincidence. But it's not token-driven, and it
+ * has no tie-in to the holo-cyan instrument voice. Override here so the
+ * tooltip reads as a holographic readout, not a library afterthought. */
+.float-tooltip-kap {
+  font-family: var(--font-mono) !important;
+  font-size: var(--text-mono) !important;
+  color: var(--text-primary) !important;
+  background: color-mix(in oklch, var(--color-void) 85%, transparent) !important;
+  border: 1px solid oklch(0.78 0.13 195 / 0.35) !important;
+  border-radius: var(--radius-sm) !important;
+  padding: var(--space-xs) var(--space-sm) !important;
+  box-shadow: var(--glow-cyan) !important;
+  backdrop-filter: blur(8px) !important;
+  pointer-events: none;
+  /* The nodeLabel HTML uses <b> for the label; make it amber to match
+   * the star-color voice (active/hovered nodes are amber). */
+}
+.float-tooltip-kap b {
+  color: var(--color-accent);
+  font-family: var(--font-display);
+  font-weight: var(--weight-semibold);
+}
+
 *::-webkit-scrollbar {
   width: 10px;
   height: 10px;
