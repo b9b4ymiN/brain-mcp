@@ -411,13 +411,14 @@ pub async fn serve(
     // 1. Build WikiEngine
     let manager = Arc::new(WikiEngine::build(config_path)?);
 
-    let (wiki_count, serve_cfg, http_enabled, resolved_port) = {
+    let (wiki_count, serve_cfg, provider_cfg, http_enabled, resolved_port) = {
         let engine = manager.state.read();
         let count = engine.spaces.len();
         let cfg = engine.config.serve.clone();
+        let provider = engine.config.provider.clone();
         let http = http_port.is_some() || cfg.http;
         let port = http_port.unwrap_or(cfg.http_port);
-        (count, cfg, http, port)
+        (count, cfg, provider, http, port)
     };
 
     // 2. Log startup summary
@@ -530,6 +531,41 @@ pub async fn serve(
         crate::mcp::auth::AuthPolicy::default(),
         crate::mcp::owner_principal(),
     );
+
+    // Optional AI provider wiring for `brain_extract` / `brain_propose`
+    // (Task D1, never previously wired into the `serve` entry point — the
+    // two tools returned "AI provider not configured" on every deployment
+    // regardless of config until this). Disabled unless the operator opts in
+    // via `[provider] enabled = true`; a misconfiguration degrades to "no
+    // provider" with a warning rather than failing the whole server, the
+    // same pattern used above for a `SemanticStore::open` failure.
+    match provider_cfg.resolve() {
+        Ok(Some((cfg, compliance))) => {
+            let compliance_log_path = state_dir.join("provider_compliance.jsonl");
+            match crate::provider::ZaiHttpAdapter::new(cfg, compliance, compliance_log_path) {
+                Ok(adapter) => {
+                    mcp_server = mcp_server.with_ai_provider(Arc::new(adapter));
+                    tracing::info!("AI provider wired: brain_extract/brain_propose enabled");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to construct AI provider adapter (compliance log unwritable?); \
+                         brain_extract/brain_propose remain disabled"
+                    );
+                }
+            }
+        }
+        Ok(None) => {
+            tracing::debug!("[provider] not enabled; brain_extract/brain_propose remain disabled");
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "[provider] misconfigured; brain_extract/brain_propose remain disabled"
+            );
+        }
+    }
 
     // 5. Heartbeat task
     if serve_cfg.heartbeat_secs > 0 {

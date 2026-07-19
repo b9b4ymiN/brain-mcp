@@ -45,3 +45,30 @@ log_format = "json"
 # enable file logging if you have a log shipper picking these up.
 log_rotation = "daily"
 log_max_files = 7
+
+# [provider]
+# Optional AI provider wiring for the `brain_extract`/`brain_propose` MCP
+# tools (external-source claim extraction). Disabled by default — omit this
+# whole section (or leave enabled = false) and those two tools simply return
+# "AI provider not configured", every other tool is unaffected.
+#
+# The API key itself is NEVER put in this file — only the name of an
+# environment variable the server reads at call time (`api_key_env`, resolved
+# as `env:<name>`, same "never bake a secret into a tracked file" rule as the
+# bootstrap secret above). Set the actual key via a Docker secret / compose
+# `environment:` entry outside this file.
+#
+# enabled = true
+# base_url = "https://api.z.ai/api/coding/paas/v4/chat/completions"
+# api_key_env = "ZAI_API_KEY"
+# routine_model = "glm-4.6"
+# reasoning_model = "glm-4.6"
+# # §8.2 compliance acknowledgement — REQUIRED (non-empty) when enabled=true;
+# # the server refuses to wire the provider without it (fail-closed, not a
+# # default placeholder). Fill these in with what the operator actually
+# # decided before setting enabled = true.
+# compliance_user_decision = ""
+# compliance_known_terms_risk = ""
+# compliance_retention_terms = "unconfirmed"
+# compliance_training_terms = "unconfirmed"
+# compliance_processing_region = "unconfirmed"

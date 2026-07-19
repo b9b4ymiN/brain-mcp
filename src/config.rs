@@ -364,6 +364,137 @@ impl ServeConfig {
     }
 }
 
+/// `[provider]` section — optional AI provider wiring for `brain_extract` /
+/// `brain_propose` inference. **Disabled by default** (`enabled = false`):
+/// the server has zero AI dependency unless an operator explicitly opts in.
+/// No provider is ever silently enabled from an empty/default config.
+///
+/// Mirrors the shape `ZaiHttpAdapter` + `ProviderConfig` expect (see
+/// `src/provider.rs` and `tests/adversarial_corpus_live_v1.rs`): the API key
+/// itself is never stored here, only the name of an environment variable the
+/// deployment adapter resolves at call time (`resolve_api_key` only
+/// implements the `env:` scheme today).
+///
+/// §8.2 requires a recorded compliance acknowledgement before any provider
+/// call can happen. `compliance_user_decision` is the fail-closed gate for
+/// that: if `enabled = true` but it is empty, [`ProviderSection::resolve`]
+/// returns an error rather than defaulting or guessing consent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderSection {
+    /// Opt-in switch. Default: false (no AI provider wired).
+    #[serde(default)]
+    pub enabled: bool,
+    /// OpenAI-compatible chat-completions endpoint (default: Z.ai's).
+    #[serde(default = "default_provider_base_url")]
+    pub base_url: String,
+    /// Name of the environment variable holding the API key (resolved at
+    /// call time via `env:<name>`, never read or stored here).
+    #[serde(default = "default_provider_api_key_env")]
+    pub api_key_env: String,
+    /// Model used for routine extraction calls.
+    #[serde(default = "default_provider_model")]
+    pub routine_model: String,
+    /// Model used for reasoning/synthesis calls.
+    #[serde(default = "default_provider_model")]
+    pub reasoning_model: String,
+    /// §8.2 compliance: what the operator decided (free text). **Required**
+    /// (non-empty) when `enabled = true` — this is the fail-closed consent
+    /// gate, not a default-filled placeholder.
+    #[serde(default)]
+    pub compliance_user_decision: String,
+    /// §8.2 compliance: known terms-of-service risk acknowledged.
+    #[serde(default)]
+    pub compliance_known_terms_risk: String,
+    /// §8.2 compliance: data-retention terms (confirmed/unconfirmed + detail).
+    #[serde(default = "default_provider_compliance_unconfirmed")]
+    pub compliance_retention_terms: String,
+    /// §8.2 compliance: training-usage terms.
+    #[serde(default = "default_provider_compliance_unconfirmed")]
+    pub compliance_training_terms: String,
+    /// §8.2 compliance: processing region.
+    #[serde(default = "default_provider_compliance_unconfirmed")]
+    pub compliance_processing_region: String,
+}
+
+impl Default for ProviderSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: default_provider_base_url(),
+            api_key_env: default_provider_api_key_env(),
+            routine_model: default_provider_model(),
+            reasoning_model: default_provider_model(),
+            compliance_user_decision: String::new(),
+            compliance_known_terms_risk: String::new(),
+            compliance_retention_terms: default_provider_compliance_unconfirmed(),
+            compliance_training_terms: default_provider_compliance_unconfirmed(),
+            compliance_processing_region: default_provider_compliance_unconfirmed(),
+        }
+    }
+}
+
+impl ProviderSection {
+    /// Resolve this section into a `(ProviderConfig, ComplianceRecord)` pair
+    /// ready to build a `ZaiHttpAdapter`, or `Ok(None)` when the provider is
+    /// not enabled (the default — safe to call unconditionally at startup).
+    ///
+    /// **Fail-closed:** `enabled = true` with an empty
+    /// `compliance_user_decision` is a startup-time error, not a silently
+    /// disabled feature — the caller decides whether to abort startup or
+    /// warn-and-continue-without-the-provider (`server.rs::serve` does the
+    /// latter, matching how a failed `SemanticStore::open` is handled: an
+    /// optional subsystem degrades, the core server still starts).
+    pub fn resolve(
+        &self,
+    ) -> Result<
+        Option<(
+            crate::provider::ProviderConfig,
+            crate::provider::ComplianceRecord,
+        )>,
+    > {
+        if !self.enabled {
+            return Ok(None);
+        }
+        if self.compliance_user_decision.trim().is_empty() {
+            anyhow::bail!(
+                "[provider] enabled = true but compliance_user_decision is empty — §8.2 requires \
+                 a recorded acknowledgement before any provider call; set it in config.toml"
+            );
+        }
+        let provider_config = crate::provider::ProviderConfig {
+            base_url: self.base_url.clone(),
+            api_key_ref: format!("env:{}", self.api_key_env),
+            routine_model: self.routine_model.clone(),
+            reasoning_model: self.reasoning_model.clone(),
+            kill_switch: false,
+        };
+        let compliance = crate::provider::ComplianceRecord {
+            user_decision: self.compliance_user_decision.clone(),
+            endpoint: self.base_url.clone(),
+            workload: "extraction".to_owned(),
+            known_terms_risk: self.compliance_known_terms_risk.clone(),
+            retention_terms: self.compliance_retention_terms.clone(),
+            training_terms: self.compliance_training_terms.clone(),
+            processing_region: self.compliance_processing_region.clone(),
+            acknowledged_at: chrono::Utc::now().to_rfc3339(),
+        };
+        Ok(Some((provider_config, compliance)))
+    }
+}
+
+fn default_provider_base_url() -> String {
+    "https://api.z.ai/api/coding/paas/v4/chat/completions".to_owned()
+}
+fn default_provider_api_key_env() -> String {
+    "ZAI_API_KEY".to_owned()
+}
+fn default_provider_model() -> String {
+    "glm-4.6".to_owned()
+}
+fn default_provider_compliance_unconfirmed() -> String {
+    "unconfirmed".to_owned()
+}
+
 /// `[validation]` section — frontmatter validation strictness.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationConfig {
@@ -571,6 +702,10 @@ pub struct GlobalConfig {
     /// `[serve]` section.
     #[serde(default)]
     pub serve: ServeConfig,
+    /// `[provider]` section — optional AI provider wiring for `brain_extract`
+    /// / `brain_propose`. Absent from config = disabled (default).
+    #[serde(default)]
+    pub provider: ProviderSection,
     /// `[validation]` section.
     #[serde(default)]
     pub validation: ValidationConfig,
@@ -954,6 +1089,26 @@ pub fn set_global_config_value(global: &mut GlobalConfig, key: &str, value: &str
         "logging.log_max_files" => global.logging.log_max_files = value.parse()?,
         "logging.log_format" => global.logging.log_format = value.into(),
         "watch.debounce_ms" => global.watch.debounce_ms = value.parse()?,
+        "provider.enabled" => global.provider.enabled = value.parse()?,
+        "provider.base_url" => global.provider.base_url = value.into(),
+        "provider.api_key_env" => global.provider.api_key_env = value.into(),
+        "provider.routine_model" => global.provider.routine_model = value.into(),
+        "provider.reasoning_model" => global.provider.reasoning_model = value.into(),
+        "provider.compliance_user_decision" => {
+            global.provider.compliance_user_decision = value.into();
+        }
+        "provider.compliance_known_terms_risk" => {
+            global.provider.compliance_known_terms_risk = value.into();
+        }
+        "provider.compliance_retention_terms" => {
+            global.provider.compliance_retention_terms = value.into();
+        }
+        "provider.compliance_training_terms" => {
+            global.provider.compliance_training_terms = value.into();
+        }
+        "provider.compliance_processing_region" => {
+            global.provider.compliance_processing_region = value.into();
+        }
         _ => anyhow::bail!("unknown key: {key}"),
     }
     Ok(())
@@ -1014,6 +1169,20 @@ pub fn get_config_value(resolved: &ResolvedConfig, global: &GlobalConfig, key: &
         "history.default_limit" => resolved.history.default_limit.to_string(),
         "suggest.default_limit" => resolved.suggest.default_limit.to_string(),
         "suggest.min_score" => resolved.suggest.min_score.to_string(),
+        "provider.enabled" => global.provider.enabled.to_string(),
+        "provider.base_url" => global.provider.base_url.clone(),
+        "provider.api_key_env" => global.provider.api_key_env.clone(),
+        "provider.routine_model" => global.provider.routine_model.clone(),
+        "provider.reasoning_model" => global.provider.reasoning_model.clone(),
+        "provider.compliance_user_decision" => global.provider.compliance_user_decision.clone(),
+        "provider.compliance_known_terms_risk" => {
+            global.provider.compliance_known_terms_risk.clone()
+        }
+        "provider.compliance_retention_terms" => global.provider.compliance_retention_terms.clone(),
+        "provider.compliance_training_terms" => global.provider.compliance_training_terms.clone(),
+        "provider.compliance_processing_region" => {
+            global.provider.compliance_processing_region.clone()
+        }
         _ => format!("unknown key: {key}"),
     }
 }

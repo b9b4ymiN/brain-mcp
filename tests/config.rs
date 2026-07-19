@@ -707,3 +707,130 @@ fn graph_config_snapshot_defaults() {
     assert_eq!(cfg.snapshot_keep, 3);
     assert_eq!(cfg.snapshot_format, "bincode+lz4");
 }
+
+// ── ProviderSection ───────────────────────────────────────────────────────────
+// Covers the `[provider]` wiring that `server.rs::serve` uses to decide
+// whether to construct a `ZaiHttpAdapter` and call `with_ai_provider`. Before
+// this section existed, `brain_extract`/`brain_propose` failed on every
+// deployment ("AI provider not configured") regardless of config, because
+// nothing in the CLI entry point ever called `with_ai_provider` at all.
+
+#[test]
+fn provider_section_disabled_by_default() {
+    let cfg = GlobalConfig::default();
+    assert!(!cfg.provider.enabled);
+    assert!(cfg.provider.resolve().unwrap().is_none());
+}
+
+#[test]
+fn provider_section_default_still_resolves_to_none_even_if_toml_omits_provider() {
+    // A config.toml with no [provider] table at all — the common case for
+    // every deployment created before this feature existed — must keep
+    // behaving exactly as before: no provider, no error.
+    let global: GlobalConfig = toml::from_str(
+        r#"
+[global]
+default_wiki = "brain"
+"#,
+    )
+    .unwrap();
+    assert!(!global.provider.enabled);
+    assert!(global.provider.resolve().unwrap().is_none());
+}
+
+#[test]
+fn provider_section_enabled_without_compliance_decision_is_fail_closed() {
+    let mut cfg = GlobalConfig::default();
+    cfg.provider.enabled = true;
+    // compliance_user_decision left empty — §8.2 gate must refuse, not
+    // silently proceed or default to some placeholder consent.
+    let err = cfg.provider.resolve().unwrap_err();
+    assert!(err.to_string().contains("compliance_user_decision"));
+}
+
+#[test]
+fn provider_section_enabled_with_whitespace_only_decision_is_still_fail_closed() {
+    let mut cfg = GlobalConfig::default();
+    cfg.provider.enabled = true;
+    cfg.provider.compliance_user_decision = "   ".to_owned();
+    assert!(cfg.provider.resolve().is_err());
+}
+
+#[test]
+fn provider_section_enabled_with_compliance_resolves_to_adapter_shape() {
+    let mut cfg = GlobalConfig::default();
+    cfg.provider.enabled = true;
+    cfg.provider.base_url = "https://example.test/v1/chat/completions".to_owned();
+    cfg.provider.api_key_env = "MY_KEY_VAR".to_owned();
+    cfg.provider.routine_model = "test-model".to_owned();
+    cfg.provider.compliance_user_decision = "approved for testing".to_owned();
+
+    let (provider_config, compliance) = cfg.provider.resolve().unwrap().unwrap();
+
+    assert_eq!(
+        provider_config.base_url,
+        "https://example.test/v1/chat/completions"
+    );
+    assert_eq!(provider_config.api_key_ref, "env:MY_KEY_VAR");
+    assert_eq!(provider_config.routine_model, "test-model");
+    assert!(!provider_config.kill_switch);
+    assert_eq!(compliance.user_decision, "approved for testing");
+    assert_eq!(compliance.endpoint, provider_config.base_url);
+    // acknowledged_at must be a real timestamp, not left blank.
+    assert!(!compliance.acknowledged_at.is_empty());
+}
+
+#[test]
+fn provider_section_defaults_match_zai_test_convention() {
+    // Matches the shape `tests/adversarial_corpus_live_v1.rs` builds by hand
+    // from ZAI_ENDPOINT/ZAI_API_KEY/ZAI_MODEL env vars, so an operator who
+    // already knows that convention gets the same defaults from config.toml.
+    let cfg = ProviderSection::default();
+    assert_eq!(
+        cfg.base_url,
+        "https://api.z.ai/api/coding/paas/v4/chat/completions"
+    );
+    assert_eq!(cfg.api_key_env, "ZAI_API_KEY");
+    assert_eq!(cfg.routine_model, "glm-4.6");
+    assert_eq!(cfg.reasoning_model, "glm-4.6");
+}
+
+#[test]
+fn set_global_sets_provider_keys() {
+    let mut g = GlobalConfig::default();
+    set_global_config_value(&mut g, "provider.enabled", "true").unwrap();
+    set_global_config_value(&mut g, "provider.base_url", "https://x.test/v1").unwrap();
+    set_global_config_value(&mut g, "provider.api_key_env", "X_KEY").unwrap();
+    set_global_config_value(&mut g, "provider.routine_model", "m1").unwrap();
+    set_global_config_value(&mut g, "provider.reasoning_model", "m2").unwrap();
+    set_global_config_value(&mut g, "provider.compliance_user_decision", "approved").unwrap();
+    assert!(g.provider.enabled);
+    assert_eq!(g.provider.base_url, "https://x.test/v1");
+    assert_eq!(g.provider.api_key_env, "X_KEY");
+    assert_eq!(g.provider.routine_model, "m1");
+    assert_eq!(g.provider.reasoning_model, "m2");
+    assert_eq!(g.provider.compliance_user_decision, "approved");
+}
+
+#[test]
+fn get_config_value_reads_provider_keys() {
+    let mut global = GlobalConfig::default();
+    global.provider.enabled = true;
+    global.provider.compliance_user_decision = "approved".to_owned();
+    let resolved = resolve(&global, &WikiConfig::default());
+
+    assert_eq!(
+        get_config_value(&resolved, &global, "provider.enabled"),
+        "true"
+    );
+    assert_eq!(
+        get_config_value(&resolved, &global, "provider.compliance_user_decision"),
+        "approved"
+    );
+}
+
+#[test]
+fn set_wiki_config_value_rejects_provider_key_as_global_only() {
+    let mut wiki_cfg = WikiConfig::default();
+    assert!(set_wiki_config_value(&mut wiki_cfg, "provider.enabled", "true").is_err());
+}
