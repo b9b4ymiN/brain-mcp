@@ -368,6 +368,15 @@ pub trait HttpTransport: Send + Sync {
     ) -> Result<TransportResponse, ProviderError>;
 }
 
+/// Default per-request HTTP timeout for the production [`ReqwestTransport`]
+/// (600 s / 10 min). Found live 2026-07-19: the previous hardcoded 60 s was
+/// too short for `brain_extract` against reasoning models — a single ~4 KB
+/// chunk measured 119 s end-to-end against Z.ai glm-4.6. Operators should
+/// usually tune this via `[provider] timeout_secs` (which threads through
+/// `ProviderSection::resolve` → `ZaiHttpAdapter::with_timeout`); the
+/// constant here is the fallback when no config is supplied.
+pub const DEFAULT_PROVIDER_TIMEOUT_SECS: u64 = 600;
+
 /// The production [`HttpTransport`]: a blocking `reqwest` client (rustls).
 /// Blocking is safe today because nothing calls [`AiProvider::complete`] from
 /// an async context yet (Phase 4 is contract-level — see module docs); a
@@ -378,10 +387,22 @@ pub struct ReqwestTransport {
 }
 
 impl ReqwestTransport {
+    /// Construct with the default timeout (`DEFAULT_PROVIDER_TIMEOUT_SECS`).
     pub fn new() -> Self {
+        Self::with_timeout(Duration::from_secs(DEFAULT_PROVIDER_TIMEOUT_SECS))
+    }
+
+    /// Construct with an explicit per-request timeout. `Duration::ZERO` maps
+    /// to "no timeout" at the reqwest layer — only do this for debugging a
+    /// stuck connection, never in production (a hung provider call would
+    /// then block forever).
+    pub fn with_timeout(timeout: Duration) -> Self {
+        let mut builder = reqwest::blocking::Client::builder();
+        if !timeout.is_zero() {
+            builder = builder.timeout(timeout);
+        }
         Self {
-            client: reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(60))
+            client: builder
                 .build()
                 .expect("reqwest client builds with default TLS config"),
         }
@@ -513,6 +534,25 @@ impl ZaiHttpAdapter {
             compliance,
             compliance_log_path,
             Box::new(ReqwestTransport::new()),
+        )
+    }
+
+    /// Construct a production adapter with a real `reqwest` transport using
+    /// an explicit per-request `timeout`. Used by `serve()` to thread
+    /// `[provider] timeout_secs` into the transport without touching the
+    /// mock-injectable `with_transport` constructor. See
+    /// `DEFAULT_PROVIDER_TIMEOUT_SECS` for why this needs to be tunable.
+    pub fn with_timeout(
+        config: ProviderConfig,
+        compliance: ComplianceRecord,
+        compliance_log_path: PathBuf,
+        timeout: Duration,
+    ) -> io::Result<Self> {
+        Self::with_transport(
+            config,
+            compliance,
+            compliance_log_path,
+            Box::new(ReqwestTransport::with_timeout(timeout)),
         )
     }
 

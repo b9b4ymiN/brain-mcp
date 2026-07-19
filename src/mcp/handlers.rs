@@ -1091,7 +1091,8 @@ pub fn handle_brain_extract(server: &McpServer, args: &Map<String, Value>) -> To
     let rendition_text = String::from_utf8(rendition_bytes.clone())
         .map_err(|_| "captured chunk is not valid UTF-8 text".to_owned())?;
 
-    let policy = crate::extraction::ExtractionPolicy::new();
+    let policy =
+        crate::extraction::ExtractionPolicy::with_max_tokens(server.extraction_max_tokens());
     let prompt = crate::extraction::build_extraction_prompt(&rendition_text);
     // `local_only` lets a caller mark a chunk as never egressable (e.g. a
     // source the caller knows carries sensitive content); a detected-secret

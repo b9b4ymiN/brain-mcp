@@ -201,6 +201,22 @@ fn default_mcp_completed_cache_ttl_secs() -> u64 {
     60
 }
 
+/// Default per-tool-call timeout for MCP tool dispatch (300 s / 5 min).
+///
+/// Found live 2026-07-19: the previous hardcoded 30 s timeout was too short
+/// for `brain_extract` against reasoning models (glm-4.6/glm-5.2 spend
+/// 15-30 s of `reasoning_content` before writing the final `content`, and
+/// larger extraction chunks run longer). When the timeout fired mid-call,
+/// the MCP layer returned an empty response body that downstream parsed as
+/// "AI response was not valid JSON after bounded repair (discarded): EOF
+/// while parsing a value at line 1 column 0" — masking the real cause.
+/// 300 s leaves ~10× headroom over the longest observed reasoning-model
+/// extraction while still bounding a stuck tool call. Operators with a
+/// faster provider or smaller prompts can lower this in `[serve]`.
+fn default_mcp_tool_call_timeout_secs() -> u64 {
+    300
+}
+
 fn default_mcp_stateful_mode() -> bool {
     false
 }
@@ -261,6 +277,13 @@ pub struct ServeConfig {
     /// Seconds to keep completed MCP request stream caches for late resume requests (default: 60).
     #[serde(default = "default_mcp_completed_cache_ttl_secs")]
     pub mcp_completed_cache_ttl_secs: u64,
+    /// Per-tool-call timeout for MCP tool dispatch in seconds (default: 300).
+    /// Set to 0 to disable the timeout (a stuck tool call then runs until the
+    /// client disconnects). Found live 2026-07-19: the previous hardcoded
+    /// 30 s timeout was too short for `brain_extract` against reasoning
+    /// models (glm-4.6/glm-5.2) — see `default_mcp_tool_call_timeout_secs`.
+    #[serde(default = "default_mcp_tool_call_timeout_secs")]
+    pub mcp_tool_call_timeout_secs: u64,
     /// Use stateful Streamable HTTP sessions (default: false).
     #[serde(default = "default_mcp_stateful_mode")]
     pub mcp_stateful_mode: bool,
@@ -323,6 +346,7 @@ impl Default for ServeConfig {
             mcp_session_keep_alive_secs: default_mcp_session_keep_alive_secs(),
             mcp_init_timeout_secs: default_mcp_init_timeout_secs(),
             mcp_completed_cache_ttl_secs: default_mcp_completed_cache_ttl_secs(),
+            mcp_tool_call_timeout_secs: default_mcp_tool_call_timeout_secs(),
             mcp_stateful_mode: default_mcp_stateful_mode(),
             mcp_json_response: default_mcp_json_response(),
             console_dev_bootstrap_secret: None,
@@ -397,6 +421,22 @@ pub struct ProviderSection {
     /// Model used for reasoning/synthesis calls.
     #[serde(default = "default_provider_model")]
     pub reasoning_model: String,
+    /// `max_tokens` budget for a `brain_extract` provider call (default:
+    /// `crate::extraction::DEFAULT_EXTRACTION_MAX_TOKENS`, 8192). Bump this
+    /// higher if you see `brain_extract` fail with a JSON-parse error on an
+    /// EMPTY response — that shape means the model hit `finish_reason:
+    /// "length"` before writing any answer, typically because a reasoning
+    /// model (glm-4.6/glm-5.2 and similar) spent the whole budget on
+    /// `reasoning_content` chain-of-thought first. Confirmed live 2026-07-19.
+    #[serde(default = "default_provider_extraction_max_tokens")]
+    pub extraction_max_tokens: u32,
+    /// Per-request HTTP timeout for provider chat-completion calls, in
+    /// seconds (default: 600). Found live 2026-07-19: the previous
+    /// hardcoded 60 s was too short for `brain_extract` against reasoning
+    /// models — see `default_provider_timeout_secs`. Set to 0 to disable
+    /// the timeout (a stuck connection then hangs until the OS kills it).
+    #[serde(default = "default_provider_timeout_secs")]
+    pub timeout_secs: u64,
     /// §8.2 compliance: what the operator decided (free text). **Required**
     /// (non-empty) when `enabled = true` — this is the fail-closed consent
     /// gate, not a default-filled placeholder.
@@ -424,6 +464,8 @@ impl Default for ProviderSection {
             api_key_env: default_provider_api_key_env(),
             routine_model: default_provider_model(),
             reasoning_model: default_provider_model(),
+            extraction_max_tokens: default_provider_extraction_max_tokens(),
+            timeout_secs: default_provider_timeout_secs(),
             compliance_user_decision: String::new(),
             compliance_known_terms_risk: String::new(),
             compliance_retention_terms: default_provider_compliance_unconfirmed(),
@@ -490,6 +532,21 @@ fn default_provider_api_key_env() -> String {
 }
 fn default_provider_model() -> String {
     "glm-4.6".to_owned()
+}
+fn default_provider_extraction_max_tokens() -> u32 {
+    crate::extraction::DEFAULT_EXTRACTION_MAX_TOKENS
+}
+
+/// Default per-request HTTP timeout for provider chat-completion calls
+/// (600 s / 10 min). Found live 2026-07-19: the previous hardcoded 60 s
+/// was too short for `brain_extract` against reasoning models — a single
+/// ~4 KB chunk measured 119 s end-to-end against Z.ai glm-4.6 (the
+/// `reasoning_content` chain-of-thought alone consumed ~4640 tokens).
+/// 600 s leaves ~5× headroom over the longest observed extraction and
+/// bounds a stuck connection. Operators with a faster provider can lower
+/// this in `[provider]`.
+fn default_provider_timeout_secs() -> u64 {
+    600
 }
 fn default_provider_compliance_unconfirmed() -> String {
     "unconfirmed".to_owned()
@@ -1070,6 +1127,9 @@ pub fn set_global_config_value(global: &mut GlobalConfig, key: &str, value: &str
         "serve.mcp_completed_cache_ttl_secs" => {
             global.serve.mcp_completed_cache_ttl_secs = value.parse()?;
         }
+        "serve.mcp_tool_call_timeout_secs" => {
+            global.serve.mcp_tool_call_timeout_secs = value.parse()?;
+        }
         "serve.mcp_stateful_mode" => global.serve.mcp_stateful_mode = value.parse()?,
         "serve.mcp_json_response" => global.serve.mcp_json_response = value.parse()?,
         "serve.ingest_max_source_bytes" => {
@@ -1094,6 +1154,12 @@ pub fn set_global_config_value(global: &mut GlobalConfig, key: &str, value: &str
         "provider.api_key_env" => global.provider.api_key_env = value.into(),
         "provider.routine_model" => global.provider.routine_model = value.into(),
         "provider.reasoning_model" => global.provider.reasoning_model = value.into(),
+        "provider.extraction_max_tokens" => {
+            global.provider.extraction_max_tokens = value.parse()?;
+        }
+        "provider.timeout_secs" => {
+            global.provider.timeout_secs = value.parse()?;
+        }
         "provider.compliance_user_decision" => {
             global.provider.compliance_user_decision = value.into();
         }
@@ -1152,6 +1218,7 @@ pub fn get_config_value(resolved: &ResolvedConfig, global: &GlobalConfig, key: &
         "serve.mcp_completed_cache_ttl_secs" => {
             global.serve.mcp_completed_cache_ttl_secs.to_string()
         }
+        "serve.mcp_tool_call_timeout_secs" => global.serve.mcp_tool_call_timeout_secs.to_string(),
         "serve.mcp_stateful_mode" => global.serve.mcp_stateful_mode.to_string(),
         "serve.mcp_json_response" => global.serve.mcp_json_response.to_string(),
         "serve.ingest_max_source_bytes" => resolved.serve.ingest_max_source_bytes.to_string(),
@@ -1174,6 +1241,8 @@ pub fn get_config_value(resolved: &ResolvedConfig, global: &GlobalConfig, key: &
         "provider.api_key_env" => global.provider.api_key_env.clone(),
         "provider.routine_model" => global.provider.routine_model.clone(),
         "provider.reasoning_model" => global.provider.reasoning_model.clone(),
+        "provider.extraction_max_tokens" => global.provider.extraction_max_tokens.to_string(),
+        "provider.timeout_secs" => global.provider.timeout_secs.to_string(),
         "provider.compliance_user_decision" => global.provider.compliance_user_decision.clone(),
         "provider.compliance_known_terms_risk" => {
             global.provider.compliance_known_terms_risk.clone()
@@ -1339,6 +1408,7 @@ pub fn set_wiki_config_value(wiki_cfg: &mut WikiConfig, key: &str, value: &str) 
         | "serve.mcp_session_keep_alive_secs"
         | "serve.mcp_init_timeout_secs"
         | "serve.mcp_completed_cache_ttl_secs"
+        | "serve.mcp_tool_call_timeout_secs"
         | "serve.mcp_stateful_mode"
         | "serve.mcp_json_response"
         | "serve.ingest_max_source_bytes"

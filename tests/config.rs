@@ -256,6 +256,7 @@ fn set_global_sets_serve_keys() {
     set_global_config_value(&mut g, "serve.mcp_session_keep_alive_secs", "7200").unwrap();
     set_global_config_value(&mut g, "serve.mcp_init_timeout_secs", "45").unwrap();
     set_global_config_value(&mut g, "serve.mcp_completed_cache_ttl_secs", "120").unwrap();
+    set_global_config_value(&mut g, "serve.mcp_tool_call_timeout_secs", "180").unwrap();
     set_global_config_value(&mut g, "serve.mcp_stateful_mode", "true").unwrap();
     set_global_config_value(&mut g, "serve.mcp_json_response", "false").unwrap();
     assert_eq!(g.serve.max_restarts, 5);
@@ -264,6 +265,7 @@ fn set_global_sets_serve_keys() {
     assert_eq!(g.serve.mcp_session_keep_alive_secs, 7200);
     assert_eq!(g.serve.mcp_init_timeout_secs, 45);
     assert_eq!(g.serve.mcp_completed_cache_ttl_secs, 120);
+    assert_eq!(g.serve.mcp_tool_call_timeout_secs, 180);
     assert!(g.serve.mcp_stateful_mode);
     assert!(!g.serve.mcp_json_response);
 }
@@ -335,6 +337,7 @@ fn set_wiki_rejects_global_only_keys() {
         "serve.mcp_session_keep_alive_secs",
         "serve.mcp_init_timeout_secs",
         "serve.mcp_completed_cache_ttl_secs",
+        "serve.mcp_tool_call_timeout_secs",
         "serve.mcp_stateful_mode",
         "serve.mcp_json_response",
         "index.auto_rebuild",
@@ -398,6 +401,12 @@ fn serve_config_defaults() {
     assert_eq!(cfg.mcp_session_keep_alive_secs, 21_600);
     assert_eq!(cfg.mcp_init_timeout_secs, 60);
     assert_eq!(cfg.mcp_completed_cache_ttl_secs, 60);
+    // The MCP tool-call timeout must default well above the 30 s hardcoded
+    // value that was found too short for reasoning-model extractions
+    // (glm-4.6/glm-5.2 routinely spend 15-30 s on `reasoning_content` before
+    // writing the final `content` — anything ≤ 30 s drops the response on
+    // the floor as an empty-content "EOF while parsing" error).
+    assert_eq!(cfg.mcp_tool_call_timeout_secs, 300);
     assert!(!cfg.mcp_stateful_mode);
     assert!(cfg.mcp_json_response);
 }
@@ -796,6 +805,16 @@ fn provider_section_defaults_match_zai_test_convention() {
 }
 
 #[test]
+fn provider_section_default_timeout_is_600_seconds() {
+    // Found live 2026-07-19: the previous hardcoded 60 s `reqwest` client
+    // timeout was too short for `brain_extract` against reasoning models —
+    // a single 4 KB chunk took ~119 s of `reasoning_content` before the
+    // final answer. The default must sit well above that.
+    let cfg = ProviderSection::default();
+    assert_eq!(cfg.timeout_secs, 600);
+}
+
+#[test]
 fn set_global_sets_provider_keys() {
     let mut g = GlobalConfig::default();
     set_global_config_value(&mut g, "provider.enabled", "true").unwrap();
@@ -804,12 +823,14 @@ fn set_global_sets_provider_keys() {
     set_global_config_value(&mut g, "provider.routine_model", "m1").unwrap();
     set_global_config_value(&mut g, "provider.reasoning_model", "m2").unwrap();
     set_global_config_value(&mut g, "provider.compliance_user_decision", "approved").unwrap();
+    set_global_config_value(&mut g, "provider.timeout_secs", "240").unwrap();
     assert!(g.provider.enabled);
     assert_eq!(g.provider.base_url, "https://x.test/v1");
     assert_eq!(g.provider.api_key_env, "X_KEY");
     assert_eq!(g.provider.routine_model, "m1");
     assert_eq!(g.provider.reasoning_model, "m2");
     assert_eq!(g.provider.compliance_user_decision, "approved");
+    assert_eq!(g.provider.timeout_secs, 240);
 }
 
 #[test]

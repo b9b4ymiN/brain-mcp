@@ -63,6 +63,13 @@ log_max_files = 7
 # api_key_env = "ZAI_API_KEY"
 # routine_model = "glm-4.6"
 # reasoning_model = "glm-4.6"
+# # max_tokens budget for a brain_extract provider call (default 8192).
+# # Reasoning models (glm-4.6/glm-5.2 and similar) spend completion tokens on
+# # a reasoning_content chain-of-thought BEFORE writing the final answer into
+# # content — too low a budget returns finish_reason:"length" with an EMPTY
+# # content, which fails as an unparseable-JSON error rather than an obvious
+# # "ran out of tokens" one. Bump this if brain_extract fails that way.
+# extraction_max_tokens = 8192
 # # §8.2 compliance acknowledgement — REQUIRED (non-empty) when enabled=true;
 # # the server refuses to wire the provider without it (fail-closed, not a
 # # default placeholder). Fill these in with what the operator actually

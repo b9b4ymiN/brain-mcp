@@ -523,6 +523,17 @@ pub async fn serve(
         max_sources_per_minute = serve_cfg.ingest_max_sources_per_minute,
         "ingest limits attached",
     );
+    // Per-tool-call timeout (default 300 s, configurable via
+    // `[serve] mcp_tool_call_timeout_secs`). Found live 2026-07-19: the
+    // previous hardcoded 30 s was too short for `brain_extract` against
+    // reasoning models. `0` disables the timeout entirely.
+    mcp_server = mcp_server.with_tool_call_timeout(std::time::Duration::from_secs(
+        serve_cfg.mcp_tool_call_timeout_secs,
+    ));
+    tracing::info!(
+        tool_call_timeout_secs = serve_cfg.mcp_tool_call_timeout_secs,
+        "MCP tool-call timeout attached",
+    );
     // Activate the auth gate on the serve hot path (Task B3 / F1 fix). Local
     // stdio/loopback runs as the fully-trusted owner (bootstrap principal), so
     // the owner is unaffected; the point is that the gate is *on*, so a
@@ -531,6 +542,12 @@ pub async fn serve(
         crate::mcp::auth::AuthPolicy::default(),
         crate::mcp::owner_principal(),
     );
+
+    // Extraction max_tokens budget (independent of whether the provider
+    // itself is enabled — harmless to set even when `brain_extract` is
+    // disabled). See `ProviderSection::extraction_max_tokens` doc for why
+    // this needs to be configurable rather than a hardcoded constant.
+    mcp_server = mcp_server.with_extraction_max_tokens(provider_cfg.extraction_max_tokens);
 
     // Optional AI provider wiring for `brain_extract` / `brain_propose`
     // (Task D1, never previously wired into the `serve` entry point — the
@@ -542,10 +559,23 @@ pub async fn serve(
     match provider_cfg.resolve() {
         Ok(Some((cfg, compliance))) => {
             let compliance_log_path = state_dir.join("provider_compliance.jsonl");
-            match crate::provider::ZaiHttpAdapter::new(cfg, compliance, compliance_log_path) {
+            // `[provider] timeout_secs` (default 600) — found live 2026-07-19:
+            // the previous hardcoded 60 s `reqwest` client timeout was too
+            // short for `brain_extract` against reasoning models (a single
+            // ~4 KB chunk measured 119 s end-to-end against glm-4.6).
+            let provider_timeout = std::time::Duration::from_secs(provider_cfg.timeout_secs);
+            match crate::provider::ZaiHttpAdapter::with_timeout(
+                cfg,
+                compliance,
+                compliance_log_path,
+                provider_timeout,
+            ) {
                 Ok(adapter) => {
                     mcp_server = mcp_server.with_ai_provider(Arc::new(adapter));
-                    tracing::info!("AI provider wired: brain_extract/brain_propose enabled");
+                    tracing::info!(
+                        timeout_secs = provider_cfg.timeout_secs,
+                        "AI provider wired: brain_extract/brain_propose enabled"
+                    );
                 }
                 Err(e) => {
                     tracing::warn!(

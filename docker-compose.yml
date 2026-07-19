@@ -23,7 +23,7 @@ services:
     # Built fresh from the repo Dockerfile on `docker compose up --build`.
     # Pin to a release tag (e.g. `brain:v0.5`) in production and drop the
     # `build:` block to deploy a pre-built image from a registry.
-    image: brain:v0.5
+    image: brain:v0.9-lenient-parser
     build:
       context: .
       dockerfile: Dockerfile
@@ -47,6 +47,18 @@ services:
       # authoritative source (CMD in Dockerfile); LLM_WIKI_CONFIG is the
       # documented env fallback the CLI reads when `--config` is absent.
       - LLM_WIKI_CONFIG=/data/config.toml
+      # Optional AI provider key for brain_extract/brain_propose ([provider]
+      # section in config.toml). UNLIKE bootstrap_secret above, this DOES land
+      # in `docker inspect` Config.Env — `resolve_api_key` in src/provider.rs
+      # only implements the `env:` scheme today (no secret-file scheme exists
+      # yet for provider keys). Lower stakes than bootstrap_secret (an LLM API
+      # key risks quota/billing abuse on the provider account, not brain
+      # read/write access), but a real tradeoff — do not treat it as
+      # equivalent hygiene. Sourced from a gitignored `.env` file via compose
+      # variable substitution; ZAI_API_KEY is never written to any tracked
+      # file. Omit this line entirely (and leave [provider] disabled) if you
+      # don't want the key in the container's inspectable environment.
+      - ZAI_API_KEY=${ZAI_API_KEY:-}
     secrets:
       - bootstrap_secret
     restart: unless-stopped
