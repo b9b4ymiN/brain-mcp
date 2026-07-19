@@ -32,6 +32,13 @@
     error: string | null
     empty: boolean
     emptyText: string
+    /**
+     * Optional rich-body snippet rendered inside the empty state panel. When
+     * provided, the panel is upgraded from a one-line italic message to a
+     * teaching panel (opaque accent-soft surface, headline + body).
+     * `emptyText` still serves as the accessible headline.
+     */
+    emptySnippet?: Snippet
     children: Snippet
   }
 
@@ -40,6 +47,7 @@
     error,
     empty,
     emptyText,
+    emptySnippet,
     children,
   }: Props = $props()
 </script>
@@ -49,7 +57,14 @@
 {:else if error}
   <p class="state state-error" role="alert">{error}</p>
 {:else if empty}
-  <p class="state state-empty">{emptyText}</p>
+  {#if emptySnippet}
+    <div class="state state-empty-rich" role="status">
+      <p class="state-empty-headline">{emptyText}</p>
+      {@render emptySnippet()}
+    </div>
+  {:else}
+    <p class="state state-empty">{emptyText}</p>
+  {/if}
 {:else}
   {@render children()}
 {/if}
@@ -73,12 +88,31 @@
   }
 
   .state-error {
-    background: var(--overlay-danger-soft);
+    /* Opaque danger surface — the old --overlay-danger-soft wash was 14%
+     * transparent, dropping error banners below AA. */
+    background: var(--surface-danger-soft);
     border-color: var(--color-danger);
   }
 
   .state-empty {
     color: var(--text-secondary);
     font-style: italic;
+  }
+
+  /* Rich empty state: opaque accent-tinted panel that actually teaches
+   * the next action, replacing the old 'nothing here' italic one-liner. */
+  .state-empty-rich {
+    background: var(--surface-accent-soft);
+    border-color: var(--color-accent);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    align-items: flex-start;
+  }
+
+  .state-empty-headline {
+    margin: 0;
+    font-weight: var(--weight-semibold);
+    font-size: var(--text-body);
   }
 </style>

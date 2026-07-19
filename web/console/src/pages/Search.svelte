@@ -173,7 +173,21 @@
     {#if sessionExpired}
       <p class="state state-error" role="alert">Session expired — sign in again.</p>
     {:else if !hasSearched}
-      <p class="state state-empty">Run a search to see matching claims.</p>
+      <div class="state state-empty">
+        <p class="state-empty-headline">Run a search to see matching claims.</p>
+        <p class="state-empty-hint">Try a subject, predicate, or value fragment.</p>
+        <div class="example-chips" role="group" aria-label="Example queries">
+          <button type="button" class="example-chip" onclick={() => { query = 'CATL'; }}>
+            <span aria-hidden="true">⌖</span> CATL
+          </button>
+          <button type="button" class="example-chip" onclick={() => { query = 'battery'; }}>
+            <span aria-hidden="true">⌖</span> battery
+          </button>
+          <button type="button" class="example-chip" onclick={() => { query = 'revenue'; }}>
+            <span aria-hidden="true">⌖</span> revenue
+          </button>
+        </div>
+      </div>
     {:else}
       <StateBox
         loading={loading}
@@ -489,12 +503,66 @@
   }
 
   .state-error {
-    background: var(--overlay-danger-soft);
+    background: var(--surface-danger-soft);
     border-color: var(--color-danger);
   }
 
   .state-empty {
+    /* Was a one-line italic gray-on-void nothing-here. Now a teaching
+     * panel: opaque accent-soft surface, headline, hint, example chips. */
+    background: var(--surface-accent-soft);
+    border-color: var(--color-accent);
+    color: var(--text-primary);
+    font-style: normal;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    align-items: flex-start;
+  }
+
+  .state-empty-headline {
+    margin: 0;
+    font-weight: var(--weight-semibold);
+    font-size: var(--text-body);
+  }
+
+  .state-empty-hint {
+    margin: 0;
     color: var(--text-secondary);
-    font-style: italic;
+    font-size: var(--text-label);
+  }
+
+  .example-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    margin-top: var(--space-xs);
+  }
+
+  .example-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    min-height: 36px;
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-md);
+    border: var(--border-hairline);
+    background: var(--surface-active-nav);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    cursor: pointer;
+    transition: border-color var(--duration-fast) var(--ease-out-quart),
+      color var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .example-chip:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  .example-chip span {
+    color: var(--color-accent);
+    font-size: 0.9em;
   }
 </style>

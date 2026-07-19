@@ -400,7 +400,12 @@
   {#if sessionExpired}
     <p class="state state-error" role="alert">Session expired — sign in again.</p>
   {:else if !hasLoaded}
-    <p class="state state-empty">Enter a subject to view its claims.</p>
+    <div class="state state-empty-cta">
+      <p class="state-empty-cta-headline">Enter a subject to view its claims.</p>
+      <p class="state-empty-cta-hint">
+        Search above, or click any galaxy node on Home to open its claim timeline here.
+      </p>
+    </div>
   {:else if viewMode === 'galaxy'}
     {@const focusId = activeEntityId}
     <GalaxyGraph
@@ -1056,12 +1061,38 @@
   }
 
   .state-error {
-    background: var(--overlay-danger-soft);
+    /* Opaque danger surface — old overlay-danger-soft wash failed AA. */
+    background: var(--surface-danger-soft);
     border-color: var(--color-danger);
   }
 
+  /* The main "Enter a subject" state becomes a teaching panel; the
+   * secondary empty states stay one-liners (they're inline next to a
+   * populated UI, not the page's primary content). */
   .state-empty {
     color: var(--text-secondary);
     font-style: italic;
+  }
+
+  .state-empty-cta {
+    background: var(--surface-accent-soft);
+    border-color: var(--color-accent);
+    color: var(--text-primary);
+    font-style: normal;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    align-items: flex-start;
+  }
+
+  .state-empty-cta-headline {
+    margin: 0;
+    font-weight: var(--weight-semibold);
+  }
+
+  .state-empty-cta-hint {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--text-label);
   }
 </style>

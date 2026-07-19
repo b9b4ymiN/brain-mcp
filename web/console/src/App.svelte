@@ -431,8 +431,12 @@
   }
 
   .logout:hover {
-    background: var(--overlay-ink-06);
-    color: var(--text-primary);
+    /* Danger hint on hover: signals 'this ends the session' without
+     * making the button look destructive at rest. Cockpit voice: the
+     * ejector-seat handle is muted until you reach for it. */
+    background: var(--surface-active-nav);
+    color: var(--color-danger);
+    border-color: var(--color-danger);
   }
 
   /* ── Main + flash ─────────────────────────────────────────────────── */
@@ -683,7 +687,8 @@
       clip: rect(0 0 0 0);
     }
 
-    /* Row 2: nav as horizontal-scroll strip with cyan divider. */
+    /* Row 2: nav as horizontal-scroll strip with cyan divider. The right
+     * edge fades into the void so users see there's more to scroll. */
     .primary-nav {
       order: 3;
       width: 100%;
@@ -695,6 +700,10 @@
       gap: var(--space-xs);
       border-top: 1px solid oklch(0.78 0.13 195 / 0.15);
       scrollbar-width: none;
+      /* Fade the right edge — visible "more here →" affordance without
+       * adding scroll arrows or chevrons that would clutter the HUD. */
+      -webkit-mask-image: linear-gradient(to right, #000 0%, #000 88%, transparent 100%);
+      mask-image: linear-gradient(to right, #000 0%, #000 88%, transparent 100%);
     }
 
     .primary-nav::-webkit-scrollbar {

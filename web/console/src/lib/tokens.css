@@ -213,7 +213,9 @@
   --duration-slow: 400ms; /* camera moves, panel reveals */
   --duration-breathe: 12s; /* ambient nebula breathing loop */
   --duration-warp: 600ms; /* page-transition hyperspace streak */
-  --duration-scan: 4s; /* HoloPanel scan line sweep */
+  --duration-scan: 6s; /* HoloPanel scan line sweep — slowed from 4s after
+                        * the 2026-07-19 audit flagged visual noise on the
+                        * Operations grid (6 HoloPanels × 4s sweep = busy). */
   --duration-ping: 1.8s; /* pulsar ping on selected nodes */
 
   /* ── Layout ─────────────────────────────────────────────────────────── */

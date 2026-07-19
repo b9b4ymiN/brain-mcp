@@ -637,6 +637,12 @@
       empty={visibleProposals.length === 0}
       emptyText="No pending proposals."
     >
+      {#snippet emptySnippet()}
+        <p class="inbox-empty-hint">
+          Claims staged by <code>brain_extract</code> or <code>brain_propose</code>
+          will land here for review.
+        </p>
+      {/snippet}
       <ul class="proposal-list" aria-label="Pending proposals">
         {#each visibleProposals as p (p.proposal_id)}
           <li class="proposal-card">
@@ -1351,5 +1357,16 @@
     /* Opaque surface — the old --overlay-ink-06 wash was 1.0:1 on hover. */
     background: var(--surface-active-nav);
     color: var(--text-primary);
+  }
+
+  .inbox-empty-hint {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--text-label);
+  }
+
+  .inbox-empty-hint code {
+    font-family: var(--font-mono);
+    color: var(--holo-cyan);
   }
 </style>
