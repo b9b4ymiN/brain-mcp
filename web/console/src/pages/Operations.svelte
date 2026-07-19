@@ -356,32 +356,43 @@
   )
 </script>
 
-<section class="page page-operations">
-  <h1>Operations</h1>
-  <p class="tagline">
-    Trust + clients + jobs + evals + backup health. Each card is independently
-    refreshed.
-  </p>
-
-  <div class="toolbar">
-    <button type="button" onclick={() => void refreshAll()}>
-      Refresh all
+<section class="ops-page">
+  <header class="ops-page-head">
+    <div>
+      <h1>Operations</h1>
+      <p class="ops-tagline">
+        Trust, clients, jobs, evals, and backup health. Each panel refreshes independently.
+      </p>
+    </div>
+    <button type="button" class="ops-refresh-all" onclick={() => void refreshAll()}>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
+        <path d="M21 3v5h-5" />
+      </svg>
+      <span>Refresh all</span>
     </button>
-  </div>
+  </header>
 
-  <div class="grid">
-    <!-- ── Trust ───────────────────────────────────────────────────────── -->
-    <section class="card card-trust" aria-label="Trust surface">
-      <header class="card-head">
+  <div class="ops-grid">
+    <!-- ── Trust (primary surface — engineer acts on this) ────────────── -->
+    <section class="ops-panel ops-panel--primary" aria-label="Trust surface">
+      <header class="ops-panel-head">
         <h2>Trust</h2>
         <button
           type="button"
-          class="mini"
+          class="ops-icon-btn"
           onclick={() => void refreshTrust()}
           disabled={trustLoading}
           aria-label="Refresh trust"
         >
-          {trustLoading ? '…' : 'Refresh'}
+          {#if trustLoading}
+            <span aria-hidden="true">…</span>
+          {:else}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
+              <path d="M21 3v5h-5" />
+            </svg>
+          {/if}
         </button>
       </header>
       <StateBox
@@ -393,105 +404,90 @@
         emptyText="No contradictions or stale flags."
       >
         {#if trustData}
-          {#if trustData.contradictions.length > 0}
-            <h3 class="subhead">Contradictions ({trustData.contradictions.length})</h3>
-            <ul class="flag-list">
-              {#each trustData.contradictions as flag, i (`c-${i}`)}
-                {#if flag.kind === 'contradiction'}
-                  <li class="flag flag-contradiction">
-                    <span class="badge">contradiction</span>
-                    <span class="flag-ids">
-                      {#each flag.claim_ids as id, j (`c-${i}-${j}`)}
-                        <span class="mono">{id}</span>{#if j < flag.claim_ids.length - 1}<span>, </span>{/if}
-                      {/each}
-                    </span>
-                  </li>
+          <div class="ops-trust-body">
+            <div class="ops-trust-col">
+              <h3 class="ops-section-label">
+                Contradictions
+                {#if trustData.contradictions.length > 0}
+                  <span class="ops-count ops-count--danger">{trustData.contradictions.length}</span>
                 {/if}
-              {/each}
-            </ul>
-          {/if}
-          {#if trustData.stale.length > 0}
-            <h3 class="subhead">Stale ({trustData.stale.length})</h3>
-            <ul class="flag-list">
-              {#each trustData.stale as flag, i (`s-${i}`)}
-                {#if flag.kind === 'stale'}
-                  <li class="flag flag-stale">
-                    <span class="badge">stale · {flag.days_since_modified}d</span>
-                    <span class="mono">{flag.claim_id}</span>
-                  </li>
+              </h3>
+              {#if trustData.contradictions.length > 0}
+                <ul class="ops-flag-list">
+                  {#each trustData.contradictions as flag, i (`c-${i}`)}
+                    {#if flag.kind === 'contradiction'}
+                      <li class="ops-flag ops-flag--danger">
+                        <span class="ops-flag-ids">
+                          {#each flag.claim_ids as id, j (`c-${i}-${j}`)}
+                            <code class="ops-mono">{id}</code>{#if j < flag.claim_ids.length - 1}<span class="ops-flag-sep">,</span>{/if}
+                          {/each}
+                        </span>
+                      </li>
+                    {/if}
+                  {/each}
+                </ul>
+              {:else}
+                <p class="ops-empty-inline">None.</p>
+              {/if}
+            </div>
+
+            <div class="ops-trust-col">
+              <h3 class="ops-section-label">
+                Stale
+                {#if trustData.stale.length > 0}
+                  <span class="ops-count ops-count--warning">{trustData.stale.length}</span>
                 {/if}
-              {/each}
-            </ul>
-          {/if}
+              </h3>
+              {#if trustData.stale.length > 0}
+                <ul class="ops-flag-list">
+                  {#each trustData.stale as flag, i (`s-${i}`)}
+                    {#if flag.kind === 'stale'}
+                      <li class="ops-flag ops-flag--warning">
+                        <span class="ops-flag-days">{flag.days_since_modified}d</span>
+                        <code class="ops-mono">{flag.claim_id}</code>
+                      </li>
+                    {/if}
+                  {/each}
+                </ul>
+              {:else}
+                <p class="ops-empty-inline">None.</p>
+              {/if}
+            </div>
+          </div>
+
           {#if trustData.retrieval_trace}
-            <h3 class="subhead">Retrieval trace</h3>
-            <p class="trace-reason">{trustData.retrieval_trace.reason}</p>
-            <p class="trace-meta">
-              Included: {trustData.retrieval_trace.included_claim_ids.length}
-              · Excluded: {trustData.retrieval_trace.excluded_claim_ids.length}
-            </p>
+            <div class="ops-trust-trace">
+              <h3 class="ops-section-label">Retrieval trace</h3>
+              <p class="ops-trace-reason">{trustData.retrieval_trace.reason}</p>
+              <p class="ops-meta">
+                Included: <span class="ops-mono">{trustData.retrieval_trace.included_claim_ids.length}</span>
+                · Excluded: <span class="ops-mono">{trustData.retrieval_trace.excluded_claim_ids.length}</span>
+              </p>
+            </div>
           {/if}
         {/if}
       </StateBox>
     </section>
 
-    <!-- ── Clients ─────────────────────────────────────────────────────── -->
-    <section class="card card-clients" aria-label="Registered clients">
-      <header class="card-head">
-        <h2>Clients</h2>
-        <button
-          type="button"
-          class="mini"
-          onclick={() => void refreshClients()}
-          disabled={clientsLoading}
-          aria-label="Refresh clients"
-        >
-          {clientsLoading ? '…' : 'Refresh'}
-        </button>
-      </header>
-      <StateBox
-        loading={clientsLoading}
-        error={clientsError}
-        empty={clients.length === 0}
-        emptyText="No registered clients."
-      >
-        <table class="clients-table">
-          <thead>
-            <tr>
-              <th>Label</th>
-              <th>Client ID</th>
-              <th>Capabilities</th>
-              <th>Last active</th>
-              <th>Mutations</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each clients as c (c.client_id)}
-              <tr>
-                <td>{c.label}</td>
-                <td class="mono">{c.client_id}</td>
-                <td>{c.capabilities.join(', ')}</td>
-                <td>{formatDate(c.last_active_at)}</td>
-                <td>{c.mutation_count}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </StateBox>
-    </section>
-
-    <!-- ── Jobs ────────────────────────────────────────────────────────── -->
-    <section class="card card-jobs" aria-label="Job queue">
-      <header class="card-head">
+    <!-- ── Jobs (inline metrics — no hero-metric template) ─────────────── -->
+    <section class="ops-panel" aria-label="Job queue">
+      <header class="ops-panel-head">
         <h2>Jobs</h2>
         <button
           type="button"
-          class="mini"
+          class="ops-icon-btn"
           onclick={() => void refreshJobs()}
           disabled={jobsLoading}
           aria-label="Refresh jobs"
         >
-          {jobsLoading ? '…' : 'Refresh'}
+          {#if jobsLoading}
+            <span aria-hidden="true">…</span>
+          {:else}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
+              <path d="M21 3v5h-5" />
+            </svg>
+          {/if}
         </button>
       </header>
       <StateBox
@@ -501,39 +497,96 @@
         emptyText="No job summary available."
       >
         {#if jobs}
-          <div class="big-numbers" role="group" aria-label="Job counts">
-            <div class="big-number">
-              <span class="big-number-value">{jobs.active}</span>
-              <span class="big-number-label">Active</span>
-            </div>
-            <div class="big-number">
-              <span class="big-number-value">{jobs.queued}</span>
-              <span class="big-number-label">Queued</span>
-            </div>
-            <div class="big-number">
-              <span class="big-number-value">{jobs.failed}</span>
-              <span class="big-number-label">Failed</span>
-            </div>
+          <div class="ops-stat-row" role="group" aria-label="Job counts">
+            <span class="ops-stat">
+              <span class="ops-stat-value">{jobs.active}</span>
+              <span class="ops-stat-label">active</span>
+            </span>
+            <span class="ops-stat-sep" aria-hidden="true">·</span>
+            <span class="ops-stat">
+              <span class="ops-stat-value">{jobs.queued}</span>
+              <span class="ops-stat-label">queued</span>
+            </span>
+            <span class="ops-stat-sep" aria-hidden="true">·</span>
+            <span class="ops-stat" class:ops-stat--danger={jobs.failed > 0}>
+              <span class="ops-stat-value">{jobs.failed}</span>
+              <span class="ops-stat-label">failed</span>
+            </span>
           </div>
         {/if}
       </StateBox>
     </section>
 
-    <!-- ── Evals ───────────────────────────────────────────────────────── -->
-    <section class="card card-evals" aria-label="Domain evals">
-      <header class="card-head">
+    <!-- ── Clients (wide — table needs room) ──────────────────────────── -->
+    <section class="ops-panel ops-panel--wide" aria-label="Registered clients">
+      <header class="ops-panel-head">
+        <h2>Clients</h2>
+        <button
+          type="button"
+          class="ops-icon-btn"
+          onclick={() => void refreshClients()}
+          disabled={clientsLoading}
+          aria-label="Refresh clients"
+        >
+          {#if clientsLoading}
+            <span aria-hidden="true">…</span>
+          {:else}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
+              <path d="M21 3v5h-5" />
+            </svg>
+          {/if}
+        </button>
+      </header>
+      <StateBox
+        loading={clientsLoading}
+        error={clientsError}
+        empty={clients.length === 0}
+        emptyText="No registered clients."
+      >
+        <div class="ops-table-scroll">
+          <table class="ops-clients-table">
+            <thead>
+              <tr>
+                <th>Label</th>
+                <th>Client ID</th>
+                <th>Capabilities</th>
+                <th>Last active</th>
+                <th>Mutations</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each clients as c (c.client_id)}
+                <tr>
+                  <td>{c.label}</td>
+                  <td><code class="ops-mono">{c.client_id}</code></td>
+                  <td>{c.capabilities.join(', ')}</td>
+                  <td>{formatDate(c.last_active_at)}</td>
+                  <td><span class="ops-mono">{c.mutation_count}</span></td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      </StateBox>
+    </section>
+
+    <!-- ── Evals ──────────────────────────────────────────────────────── -->
+    <section class="ops-panel" aria-label="Domain evals">
+      <header class="ops-panel-head">
         <h2>Evals</h2>
       </header>
-      <form class="evals-form" onsubmit={refreshEvals}>
-        <label for="evals-domain">Domain</label>
+      <form class="ops-evals-form" onsubmit={refreshEvals}>
+        <label for="evals-domain" class="ops-field-label">Domain</label>
         <input
           id="evals-domain"
+          class="ops-input"
           type="text"
           placeholder="e.g. stocks"
           bind:value={evalsDomain}
           disabled={evalsLoading}
         />
-        <button type="submit" disabled={evalsLoading}>
+        <button type="submit" class="ops-btn ops-btn--ghost" disabled={evalsLoading}>
           {evalsLoading ? 'Loading…' : 'Load'}
         </button>
       </form>
@@ -544,9 +597,9 @@
         emptyText="Enter a domain to load the eval summary."
       >
         {#if evals}
-          <dl class="evals-fields">
-            <div><dt>Cases</dt><dd>{evals.case_count}</dd></div>
-            <div><dt>Passed</dt><dd>{evals.passed}</dd></div>
+          <dl class="ops-fields">
+            <div><dt>Cases</dt><dd><span class="ops-mono">{evals.case_count}</span></dd></div>
+            <div><dt>Passed</dt><dd><span class="ops-mono">{evals.passed}</span></dd></div>
             <div>
               <dt>Abstention invariant</dt>
               <dd>{evals.abstention_passed ? 'passed' : 'failed'}</dd>
@@ -557,18 +610,25 @@
       </StateBox>
     </section>
 
-    <!-- ── Backup health ──────────────────────────────────────────────── -->
-    <section class="card card-backup" aria-label="Backup health">
-      <header class="card-head">
+    <!-- ── Backup health (wide — pairs with Evals on desktop) ─────────── -->
+    <section class="ops-panel ops-panel--wide" aria-label="Backup health">
+      <header class="ops-panel-head">
         <h2>Backup health</h2>
         <button
           type="button"
-          class="mini"
+          class="ops-icon-btn"
           onclick={() => void refreshBackup()}
           disabled={backupLoading}
           aria-label="Refresh backup health"
         >
-          {backupLoading ? '…' : 'Refresh'}
+          {#if backupLoading}
+            <span aria-hidden="true">…</span>
+          {:else}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
+              <path d="M21 3v5h-5" />
+            </svg>
+          {/if}
         </button>
       </header>
       <StateBox
@@ -578,7 +638,7 @@
         emptyText="No backup health available."
       >
         {#if backup}
-          <dl class="backup-fields">
+          <dl class="ops-fields">
             <div><dt>Last backup</dt><dd>{formatDate(backup.last_backup_at)}</dd></div>
             <div>
               <dt>Restore drill</dt>
@@ -592,7 +652,7 @@
             </div>
           </dl>
           {#if !backup.last_restore_drill_ok}
-            <p class="callout" role="note">
+            <p class="ops-callout ops-callout--warning" role="note">
               The restore-drill harness ships in Phase F. The current value is
               honestly false — no drill has run yet.
             </p>
@@ -600,38 +660,49 @@
         {/if}
       </StateBox>
     </section>
+  </div>
 
-    <!-- ── Hard purge ─────────────────────────────────────────────────── -->
-    <section
-      class="card card-purge"
-      aria-label="Hard purge (destructive)"
-    >
-      <header class="card-head">
+  <!-- ── Hard purge (destructive — isolated, full visual separation) ──── -->
+  <section class="ops-destructive" aria-label="Hard purge (destructive)">
+    <header class="ops-destructive-head">
+      <span class="ops-destructive-icon" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+          <line x1="12" y1="9" x2="12" y2="13" />
+          <line x1="12" y1="17" x2="12.01" y2="17" />
+        </svg>
+      </span>
+      <div class="ops-destructive-title">
         <h2>Hard purge</h2>
-      </header>
-      <p class="warning-callout" role="note">
-        Hard purge destroys content keys irreversibly. The flow is: preview →
-        read warning + type the server nonce + re-authenticate → confirm.
-      </p>
-      <label for="purge-input">Object ids (one per line)</label>
+        <p class="ops-destructive-sub">Destroys content keys irreversibly.</p>
+      </div>
+    </header>
+    <p class="ops-destructive-flow">
+      Preview the targets, read the full warning, type the server nonce verbatim,
+      re-authenticate, then confirm. Every gate must pass before the execute fires.
+    </p>
+    <div class="ops-destructive-form">
+      <label for="purge-input" class="ops-field-label">Object ids (one per line)</label>
       <textarea
         id="purge-input"
+        class="ops-textarea"
         rows="4"
         placeholder={'sha256:...\nsha256:...'}
         bind:value={purgeInput}
         disabled={purgePreviewing}
       ></textarea>
-      <div class="row">
+      <div class="ops-destructive-actions">
         <button
           type="button"
+          class="ops-btn ops-btn--danger"
           onclick={() => void startPurgePreview()}
           disabled={purgePreviewing}
         >
-          {purgePreviewing ? 'Loading…' : 'Preview'}
+          {purgePreviewing ? 'Loading…' : 'Preview purge'}
         </button>
       </div>
-    </section>
-  </div>
+    </div>
+  </section>
 </section>
 
 {#if purgeDialogOpen && purgeWarning && purgePreview}
@@ -647,316 +718,588 @@
 {/if}
 
 <style>
-  .page {
-    padding: 1.5rem 0;
-  }
-
-  .tagline {
-    margin: 0.25rem 0 1rem;
-    opacity: 0.75;
-  }
-
-  .toolbar {
-    margin: 0 0 1rem;
-  }
-
-  .toolbar button,
-  .mini {
-    padding: 0.35rem 0.7rem;
-    border-radius: 0.3rem;
-    border: 1px solid rgba(127, 127, 127, 0.45);
-    background: rgba(127, 127, 127, 0.15);
-    color: inherit;
-    font: inherit;
-    cursor: pointer;
-    font-size: 0.82rem;
-  }
-
-  .toolbar button:hover:not(:disabled),
-  .mini:hover:not(:disabled),
-  .toolbar button:focus-visible:not(:disabled),
-  .mini:focus-visible:not(:disabled) {
-    background: rgba(127, 127, 127, 0.25);
-  }
-
-  .mini:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
-  }
-
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
-    gap: 0.85rem;
-  }
-
-  .card {
-    padding: 0.85rem 1rem;
-    border-radius: 0.5rem;
-    border: 1px solid rgba(127, 127, 127, 0.35);
-    background: rgba(127, 127, 127, 0.04);
+  /* ── Page shell ─────────────────────────────────────────────────────── */
+  .ops-page {
+    padding: var(--space-lg) 0;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--space-lg);
   }
 
-  .card-purge {
-    border-color: rgba(190, 70, 70, 0.55);
-    background: rgba(190, 70, 70, 0.05);
-  }
-
-  .card-head {
+  .ops-page-head {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
-    gap: 0.5rem;
-  }
-
-  .card-head h2 {
-    margin: 0;
-    font-size: 1rem;
-  }
-
-  .subhead {
-    margin: 0.5rem 0 0.25rem;
-    font-size: 0.78rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    opacity: 0.7;
-  }
-
-  .flag-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: grid;
-    gap: 0.25rem;
-  }
-
-  .flag {
-    display: flex;
+    gap: var(--space-md);
     flex-wrap: wrap;
-    gap: 0.4rem;
-    align-items: center;
-    padding: 0.3rem 0.45rem;
-    border-radius: 0.3rem;
-    background: rgba(127, 127, 127, 0.06);
-    font-size: 0.85rem;
   }
 
-  .badge {
-    padding: 0.15rem 0.4rem;
-    border-radius: 0.25rem;
-    background: rgba(127, 127, 127, 0.25);
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    font-weight: 600;
-  }
-
-  .flag-contradiction {
-    background: rgba(190, 70, 70, 0.12);
-  }
-
-  .flag-contradiction .badge {
-    background: rgba(190, 70, 70, 0.4);
-  }
-
-  .flag-stale {
-    background: rgba(190, 130, 70, 0.1);
-  }
-
-  .flag-stale .badge {
-    background: rgba(190, 130, 70, 0.35);
-  }
-
-  .flag-ids {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.15rem;
-  }
-
-  .trace-reason {
-    margin: 0.25rem 0 0.15rem;
-    font-size: 0.85rem;
-    word-break: break-word;
-  }
-
-  .trace-meta {
+  .ops-page-head h1 {
     margin: 0;
-    font-size: 0.8rem;
-    opacity: 0.7;
+    font-family: var(--font-display);
+    font-size: var(--text-headline);
+    font-weight: var(--weight-semibold);
+    letter-spacing: var(--text-headline-tracking);
+    line-height: var(--text-headline-leading);
   }
 
-  .clients-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.85rem;
+  .ops-tagline {
+    margin: var(--space-xs) 0 0;
+    color: var(--text-secondary);
+    font-size: var(--text-body);
+    max-width: var(--content-measure);
   }
 
-  .clients-table th,
-  .clients-table td {
-    text-align: left;
-    padding: 0.4rem 0.5rem;
-    border-bottom: 1px solid rgba(127, 127, 127, 0.25);
-    word-break: break-word;
-    vertical-align: top;
-  }
-
-  .clients-table th {
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    opacity: 0.65;
-  }
-
-  .big-numbers {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 0.5rem;
-  }
-
-  .big-number {
-    display: flex;
-    flex-direction: column;
+  /* ── Shared button vocabulary (token-driven, ≥44px touch targets) ───── */
+  .ops-btn {
+    display: inline-flex;
     align-items: center;
-    padding: 0.6rem 0.4rem;
-    border-radius: 0.4rem;
-    background: rgba(127, 127, 127, 0.08);
-  }
-
-  .big-number-value {
-    font-size: 1.75rem;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .big-number-label {
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    opacity: 0.7;
-  }
-
-  .evals-form {
-    display: grid;
-    grid-template-columns: max-content 1fr auto;
-    gap: 0.4rem;
-    align-items: center;
-    margin-bottom: 0.5rem;
-  }
-
-  .evals-form input,
-  .evals-form button {
-    padding: 0.4rem 0.55rem;
-    border-radius: 0.3rem;
-    border: 1px solid rgba(127, 127, 127, 0.45);
-    background: inherit;
-    color: inherit;
-    font: inherit;
-  }
-
-  .evals-form button {
-    background: rgba(127, 127, 127, 0.15);
+    justify-content: center;
+    gap: var(--space-xs);
+    min-height: 44px;
+    padding: var(--space-sm) var(--space-md);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    letter-spacing: var(--text-label-tracking);
     cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-quart),
+      border-color var(--duration-fast) var(--ease-out-quart);
   }
 
-  .evals-form button:disabled {
-    opacity: 0.55;
-    cursor: not-allowed;
-  }
-
-  .evals-fields,
-  .backup-fields {
-    margin: 0;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
-    gap: 0.25rem 1rem;
-    font-size: 0.85rem;
-  }
-
-  .evals-fields div,
-  .backup-fields div {
-    display: flex;
-    gap: 0.4rem;
-  }
-
-  .evals-fields dt,
-  .backup-fields dt {
-    opacity: 0.6;
-    font-size: 0.78rem;
-    min-width: 7rem;
-  }
-
-  .evals-fields dd,
-  .backup-fields dd {
-    margin: 0;
-  }
-
-  .callout {
-    margin: 0.5rem 0 0;
-    padding: 0.4rem 0.6rem;
-    border-radius: 0.3rem;
-    border: 1px solid rgba(190, 130, 70, 0.5);
-    background: rgba(190, 130, 70, 0.12);
-    font-size: 0.82rem;
-  }
-
-  .warning-callout {
-    margin: 0 0 0.5rem;
-    padding: 0.5rem 0.7rem;
-    border-radius: 0.35rem;
-    border: 1px solid rgba(190, 70, 70, 0.5);
-    background: rgba(190, 70, 70, 0.12);
-    font-size: 0.85rem;
-  }
-
-  label {
-    font-size: 0.8rem;
-    opacity: 0.85;
-  }
-
-  textarea {
-    width: 100%;
-    padding: 0.45rem 0.55rem;
-    border-radius: 0.35rem;
-    border: 1px solid rgba(127, 127, 127, 0.5);
-    background: inherit;
-    color: inherit;
-    font: inherit;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    resize: vertical;
-  }
-
-  .row {
-    display: flex;
-    gap: 0.4rem;
-    margin-top: 0.4rem;
-  }
-
-  .row button {
-    padding: 0.45rem 0.8rem;
-    border-radius: 0.35rem;
-    border: 1px solid rgba(190, 70, 70, 0.55);
-    background: rgba(190, 70, 70, 0.18);
-    color: inherit;
-    font: inherit;
-    cursor: pointer;
-    font-weight: 600;
-  }
-
-  .row button:hover:not(:disabled),
-  .row button:focus-visible:not(:disabled) {
-    background: rgba(190, 70, 70, 0.28);
-  }
-
-  .row button:disabled {
+  .ops-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
 
-  .mono {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.82em;
+  .ops-btn--ghost:hover:not(:disabled) {
+    background: var(--overlay-ink-06);
+    border-color: var(--color-ink-faint);
+  }
+
+  .ops-btn--danger {
+    background: var(--overlay-danger-strong);
+    border-color: var(--color-danger);
+    color: var(--text-primary);
+    font-weight: var(--weight-semibold);
+  }
+
+  .ops-btn--danger:hover:not(:disabled) {
+    background: var(--color-danger);
+  }
+
+  .ops-refresh-all {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
+    min-height: 44px;
+    padding: var(--space-sm) var(--space-md);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    background: var(--overlay-ink-06);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    letter-spacing: var(--text-label-tracking);
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .ops-refresh-all:hover {
+    background: var(--overlay-ink-10);
+  }
+
+  .ops-refresh-all svg {
+    flex-shrink: 0;
+  }
+
+  /* Icon button — square ≥44×44, visually compact via icon */
+  .ops-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+    padding: var(--space-xs);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-quart),
+      color var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .ops-icon-btn:hover:not(:disabled) {
+    background: var(--overlay-ink-06);
+    color: var(--text-primary);
+  }
+
+  .ops-icon-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* ── Panel grid (breaks identical-card-grid anti-pattern via tiers) ── */
+  .ops-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--space-md);
+  }
+
+  @media (min-width: 48rem) {
+    .ops-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  @media (min-width: 64rem) {
+    .ops-grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+    /* Trust (primary) + Clients (table) span 2 cols — breaks the grid's
+       uniformity. The remaining panels (Jobs, Evals, Backup) are 1 col. */
+    .ops-panel--primary,
+    .ops-panel--wide {
+      grid-column: span 2;
+    }
+  }
+
+  /* ── Panel base (Flat-By-Default: no shadow at rest) ───────────────── */
+  .ops-panel {
+    padding: var(--space-md);
+    border: var(--border-hairline);
+    border-radius: var(--radius-lg);
+    background: var(--surface-flat);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  /* Primary tier — Trust gets a hair more visual weight (surface-elevated)
+     without crossing into "different card chassis" territory. */
+  .ops-panel--primary {
+    background: var(--surface-raised);
+  }
+
+  .ops-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+  }
+
+  .ops-panel-head h2 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: var(--text-title);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0;
+    line-height: var(--text-title-leading);
+  }
+
+  /* Section labels — sentence case (kills the tracked-uppercase eyebrow).
+     A count badge carries emphasis when there's something to act on. */
+  .ops-section-label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin: 0 0 var(--space-xs);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--text-primary);
+    letter-spacing: 0;
+  }
+
+  .ops-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.5rem;
+    height: 1.25rem;
+    padding: 0 var(--space-xs);
+    border-radius: var(--radius-pill);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: var(--weight-medium);
+    line-height: 1;
+  }
+
+  .ops-count--danger {
+    background: var(--overlay-danger-strong);
+    color: var(--text-primary);
+  }
+
+  .ops-count--warning {
+    background: var(--overlay-accent-soft);
+    color: var(--color-accent);
+  }
+
+  /* ── Trust internal layout (2-col on desktop) ──────────────────────── */
+  .ops-trust-body {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--space-md);
+  }
+
+  @media (min-width: 40rem) {
+    .ops-trust-body {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+
+  .ops-trust-col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
+  .ops-trust-trace {
+    margin-top: var(--space-sm);
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--color-hairline);
+  }
+
+  .ops-trace-reason {
+    margin: 0 0 var(--space-xs);
+    color: var(--text-primary);
+    font-size: var(--text-body);
+    word-break: break-word;
+  }
+
+  .ops-meta {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--text-mono);
+  }
+
+  /* ── Flag list (contradictions + stale) ────────────────────────────── */
+  .ops-flag-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
+  .ops-flag {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+    align-items: center;
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-sm);
+    background: var(--overlay-ink-04);
+    font-size: var(--text-body);
+  }
+
+  .ops-flag--danger {
+    background: var(--overlay-danger-soft);
+  }
+
+  .ops-flag--warning {
+    background: var(--overlay-accent-soft);
+  }
+
+  .ops-flag-ids {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    align-items: baseline;
+  }
+
+  .ops-flag-sep {
+    color: var(--text-tertiary);
+  }
+
+  .ops-flag-days {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--color-accent);
+    font-weight: var(--weight-medium);
+  }
+
+  .ops-empty-inline {
+    margin: 0;
+    color: var(--text-tertiary);
+    font-size: var(--text-body);
+  }
+
+  /* ── Inline stat row (kills hero-metric template) ────────────────────
+     Machine counts are mono (Mono-Marks-Machine Rule); labels are
+     sentence-case Inter, sitting inline — not stacked big-over-small. */
+  .ops-stat-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-sm);
+    padding: var(--space-sm) 0;
+  }
+
+  .ops-stat {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-xs);
+  }
+
+  .ops-stat-value {
+    font-family: var(--font-mono);
+    font-size: 1.25rem;
+    font-weight: var(--weight-medium);
+    color: var(--text-primary);
+    line-height: 1;
+  }
+
+  .ops-stat-label {
+    font-family: var(--font-body);
+    font-size: var(--text-body);
+    color: var(--text-secondary);
+  }
+
+  .ops-stat--danger .ops-stat-value {
+    color: var(--color-danger);
+  }
+
+  .ops-stat-sep {
+    color: var(--text-tertiary);
+    font-size: var(--text-body);
+  }
+
+  /* ── Clients table (horizontal scroll on mobile) ───────────────────── */
+  .ops-table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .ops-clients-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--text-body);
+  }
+
+  .ops-clients-table th,
+  .ops-clients-table td {
+    text-align: left;
+    padding: var(--space-sm);
+    border-bottom: 1px solid var(--color-hairline);
+    word-break: break-word;
+    vertical-align: top;
+  }
+
+  .ops-clients-table th {
+    /* Sentence case (kills tracked-uppercase eyebrow). Label weight only. */
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    color: var(--text-secondary);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .ops-clients-table tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  /* ── Evals form (stacks on mobile, row on tablet+) ─────────────────── */
+  .ops-evals-form {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-sm);
+  }
+
+  @media (min-width: 30rem) {
+    .ops-evals-form {
+      grid-template-columns: max-content 1fr auto;
+      align-items: center;
+    }
+  }
+
+  .ops-field-label {
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    color: var(--text-secondary);
+    letter-spacing: 0;
+  }
+
+  .ops-input {
+    width: 100%;
+    min-height: 44px;
+    padding: var(--space-sm) var(--space-sm);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    background: var(--surface-sunken);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
+    transition: border-color var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .ops-input::placeholder {
+    color: var(--text-tertiary);
+  }
+
+  .ops-input:focus {
+    outline: none;
+    border-color: var(--color-accent);
+  }
+
+  .ops-input:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  /* ── Fields (dl — Evals + Backup) ──────────────────────────────────── */
+  .ops-fields {
+    margin: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+    gap: var(--space-xs) var(--space-md);
+    font-size: var(--text-body);
+  }
+
+  .ops-fields div {
+    display: flex;
+    gap: var(--space-sm);
+    align-items: baseline;
+  }
+
+  .ops-fields dt {
+    color: var(--text-secondary);
+    font-size: var(--text-label);
+    min-width: 7rem;
+  }
+
+  .ops-fields dd {
+    margin: 0;
+    color: var(--text-primary);
+  }
+
+  /* ── Callout (info/warning — full border, never a side-stripe) ─────── */
+  .ops-callout {
+    margin: var(--space-sm) 0 0;
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-md);
+    font-size: var(--text-body);
+    color: var(--text-secondary);
+  }
+
+  .ops-callout--warning {
+    border-color: var(--color-accent);
+    background: var(--overlay-accent-soft);
+    color: var(--text-primary);
+  }
+
+  /* ── Hard purge (destructive — isolated, distinct visual tier) ───────
+     Full danger border (never a side-stripe). Separated from the benign
+     panels by spacing and by a full-width chassis change. */
+  .ops-destructive {
+    margin-top: var(--space-md);
+    padding: var(--space-lg);
+    border: 1px solid var(--color-danger);
+    border-radius: var(--radius-lg);
+    background: var(--overlay-danger-soft);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+  }
+
+  .ops-destructive-head {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-md);
+  }
+
+  .ops-destructive-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-md);
+    background: var(--overlay-danger-strong);
+    color: var(--text-primary);
+  }
+
+  .ops-destructive-title h2 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: var(--text-title);
+    font-weight: var(--weight-semibold);
+    color: var(--text-primary);
+    letter-spacing: 0;
+  }
+
+  .ops-destructive-sub {
+    margin: var(--space-xs) 0 0;
+    color: var(--color-danger);
+    font-size: var(--text-body);
+    font-weight: var(--weight-medium);
+  }
+
+  .ops-destructive-flow {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: var(--text-body);
+    max-width: var(--content-measure);
+    line-height: var(--text-body-leading);
+  }
+
+  .ops-destructive-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  .ops-textarea {
+    width: 100%;
+    min-height: 88px;
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-md);
+    background: var(--surface-sunken);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    line-height: var(--text-mono-leading);
+    resize: vertical;
+    transition: border-color var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .ops-textarea::placeholder {
+    color: var(--text-tertiary);
+  }
+
+  .ops-textarea:focus {
+    outline: none;
+    border-color: var(--color-danger);
+  }
+
+  .ops-textarea:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .ops-destructive-actions {
+    display: flex;
+    gap: var(--space-sm);
+  }
+
+  /* ── Mono inline (machine output — Mono-Marks-Machine Rule) ────────── */
+  .ops-mono {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--text-secondary);
+    word-break: break-all;
   }
 </style>

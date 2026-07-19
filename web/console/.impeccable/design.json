@@ -1,0 +1,275 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-19T10:00:00Z",
+  "title": "Design System: Brain Console",
+  "extensions": {
+    "colorMeta": {
+      "void": {
+        "role": "neutral",
+        "displayName": "Void",
+        "canonical": "oklch(0.13 0.03 270)",
+        "tonalRamp": [
+          "oklch(0.08 0.03 270)",
+          "oklch(0.13 0.03 270)",
+          "oklch(0.18 0.03 270)",
+          "oklch(0.25 0.025 270)",
+          "oklch(0.35 0.02 270)",
+          "oklch(0.50 0.015 270)",
+          "oklch(0.70 0.01 270)",
+          "oklch(0.90 0.005 270)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "oklch(0.94 0.008 250)",
+        "tonalRamp": [
+          "oklch(0.30 0.01 250)",
+          "oklch(0.40 0.01 250)",
+          "oklch(0.50 0.01 250)",
+          "oklch(0.60 0.01 250)",
+          "oklch(0.70 0.008 250)",
+          "oklch(0.80 0.008 250)",
+          "oklch(0.90 0.008 250)",
+          "oklch(0.94 0.008 250)"
+        ]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Stellar Amber",
+        "canonical": "oklch(0.82 0.14 75)",
+        "tonalRamp": [
+          "oklch(0.30 0.10 75)",
+          "oklch(0.40 0.12 75)",
+          "oklch(0.50 0.13 75)",
+          "oklch(0.60 0.14 75)",
+          "oklch(0.66 0.14 75)",
+          "oklch(0.75 0.14 75)",
+          "oklch(0.82 0.14 75)",
+          "oklch(0.92 0.10 75)"
+        ]
+      },
+      "danger": {
+        "role": "tertiary",
+        "displayName": "Signal Red",
+        "canonical": "oklch(0.62 0.20 25)",
+        "tonalRamp": [
+          "oklch(0.25 0.15 25)",
+          "oklch(0.35 0.18 25)",
+          "oklch(0.45 0.20 25)",
+          "oklch(0.55 0.20 25)",
+          "oklch(0.62 0.20 25)",
+          "oklch(0.72 0.18 25)",
+          "oklch(0.82 0.14 25)",
+          "oklch(0.92 0.08 25)"
+        ]
+      },
+      "success": {
+        "role": "tertiary",
+        "displayName": "Confirmed Green",
+        "canonical": "oklch(0.70 0.15 145)",
+        "tonalRamp": [
+          "oklch(0.25 0.10 145)",
+          "oklch(0.35 0.13 145)",
+          "oklch(0.45 0.14 145)",
+          "oklch(0.55 0.15 145)",
+          "oklch(0.70 0.15 145)",
+          "oklch(0.80 0.13 145)",
+          "oklch(0.88 0.10 145)",
+          "oklch(0.94 0.06 145)"
+        ]
+      },
+      "info": {
+        "role": "tertiary",
+        "displayName": "Survey Blue",
+        "canonical": "oklch(0.72 0.10 240)",
+        "tonalRamp": [
+          "oklch(0.25 0.08 240)",
+          "oklch(0.35 0.09 240)",
+          "oklch(0.45 0.10 240)",
+          "oklch(0.55 0.10 240)",
+          "oklch(0.72 0.10 240)",
+          "oklch(0.82 0.08 240)",
+          "oklch(0.88 0.06 240)",
+          "oklch(0.94 0.04 240)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Bricolage Grotesque Display",
+        "purpose": "Hero wordmark, empty-state headline only. Never on data."
+      },
+      "headline": {
+        "displayName": "Bricolage Grotesque Headline",
+        "purpose": "Page titles, section leads."
+      },
+      "title": {
+        "displayName": "System Sans Title",
+        "purpose": "Card headers, panel titles."
+      },
+      "body": {
+        "displayName": "System Sans Body",
+        "purpose": "Default text, descriptions. 65-75ch line length cap."
+      },
+      "label": {
+        "displayName": "System Sans Label",
+        "purpose": "Buttons, nav, table headers, status tags. Sentence case."
+      },
+      "mono": {
+        "displayName": "JetBrains Mono",
+        "purpose": "Machine output: UUIDs, predicates, values, code."
+      }
+    },
+    "shadows": [
+      {
+        "name": "lift",
+        "value": "0 8px 32px rgba(0,0,0,0.5)",
+        "purpose": "Dialogs, home hero bottom panel. Diffuse and deep."
+      },
+      {
+        "name": "hover-glow",
+        "value": "0 0 0 1px var(--accent), 0 0 24px rgba(245,179,66,0.18)",
+        "purpose": "Focused primary action, active graph node. Amber-tinted, rare."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-out-quart",
+        "value": "cubic-bezier(0.25, 1, 0.5, 1)",
+        "purpose": "Default easing for state transitions (150-250ms)."
+      },
+      {
+        "name": "ease-out-expo",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Camera moves, panel reveals (400-600ms)."
+      },
+      {
+        "name": "breathe",
+        "value": "cubic-bezier(0.4, 0, 0.6, 1)",
+        "purpose": "Ambient nebula breathing (12s loop, infinite)."
+      }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "md", "value": "768px" },
+      { "name": "lg", "value": "1024px" },
+      { "name": "xl", "value": "1280px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Amber-on-void primary action. Highest-contrast element on the page by design.",
+      "html": "<button class=\"ds-btn-primary\">Enter the graph</button>",
+      "css": ".ds-btn-primary { background: #f5b342; color: #05070d; padding: 10px 18px; border: none; border-radius: 8px; font-family: Inter, system-ui, sans-serif; font-size: 0.75rem; font-weight: 500; letter-spacing: 0.04em; cursor: pointer; transition: background 200ms cubic-bezier(0.25,1,0.5,1); } .ds-btn-primary:hover { background: #c8861f; } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 1px #f5b342, 0 0 24px rgba(245,179,66,0.18); } .ds-btn-primary:active { background: #c8861f; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Transparent secondary action. Cancel, dismiss, retry.",
+      "html": "<button class=\"ds-btn-ghost\">Cancel</button>",
+      "css": ".ds-btn-ghost { background: transparent; color: #e8ecf4; padding: 10px 18px; border: 1px solid #2a3142; border-radius: 8px; font-family: Inter, system-ui, sans-serif; font-size: 0.75rem; font-weight: 500; letter-spacing: 0.04em; cursor: pointer; transition: background 150ms cubic-bezier(0.25,1,0.5,1); } .ds-btn-ghost:hover { background: rgba(255,255,255,0.06); border-color: #3a4255; } .ds-btn-ghost:focus-visible { outline: none; border-color: #f5b342; }"
+    },
+    {
+      "name": "Search Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Ink-deep field with hairline border. Border swaps to amber on focus, no glow ring.",
+      "html": "<input class=\"ds-input\" placeholder=\"Search subjects, predicates, values…\" />",
+      "css": ".ds-input { background: #0a0e17; color: #e8ecf4; padding: 10px 14px; border: 1px solid #2a3142; border-radius: 8px; font-family: Inter, system-ui, sans-serif; font-size: 0.9375rem; transition: border-color 150ms cubic-bezier(0.25,1,0.5,1); } .ds-input::placeholder { color: #5c6675; } .ds-input:focus { outline: none; border-color: #f5b342; }"
+    },
+    {
+      "name": "Nav Link",
+      "kind": "nav",
+      "refersTo": "nav-link",
+      "description": "Ink-muted default, ink + subtle raised-surface pill on active. Never an amber underline or side-stripe.",
+      "html": "<nav><a class=\"ds-nav-link active\">Home</a><a class=\"ds-nav-link\">Search</a></nav>",
+      "css": ".ds-nav-link { display: inline-block; padding: 8px 14px; color: #9aa3b2; text-decoration: none; border-radius: 8px; font-family: Inter, system-ui, sans-serif; font-size: 0.75rem; font-weight: 500; letter-spacing: 0.04em; transition: background 150ms cubic-bezier(0.25,1,0.5,1), color 150ms cubic-bezier(0.25,1,0.5,1); } .ds-nav-link:hover { color: #e8ecf4; background: rgba(255,255,255,0.04); } .ds-nav-link.active { color: #e8ecf4; background: rgba(255,255,255,0.06); }"
+    },
+    {
+      "name": "Mono ID Chip",
+      "kind": "chip",
+      "refersTo": "mono-chip",
+      "description": "JetBrains Mono for machine output — claim IDs, predicates. Surface-raised background, hairline border.",
+      "html": "<code class=\"ds-mono-chip\">01234567-89ab-cdef</code>",
+      "css": ".ds-mono-chip { display: inline-block; padding: 2px 8px; background: #11151f; color: #9aa3b2; border: 1px solid #2a3142; border-radius: 4px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 0.8125rem; }"
+    },
+    {
+      "name": "Surface Panel",
+      "kind": "card",
+      "refersTo": "surface-panel",
+      "description": "Flat-by-default content surface. Surface-raised bg, 1px hairline, no shadow at rest. Shadow only on lift.",
+      "html": "<section class=\"ds-panel\"><h3 class=\"ds-panel-title\">Selected node</h3><p class=\"ds-panel-body\">Claim captured 2h ago.</p></section>",
+      "css": ".ds-panel { background: #11151f; border: 1px solid #2a3142; border-radius: 8px; padding: 16px; } .ds-panel-title { margin: 0 0 8px; color: #e8ecf4; font-family: 'Space Grotesk', system-ui, sans-serif; font-size: 1.125rem; font-weight: 600; } .ds-panel-body { margin: 0; color: #9aa3b2; font-family: Inter, system-ui, sans-serif; font-size: 0.9375rem; line-height: 1.55; }"
+    },
+    {
+      "name": "Flash Banner",
+      "kind": "custom",
+      "refersTo": "flash-banner",
+      "description": "Full-width status strip. Surface-raised with semantic background at 14% opacity.",
+      "html": "<div class=\"ds-flash ds-flash-success\" role=\"status\" aria-live=\"polite\"><span>Signed in.</span></div>",
+      "css": ".ds-flash { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 12px; background: #11151f; border-top: 1px solid #2a3142; border-radius: 8px; font-family: Inter, system-ui, sans-serif; font-size: 0.875rem; color: #e8ecf4; } .ds-flash-success { background: rgba(95,187,122,0.14); } .ds-flash-error { background: rgba(232,90,90,0.14); } .ds-flash-info { background: rgba(106,168,216,0.14); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Observer's Deck",
+    "overview": "Brain Console is the operational surface for a long-term knowledge system — the place an engineer sits to review what an agent has learned, trace a claim to its capture event, and watch the shape of the knowledge move. The metaphor is the observation deck of a deep-space survey vessel: a single darkened console, ambient light kept low, every surface tuned so the graph stays the focal point and the chrome disappears into the task. The system is dark by scene, not by default; the user works in long, focused review sessions under low ambient light, often mid-investigation, and a bright UI would fight that state.",
+    "keyCharacteristics": [
+      "Dark scene, light type — the void is the canvas, ink carries every word at AA or better.",
+      "One accent, used sparingly — Stellar Amber is the single saturated color, capped at ≤10% of any screen.",
+      "The graph is the product — galaxy visuals are first-class content, never decoration.",
+      "Quiet depth — atmosphere and motion reward attention without demanding it.",
+      "Provenance over polish — mono marks machine output; the sans carries human voice."
+    ],
+    "rules": [
+      {
+        "name": "The One Voice Rule",
+        "body": "Amber occupies ≤10% of any given screen. Its rarity is the point. If amber starts carrying decoration, the system has lost its voice — revert.",
+        "section": "colors"
+      },
+      {
+        "name": "The Cool Void Rule",
+        "body": "The body background is the void, full stop. No warm-neutral body backgrounds, no cream/sand/paper, no off-whites. Warmth is carried by accent and imagery, never by the canvas.",
+        "section": "colors"
+      },
+      {
+        "name": "The Mono-Marks-Machine Rule",
+        "body": "If the text was generated by the system (UUIDs, predicates, JSON values, event sequences), it is mono. If a human wrote it (labels, descriptions, microcopy), it is sans.",
+        "section": "typography"
+      },
+      {
+        "name": "The No-Eyebrow Rule",
+        "body": "No tracked-uppercase eyebrows above every section. Section cadence is carried by headline size and spacing rhythm.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-By-Default Rule",
+        "body": "Surfaces are flat at rest. Shadows appear only as a response to state (lifted dialogs, hover, focus) or where a panel genuinely floats over the galaxy canvas.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do use OKLCH for every color decision. Hex values are the sRGB projection for tooling; OKLCH in parens is canonical.",
+      "Do keep amber ≤10% of any screen (The One Voice Rule).",
+      "Do mark machine output (UUIDs, predicates, values, code) with JetBrains Mono.",
+      "Do respect prefers-reduced-motion: every animation needs an instant or crossfade alternative.",
+      "Do cover every state (loading, empty, error, permission, hover, focus, active, disabled).",
+      "Do use the four-step elevation ramp for depth, not shadows."
+    ],
+    "donts": [
+      "Don't use border-left or border-right greater than 1px as a colored accent (the side-stripe ban).",
+      "Don't use background-clip: text with a gradient. Single solid color; emphasis via weight or size.",
+      "Don't apply blur/backdrop-filter decoratively across the surface. Glass earns its place on the home hero panel and dialogs — nowhere else.",
+      "Don't ship the hero-metric template (big number, small label, supporting stats, gradient accent).",
+      "Don't repeat identical icon-heading-text cards in a grid. Cards are the lazy answer.",
+      "Don't put a tracked-uppercase eyebrow above every section.",
+      "Don't use Inter as a reflex for display headings. Space Grotesk is the display voice.",
+      "Don't warm-tint the body background. The Cool Void Rule.",
+      "Don't convey state by color alone. Always carry a label or shape."
+    ]
+  }
+}

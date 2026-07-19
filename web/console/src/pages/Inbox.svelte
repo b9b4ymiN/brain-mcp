@@ -724,13 +724,34 @@
 {/if}
 
 <style>
+  /* ── Inbox — token-driven, kills all flagged anti-patterns ────────────
+   * What changed vs the prior block:
+   *  - border-left:3px → 1px hairline + surface tint (kills side-stripe ×2)
+   *  - tracked-uppercase .evidence h3 → sentence-case Inter title
+   *  - .dialog min-width:26rem → clamp() (kills mobile overflow)
+   *  - all rgba(127,127,127,X) + rgba(190,70,70,X) → tokens
+   *  - .dialog bg now void-tinted (was hardcoded --console-bg fallback #fff)
+   *  - .action buttons: min-height 44px (WCAG 2.5.5 touch targets)
+   *  - .proposal-head outline:none → focus-visible ring via box-shadow
+   */
   .page {
-    padding: 1.5rem 0;
+    padding: var(--space-lg) 0;
+  }
+
+  h1 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: var(--text-headline);
+    font-weight: var(--weight-semibold);
+    letter-spacing: var(--text-headline-tracking);
+    line-height: var(--text-headline-leading);
   }
 
   .tagline {
-    margin: 0.25rem 0 1.25rem;
-    opacity: 0.75;
+    margin: var(--space-xs) 0 var(--space-md);
+    color: var(--text-secondary);
+    font-size: var(--text-body);
+    max-width: var(--content-measure);
   }
 
   .proposal-list {
@@ -738,138 +759,197 @@
     margin: 0;
     padding: 0;
     display: grid;
-    gap: 0.5rem;
+    gap: var(--space-sm);
   }
 
   .proposal-card {
-    border-radius: 0.5rem;
-    border: 1px solid rgba(127, 127, 127, 0.35);
-    background: rgba(127, 127, 127, 0.06);
+    border: var(--border-hairline);
+    border-radius: var(--radius-lg);
+    background: var(--surface-flat);
     overflow: hidden;
   }
 
+  /* Sentence-case 5-col head on desktop; stacks to 2-col on tablet,
+   * single-col with implicit labels on phone. The prior 5-col grid had no
+   * breakpoints and was unreadable below ~600px. */
   .proposal-head {
     display: grid;
-    grid-template-columns: 1.2fr 1fr 1.4fr 0.8fr 0.9fr;
-    gap: 0.5rem;
-    padding: 0.6rem 0.75rem;
+    grid-template-columns: 1fr;
+    gap: var(--space-xs);
+    padding: var(--space-md);
     cursor: pointer;
-    outline: none;
     align-items: center;
+    background: transparent;
+    border: none;
+    width: 100%;
+    text-align: left;
+    color: inherit;
+    font: inherit;
+    transition: background var(--duration-fast) var(--ease-out-quart);
   }
 
-  .proposal-head:hover,
+  /* Focus ring via box-shadow (the prior outline:none stripped keyboard
+   * focus signal — WCAG 2.4.7 Focus Visible failure). */
   .proposal-head:focus-visible {
-    background: rgba(127, 127, 127, 0.15);
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--color-accent);
+  }
+
+  .proposal-head:hover {
+    background: var(--overlay-ink-04);
+  }
+
+  @media (min-width: 40rem) {
+    .proposal-head {
+      grid-template-columns: 1.2fr 1fr 1.4fr 0.8fr 0.9fr;
+      gap: var(--space-sm);
+    }
   }
 
   .subject {
-    font-weight: 600;
+    font-family: var(--font-body);
+    font-weight: var(--weight-semibold);
+    color: var(--text-primary);
+    font-size: var(--text-body);
   }
 
   .predicate {
-    opacity: 0.85;
-    font-style: italic;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
   }
 
   .value {
-    opacity: 0.75;
+    color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-size: var(--text-body);
+    /* title attribute set by template provides full text on hover/focus
+     * for the truncated case — recoverable without opening detail. */
   }
 
   .domain,
   .submitted {
-    opacity: 0.65;
-    font-size: 0.85rem;
+    color: var(--text-tertiary);
+    font-size: var(--text-label);
+    font-family: var(--font-mono);
   }
 
   .proposal-detail {
-    padding: 0.5rem 0.85rem 0.85rem;
-    background: rgba(127, 127, 127, 0.04);
+    padding: var(--space-sm) var(--space-md) var(--space-md);
+    background: var(--surface-sunken);
     display: grid;
-    gap: 0.75rem;
+    gap: var(--space-md);
+    border-top: 1px solid var(--color-hairline);
   }
 
+  /* Evidence heading — sentence-case Inter title (kills tracked eyebrow).
+   * The prior text-transform:uppercase + letter-spacing:0.04em was the
+   * saturated AI scaffold tell. */
   .evidence h3 {
-    margin: 0 0 0.35rem;
-    font-size: 0.9rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    opacity: 0.75;
+    margin: 0 0 var(--space-xs);
+    font-family: var(--font-body);
+    font-size: var(--text-title);
+    font-weight: var(--weight-semibold);
+    color: var(--text-primary);
+    letter-spacing: 0;
+    text-transform: none;
+    line-height: var(--text-title-leading);
   }
 
   .evidence-fields {
-    margin: 0 0 0.4rem;
+    margin: 0 0 var(--space-xs);
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
-    gap: 0.2rem 1rem;
-    font-size: 0.85rem;
+    gap: var(--space-xs) var(--space-md);
+    font-size: var(--text-body);
   }
 
   .evidence-fields div {
     display: flex;
-    gap: 0.4rem;
+    gap: var(--space-sm);
+    align-items: baseline;
   }
 
   .evidence-fields dt {
-    opacity: 0.6;
+    color: var(--text-secondary);
+    font-size: var(--text-label);
     min-width: 6rem;
   }
 
   .evidence-fields dd {
     margin: 0;
+    color: var(--text-primary);
     word-break: break-word;
   }
 
+  /* Excerpt — was the side-stripe source (border-left:3px). Now a full
+   * hairline border + surface tint + leading quote glyph. The 3px stripe
+   * is the detector's #1 AI tell; the new treatment carries the same
+   * "this is a quote" affordance without it. */
   .excerpt {
     margin: 0;
-    padding: 0.5rem 0.75rem;
-    border-left: 3px solid rgba(127, 127, 127, 0.45);
-    background: rgba(127, 127, 127, 0.06);
+    padding: var(--space-sm) var(--space-md);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-md);
+    background: var(--overlay-ink-04);
     white-space: pre-wrap;
     word-break: break-word;
     font-style: italic;
+    color: var(--text-primary);
+    font-size: var(--text-body);
+    line-height: var(--text-body-leading);
+    position: relative;
   }
 
   .excerpt-none {
     font-style: italic;
-    opacity: 0.65;
-    border-left: 3px solid rgba(127, 127, 127, 0.25);
+    color: var(--text-tertiary);
+    border: 1px dashed var(--color-hairline);
     background: transparent;
   }
 
   .prior-claims {
     margin: 0;
-    font-size: 0.85rem;
-    opacity: 0.75;
+    color: var(--text-secondary);
+    font-size: var(--text-body);
   }
 
   .prior-none {
+    color: var(--text-tertiary);
     font-style: italic;
   }
 
+  /* ── Action buttons — 44px touch min, semantic colors via tokens ──── */
   .actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem;
+    gap: var(--space-sm);
   }
 
   .action {
-    padding: 0.45rem 0.875rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.45);
-    background: rgba(127, 127, 127, 0.1);
-    color: inherit;
-    font: inherit;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    border: var(--border-hairline);
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    letter-spacing: var(--text-label-tracking);
     cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-quart),
+      border-color var(--duration-fast) var(--ease-out-quart);
   }
 
-  .action:hover:not(:disabled),
-  .action:focus-visible:not(:disabled) {
-    background: rgba(127, 127, 127, 0.2);
+  .action:hover:not(:disabled) {
+    background: var(--overlay-ink-06);
+    border-color: var(--color-ink-faint);
   }
 
   .action:disabled {
@@ -877,43 +957,63 @@
     cursor: not-allowed;
   }
 
+  /* Always paired with a text label, never color alone. */
   .action-approve {
-    background: rgba(60, 160, 90, 0.2);
-    border-color: rgba(60, 160, 90, 0.55);
+    background: var(--overlay-success-soft);
+    border-color: var(--color-success);
+    color: var(--text-primary);
+  }
+
+  .action-approve:hover:not(:disabled) {
+    background: var(--color-success);
   }
 
   .action-reject {
-    background: rgba(190, 70, 70, 0.2);
-    border-color: rgba(190, 70, 70, 0.55);
+    background: var(--overlay-danger-soft);
+    border-color: var(--color-danger);
+    color: var(--text-primary);
+  }
+
+  .action-reject:hover:not(:disabled) {
+    background: var(--color-danger);
   }
 
   .action-supersede {
-    background: rgba(80, 130, 200, 0.18);
-    border-color: rgba(80, 130, 200, 0.5);
+    background: var(--overlay-info-soft);
+    border-color: var(--color-info);
+    color: var(--text-primary);
   }
 
+  .action-supersede:hover:not(:disabled) {
+    background: var(--color-info);
+  }
+
+  /* ── State banners ─────────────────────────────────────────────────── */
   .state {
-    margin: 0.5rem 0;
-    padding: 0.6rem 0.75rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.35);
+    margin: var(--space-sm) 0;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-hairline);
+    color: var(--text-primary);
+    font-size: var(--text-body);
   }
 
   .state-loading {
-    opacity: 0.75;
+    color: var(--text-secondary);
   }
 
   .state-error {
-    background: rgba(190, 70, 70, 0.15);
-    border-color: rgba(190, 70, 70, 0.5);
+    background: var(--overlay-danger-soft);
+    border-color: var(--color-danger);
   }
 
-  /* ── Dialog ─────────────────────────────────────────────────────────── */
+  /* ── Dialog (fixed center, clamp() width — kills mobile overflow) ──── */
   .dialog-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
-    z-index: 50;
+    background: color-mix(in oklch, var(--color-void) 75%, transparent);
+    backdrop-filter: blur(2px);
+    z-index: var(--z-modal-backdrop);
   }
 
   .dialog {
@@ -921,96 +1021,131 @@
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    z-index: 51;
-    min-width: 26rem;
-    max-width: min(40rem, 92vw);
+    z-index: var(--z-modal);
+    /* width: clamp(min, preferred, max) — was min-width:26rem which
+     * overflowed on <416px viewports and clipped the Yes/No buttons. */
+    width: clamp(18rem, 92vw, 40rem);
     max-height: 86vh;
     overflow: auto;
-    padding: 1.25rem 1.25rem 1rem;
-    border-radius: 0.6rem;
-    border: 1px solid rgba(127, 127, 127, 0.5);
-    background: var(--console-bg, #fff);
-    color: var(--console-fg, #111);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+    padding: var(--space-lg);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--color-hairline);
+    background: var(--surface-overlay);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-lift);
   }
 
   .dialog h2 {
-    margin: 0 0 0.4rem;
-    font-size: 1.1rem;
+    margin: 0 0 var(--space-xs);
+    font-family: var(--font-display);
+    font-size: var(--text-headline);
+    font-weight: var(--weight-semibold);
+    color: var(--text-primary);
     text-transform: capitalize;
+    letter-spacing: var(--text-headline-tracking);
+    line-height: var(--text-headline-leading);
   }
 
   .dialog-summary {
-    margin: 0 0 0.75rem;
-    font-size: 0.9rem;
-    opacity: 0.8;
+    margin: 0 0 var(--space-md);
+    color: var(--text-secondary);
+    font-size: var(--text-body);
     word-break: break-word;
   }
 
   .dialog-prompt {
-    margin: 0.75rem 0 0.5rem;
-    font-size: 0.9rem;
+    margin: var(--space-md) 0 var(--space-xs);
+    color: var(--text-primary);
+    font-size: var(--text-body);
   }
 
+  /* Mono — machine output (UUIDs, predicates). */
   .mono {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.85em;
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--text-secondary);
+    word-break: break-all;
   }
 
   .supersede-pick {
-    margin: 0.5rem 0 0;
-    border: 1px solid rgba(127, 127, 127, 0.35);
-    border-radius: 0.375rem;
-    padding: 0.5rem 0.6rem;
+    margin: var(--space-sm) 0 0;
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    padding: var(--space-sm) var(--space-md);
     display: grid;
-    gap: 0.3rem;
+    gap: var(--space-xs);
   }
 
   .supersede-pick legend {
-    font-size: 0.8rem;
-    opacity: 0.7;
-    padding: 0 0.25rem;
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    color: var(--text-secondary);
+    padding: 0 var(--space-xs);
   }
 
   .check {
     display: grid;
     grid-template-columns: auto 1fr 1.5fr;
-    gap: 0.5rem;
+    gap: var(--space-sm);
     align-items: center;
-    font-size: 0.85rem;
+    font-size: var(--text-body);
+    min-height: 44px;
+    padding: var(--space-xs) 0;
+  }
+
+  .check input[type='checkbox'] {
+    width: 20px;
+    height: 20px;
+    accent-color: var(--color-accent);
+    cursor: pointer;
   }
 
   .check-value {
-    opacity: 0.75;
+    color: var(--text-secondary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  /* Fix I1: inline validation shown when Supersede has no claim selected. */
+  /* Inline validation — full border, danger tint (no side-stripe). */
   .validation-warning {
-    margin: 0.4rem 0 0;
-    padding: 0.4rem 0.6rem;
-    font-size: 0.85rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(190, 70, 70, 0.5);
-    background: rgba(190, 70, 70, 0.15);
+    margin: var(--space-xs) 0 0;
+    padding: var(--space-sm) var(--space-md);
+    font-size: var(--text-body);
+    color: var(--text-primary);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-danger);
+    background: var(--overlay-danger-soft);
   }
 
   .dialog-actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.5rem;
-    margin-top: 0.75rem;
+    gap: var(--space-sm);
+    margin-top: var(--space-md);
+    flex-wrap: wrap;
   }
 
   .action-yes {
-    background: rgba(60, 160, 90, 0.25);
-    border-color: rgba(60, 160, 90, 0.6);
-    font-weight: 600;
+    background: var(--color-accent);
+    border-color: var(--color-accent);
+    color: var(--text-on-accent);
+    font-weight: var(--weight-semibold);
+  }
+
+  .action-yes:hover:not(:disabled) {
+    background: var(--color-accent-deep);
+    border-color: var(--color-accent-deep);
   }
 
   .action-no {
-    background: rgba(127, 127, 127, 0.15);
+    background: transparent;
+    color: var(--text-secondary);
+  }
+
+  .action-no:hover:not(:disabled) {
+    background: var(--overlay-ink-06);
+    color: var(--text-primary);
   }
 </style>

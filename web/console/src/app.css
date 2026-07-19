@@ -1,13 +1,141 @@
+/**
+ * Brain Console — global base styles.
+ *
+ * Design tokens live in lib/tokens.css (loaded before this file from main.ts).
+ * This file sets only the document-level defaults: canvas, typography base,
+ * selection, scrollbar, and the global font imports. Component-level styling
+ * lives in each component's co-located <style> block and consumes tokens.
+ */
+
+/* ── Web fonts (display + mono only) ─────────────────────────────────── */
+/* Body uses the OS system sans (no Google Font import) — see tokens.css.
+ * Bricolage Grotesque (display): instrument-label voice, not the overused
+ * Inter/Space Grotesk/Geist set. JetBrains Mono (machine output). */
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=JetBrains+Mono:wght@400;500&display=swap');
+
 :root {
-  color-scheme: light dark;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  line-height: 1.5;
+  color-scheme: dark;
+  /* The Cool Void Rule: body bg is the cool void, never warm-tinted. */
+  background-color: var(--surface-body);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: var(--text-body-leading);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  background-color: var(--surface-body);
+}
+
 body {
   margin: 0;
+  min-height: 100vh;
+  background-color: var(--surface-body);
+  color: var(--text-primary);
+}
+
+/* Headings default to the display voice (Space Grotesk). */
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  font-weight: var(--weight-semibold);
+  line-height: var(--text-headline-leading);
+  letter-spacing: var(--text-headline-tracking);
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: var(--text-display);
+  line-height: var(--text-display-leading);
+  letter-spacing: var(--text-display-tracking);
+}
+
+h2 {
+  font-size: var(--text-headline);
+}
+
+h3 {
+  font-size: var(--text-title);
+  letter-spacing: 0;
+  line-height: var(--text-title-leading);
+}
+
+p, li {
+  text-wrap: pretty;
+}
+
+/* Code default — Mono-Marks-Machine Rule. */
+code, kbd, samp, pre {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+}
+
+/* ── Selection — amber on void (rare, purposeful) ────────────────────── */
+::selection {
+  background: var(--overlay-accent-soft);
+  color: var(--text-primary);
+}
+
+/* ── Focus-visible — global keyboard ring (mouse clicks don't get it) ── */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Remove default button/input focus outline (we use box-shadow ring). */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: none;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--focus-ring);
+}
+
+/* ── Scrollbar — subtle, matches the dark scene ──────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-hairline) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--color-hairline);
+  border-radius: var(--radius-pill);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-faint);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+/* ── Reduced motion — every transition collapses to instant ──────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
 }

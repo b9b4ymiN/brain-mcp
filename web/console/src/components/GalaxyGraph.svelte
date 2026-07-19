@@ -198,20 +198,37 @@
     // from '3d' and let detection walk down.
     const requested = manualPreference ? requestedKind : '3d'
     const kind = detectRenderer(requested)
-    const instance = createRenderer(kind, {
+    // createRenderer is async — it dynamically imports the heavy renderer
+    // deps (3d-force-graph / three) so they only ship to the browser when
+    // a galaxy is actually rendered. We fire it without awaiting; the
+    // promise resolves into `renderer` and the next $effect cycle picks up
+    // the populated instance. We guard against mounting into a torn-down
+    // container (destroyed flag) or a superseded request (seq/fetchSeq).
+    void createRenderer(kind, {
       width: containerEl.clientWidth || 600,
       height,
+    }).then((instance) => {
+      if (destroyed) {
+        // Component unmounted while we were importing. Tear down the
+        // instance we just created so it doesn't leak.
+        instance.destroy()
+        return
+      }
+      if (containerEl === null) {
+        instance.destroy()
+        return
+      }
+      instance.mount(containerEl, payload!, {
+        onNodeClick: (node) => {
+          selected = node
+        },
+        onNodeHover: () => {
+          // Hover state could drive a cursor change; we don't need it for E2.2.
+        },
+      })
+      renderer = instance
+      activeKind = kind
     })
-    instance.mount(containerEl, payload, {
-      onNodeClick: (node) => {
-        selected = node
-      },
-      onNodeHover: () => {
-        // Hover state could drive a cursor change; we don't need it for E2.2.
-      },
-    })
-    renderer = instance
-    activeKind = kind
   }
 
   // After every successful fetch (or prop change that requires a re-mount),

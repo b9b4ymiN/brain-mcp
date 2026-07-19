@@ -73,3 +73,42 @@ backups/
 config/config.toml
 .env
 
+# Local AI-tooling session state (Playwright MCP screenshots etc.)
+.playwright-mcp/
+
+# Impeccable design skill — only the ephemeral working files are ignored.
+# Shared artifacts stay tracked so teammates and agents can read them:
+#   PRODUCT.md, DESIGN.md (repo root)
+#   .impeccable/config.json, .impeccable/design.json
+#   .impeccable/live/config.json
+#   .impeccable/critique/*.md
+# impeccable-ignore-start
+# Ephemeral output, runtime state, and per-dev overrides.
+# `**/` so the patterns match whether .impeccable/ sits at the repo root
+# or under a nested workspace (web/console/.impeccable/...).
+**/.impeccable/config.local.json
+**/.impeccable/hook.cache.json
+**/.impeccable/hook.pending.json
+**/.impeccable/*.png
+**/.impeccable/live/server.json
+**/.impeccable/live/sessions/
+**/.impeccable/live/previews/
+**/.impeccable/live/annotations/
+**/.impeccable/live/cache/
+**/.impeccable/live/manual-edit-apply-transaction.json
+**/.impeccable/live/manual-edit-events.jsonl
+**/.impeccable/live/manual-edit-evidence/
+**/.impeccable/live/pending-manual-edits.json
+**/.impeccable/live/deferred-svelte-component-accepts.json
+**/.impeccable/live/*.png
+**/.impeccable/assets/proof/
+**/.impeccable/critique/*.png
+# impeccable-ignore-end
+
+# Local impeccable skill installation (per-machine harness targets).
+# The skill itself is installable via `npx impeccable install`; we don't
+# vendor it. Same for the per-harness hook wiring under .claude/ + .github/.
+.claude/skills/impeccable/
+.claude/settings.local.json
+.github/skills/impeccable/
+.github/hooks/impeccable.json

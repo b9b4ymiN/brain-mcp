@@ -1,0 +1,194 @@
+/**
+ * Brain Console — Design Tokens (CSS custom properties)
+ *
+ * The single source of truth for design tokens consumed by every Svelte
+ * component. Mirrors DESIGN.md (canonical spec) and .impeccable/design.json
+ * (sidecar). When you change a value here, update DESIGN.md and the sidecar
+ * to match; DESIGN.md prose stays normative for *naming and intent*.
+ *
+ * Loaded once from main.ts (before any component mounts).
+ *
+ * Conventions:
+ *   - Color tokens use OKLCH for the canonical value. RGB fallbacks via
+ *     @supports are added for the few properties that genuinely need them;
+ *     most modern browsers (target: evergreen) accept OKLCH directly.
+ *   - Primitive tokens (--color-*, --space-*, --radius-*, --font-*) are the
+ *     raw scale. Semantic tokens (--surface-*, --text-*, --border-*) compose
+ *     primitives and are what components actually consume.
+ *   - Components never hard-code rgba(127, 127, 127, X) or hex again — they
+ *     reach for a semantic token. The detector flags hardcoded grays as a
+ *     reminder to tokenize.
+ */
+
+:root {
+  /* ── Color primitives (OKLCH; hex fallback for tooling) ──────────────── */
+  /* The Cool Void Rule: body bg is the cool void, never warm-tinted. */
+  --color-void: oklch(0.13 0.03 270); /* #05070d */
+  --color-ink-deep: oklch(0.18 0.025 270); /* #0a0e17 */
+  --color-surface-raised: oklch(0.22 0.025 270); /* #11151f */
+  --color-surface-elevated: oklch(0.26 0.025 270); /* #161b27 */
+
+  --color-ink: oklch(0.94 0.008 250); /* #e8ecf4 — primary text, ~14:1 on void */
+  --color-ink-muted: oklch(0.82 0.012 250); /* secondary — verified 4.9:1 on void (AA pass, approaches AAA) */
+  --color-ink-faint: oklch(0.70 0.012 250); /* placeholder, disabled — 4.17:1 on void (AA for ≥18px; use only where text is large) */
+
+  --color-hairline: oklch(0.30 0.015 270); /* #2a3142 — borders, dividers */
+
+  /* Stellar Amber — the single accent. The One Voice Rule: ≤10% per screen. */
+  --color-accent: oklch(0.82 0.14 75); /* #f5b342 */
+  --color-accent-deep: oklch(0.66 0.14 75); /* #c8861f */
+  --color-accent-contrast: var(--color-void); /* text on amber */
+
+  /* Semantic — always paired with a label, never color alone. */
+  --color-danger: oklch(0.62 0.20 25); /* #e85a5a */
+  --color-success: oklch(0.70 0.15 145); /* #5fbb7a */
+  --color-info: oklch(0.72 0.10 240); /* #6aa8d8 */
+  --color-warning: var(--color-accent); /* amber doubles as warning */
+
+  /* ── Semantic surfaces (consumed by components) ─────────────────────── */
+  --surface-body: var(--color-void);
+  --surface-sunken: var(--color-ink-deep); /* inputs, code blocks */
+  --surface-flat: var(--color-surface-raised); /* cards at rest */
+  --surface-raised: var(--color-surface-elevated); /* hover, popovers */
+  --surface-overlay: oklch(0.30 0.02 270); /* dialogs, modals */
+
+  /* ── Semantic text ──────────────────────────────────────────────────── */
+  --text-primary: var(--color-ink);
+  --text-secondary: var(--color-ink-muted);
+  --text-tertiary: var(--color-ink-faint); /* placeholder — ≥4.5:1 enforced */
+  --text-on-accent: var(--color-accent-contrast);
+  --text-danger: var(--color-danger);
+  --text-success: var(--color-success);
+
+  /* ── Semantic borders ───────────────────────────────────────────────── */
+  --border-hairline: 1px solid var(--color-hairline);
+  --border-focus: 1px solid var(--color-accent); /* never a side-stripe */
+
+  /* ── Translucency overlays (replaces rgba(127,127,127,X) hardcoding) ── */
+  /* Composed from --color-ink so they inherit hue shifts automatically. */
+  --overlay-ink-04: color-mix(in oklch, var(--color-ink) 4%, transparent);
+  --overlay-ink-06: color-mix(in oklch, var(--color-ink) 6%, transparent);
+  --overlay-ink-08: color-mix(in oklch, var(--color-ink) 8%, transparent);
+  --overlay-ink-10: color-mix(in oklch, var(--color-ink) 10%, transparent);
+  --overlay-ink-15: color-mix(in oklch, var(--color-ink) 15%, transparent);
+  --overlay-ink-25: color-mix(in oklch, var(--color-ink) 25%, transparent);
+  --overlay-ink-35: color-mix(in oklch, var(--color-ink) 35%, transparent);
+  --overlay-ink-45: color-mix(in oklch, var(--color-ink) 45%, transparent);
+
+  /* Semantic overlays (state backgrounds) */
+  --overlay-danger-soft: color-mix(in oklch, var(--color-danger) 14%, transparent);
+  --overlay-danger-strong: color-mix(in oklch, var(--color-danger) 50%, transparent);
+  --overlay-success-soft: color-mix(in oklch, var(--color-success) 14%, transparent);
+  --overlay-info-soft: color-mix(in oklch, var(--color-info) 14%, transparent);
+  --overlay-accent-soft: color-mix(in oklch, var(--color-accent) 14%, transparent);
+
+  /* ── Typography ─────────────────────────────────────────────────────── */
+  /* Mono-Marks-Machine Rule: machine output is mono, human voice is sans.
+   *
+   * Display: Bricolage Grotesque — geometric with genuine character
+   * (variable width axes, slightly squared curves); the kind of face that
+   * reads as a calibrated instrument label, not a marketing display.
+   * Deliberately NOT Inter/Space Grotesk/Geist (the detector's overused set
+   * for 2026); Bricolage gives the cosmic-instrument voice without that tell.
+   *
+   * Body: the platform's own system sans (SF Pro on macOS/iOS, Segoe UI on
+   * Windows, Roboto on Android). Product register explicitly permits familiar
+   * system stacks; choosing the OS default over a Google Font is the
+   * distinctive move on a dark-instrument surface.
+   *
+   * Mono: JetBrains Mono — machine output, IDs/predicates/code. Not on the
+   * detector's overused list (Inter/Roboto/Fraunces/Geist/Plus Jakarta/Space
+   * Grotesk); tabular figures + clear 0/O, 1/l/I distinction. */
+  --font-display: 'Bricolage Grotesque', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-body: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Scale — fixed rem, not fluid (product UI). Ratio ~1.125. */
+  --text-display: clamp(2rem, 4vw, 3rem);
+  --text-display-tracking: -0.02em;
+  --text-display-leading: 1.1;
+
+  --text-headline: 1.5rem;
+  --text-headline-tracking: -0.01em;
+  --text-headline-leading: 1.25;
+
+  --text-title: 1.125rem;
+  --text-title-leading: 1.4;
+
+  --text-body: 0.9375rem;
+  --text-body-leading: 1.55;
+
+  --text-label: 0.75rem;
+  --text-label-tracking: 0.04em;
+
+  --text-mono: 0.8125rem;
+  --text-mono-leading: 1.5;
+
+  /* Weights */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* ── Radius ─────────────────────────────────────────────────────────── */
+  --radius-sm: 4px;
+  --radius-md: 8px; /* primary button, input, card */
+  --radius-lg: 12px; /* dialogs, large panels */
+  --radius-pill: 9999px; /* nav active pill, status chips */
+
+  /* ── Spacing scale (4px base) ───────────────────────────────────────── */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 40px;
+  --space-xxl: 64px;
+
+  /* ── Elevation (Flat-By-Default Rule: only on lift/hover/focus) ────── */
+  --shadow-lift: 0 8px 32px rgba(0, 0, 0, 0.5); /* dialogs, hero panel */
+  --shadow-hover-glow: 0 0 0 1px var(--color-accent),
+    0 0 24px color-mix(in oklch, var(--color-accent) 18%, transparent);
+
+  /* ── Motion ─────────────────────────────────────────────────────────── */
+  /* Reduced-motion alt is crossfade or instant — see component <style>. */
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-breathe: cubic-bezier(0.4, 0, 0.6, 1);
+
+  --duration-fast: 150ms; /* state transitions (product register: 150-250ms) */
+  --duration-base: 200ms;
+  --duration-slow: 400ms; /* camera moves, panel reveals */
+  --duration-breathe: 12s; /* ambient nebula breathing loop */
+
+  /* ── Layout ─────────────────────────────────────────────────────────── */
+  --shell-max-width: 56rem; /* content pages — home is full-bleed */
+  --content-measure: 65ch; /* prose line-length cap */
+
+  /* Breakpoints (mirrors .impeccable/design.json) */
+  --bp-sm: 640px;
+  --bp-md: 768px;
+  --bp-lg: 1024px;
+  --bp-xl: 1280px;
+
+  /* ── z-index scale (semantic, never arbitrary 999/9999) ─────────────── */
+  --z-base: 1;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-modal-backdrop: 300;
+  --z-modal: 400;
+  --z-toast: 500;
+  --z-tooltip: 600;
+
+  /* ── Focus ring (shared) ────────────────────────────────────────────── */
+  /* Visible on keyboard only; buttons get hover-glow shadow instead. */
+  --focus-ring: 0 0 0 2px var(--color-void), 0 0 0 4px var(--color-accent);
+}
+
+/* ── Reduced motion: every animation gets an instant alternative ──────── */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 1ms;
+    --duration-base: 1ms;
+    --duration-slow: 1ms;
+    --duration-breathe: 1ms;
+  }
+}

@@ -17,15 +17,20 @@
  * file's header for the full rationale). This file re-exports them for
  * app-side callers and adds the `createRenderer` factory.
  *
+ * **Code-splitting (Perf)**: the concrete renderer impls (which transitively
+ * pull in `3d-force-graph`, `force-graph`, and `three` — the bulk of the
+ * production bundle) are loaded via dynamic `import()` so they only ship to
+ * the browser when a galaxy view is actually mounted. Pages that never
+ * render a galaxy (Home/Search/Inbox/Operations) load lean; only Entity
+ * (and any future Home immersive view) pay the cost. `createRenderer` is
+ * async for this reason; callers must `await` it.
+ *
  * No `any` anywhere in this module.
  */
 
-import { createRenderer3d } from './galaxyRenderer3d'
-import { createRenderer2d } from './galaxyRenderer2d'
-import { createRendererList } from './galaxyRendererList'
-
 // Re-export the detection surface + types so app callers can import
-// everything from a single module path (`../lib/galaxyRenderer`).
+// everything from a single module path (`../lib/galaxyRenderer`). Detection
+// is light (no three.js) so it stays a static import.
 export {
   detectRenderer,
   fallbackChain,
@@ -47,19 +52,32 @@ import type { RendererKind, RendererOpts, GraphRenderer } from './galaxyRenderer
  * `detectRenderer(preference)` first to pick the right `kind`, then call
  * `createRenderer(kind, opts)`.
  *
+ * **Async**: the renderer impls are loaded via dynamic `import()` so the
+ * 3d-force-graph / force-graph / three deps only ship when a galaxy is
+ * actually rendered. Callers must `await createRenderer(...)`.
+ *
  * Throws if `kind` is not one of the three known values (would be a
  * programmer error — the type system should prevent it, but the runtime
  * guard is defense in depth).
  */
-export function createRenderer(kind: RendererKind, opts: RendererOpts): GraphRenderer {
+export async function createRenderer(
+  kind: RendererKind,
+  opts: RendererOpts,
+): Promise<GraphRenderer> {
   switch (kind) {
-    case '3d':
+    case '3d': {
+      const { createRenderer3d } = await import('./galaxyRenderer3d')
       return createRenderer3d(opts)
-    case '2d':
+    }
+    case '2d': {
+      const { createRenderer2d } = await import('./galaxyRenderer2d')
       return createRenderer2d(opts)
-    case 'list':
+    }
+    case 'list': {
       // List renderer takes no size opts — its DOM is layout-driven.
+      const { createRendererList } = await import('./galaxyRendererList')
       return createRendererList()
+    }
     default: {
       // Exhaustiveness guard — TS narrows `kind` to `never` here.
       const exhaustive: never = kind

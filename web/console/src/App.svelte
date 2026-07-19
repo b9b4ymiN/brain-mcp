@@ -81,6 +81,7 @@
 </script>
 
 <header class="shell">
+  <a href="#main-content" class="skip-link">Skip to content</a>
   <h1>Brain Console</h1>
 
   {#if session.flash}
@@ -98,6 +99,7 @@
             <a
               href={`#/${page}`}
               class:active={isActive(page)}
+              aria-current={isActive(page) ? 'page' : undefined}
               onclick={(e) => {
                 e.preventDefault()
                 navigate(page)
@@ -113,7 +115,7 @@
   {/if}
 </header>
 
-<main class="shell-main">
+<main class="shell-main" id="main-content" tabindex="-1">
   {#if !session.isLoggedIn}
     <section class="login">
       <h2>Sign in</h2>
@@ -152,120 +154,218 @@
 </main>
 
 <style>
+  /* Skip-to-content link — visible on focus only (a11y). */
+  .skip-link {
+    position: absolute;
+    top: -100px;
+    left: 0;
+    padding: var(--space-sm) var(--space-md);
+    background: var(--color-accent);
+    color: var(--text-on-accent);
+    border-radius: var(--radius-md);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    text-decoration: none;
+    z-index: var(--z-toast);
+    transition: top var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .skip-link:focus-visible {
+    top: var(--space-sm);
+    outline: none;
+  }
+
   .shell {
-    max-width: 56rem;
+    max-width: var(--shell-max-width);
     margin: 0 auto;
-    padding: 1.5rem 1.5rem 0;
+    padding: var(--space-lg) var(--space-lg) 0;
   }
 
   h1 {
-    margin: 0 0 0.5rem;
-    font-size: 1.75rem;
-    font-weight: 650;
+    margin: 0 0 var(--space-sm);
+    font-family: var(--font-display);
+    font-size: var(--text-display);
+    font-weight: var(--weight-semibold);
+    letter-spacing: var(--text-display-tracking);
+    line-height: var(--text-display-leading);
   }
 
   nav ul {
     list-style: none;
     display: flex;
     flex-wrap: wrap;
-    gap: 0.25rem;
+    gap: var(--space-xs);
     padding: 0;
-    margin: 0 0 1rem;
+    margin: 0 0 var(--space-md);
   }
 
   nav a {
-    display: inline-block;
-    padding: 0.4rem 0.75rem;
-    border-radius: 0.375rem;
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
     text-decoration: none;
-    color: inherit;
-    opacity: 0.75;
+    color: var(--text-secondary);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    letter-spacing: var(--text-label-tracking);
+    transition: background var(--duration-fast) var(--ease-out-quart),
+      color var(--duration-fast) var(--ease-out-quart);
   }
 
   nav a:hover {
-    opacity: 1;
-    background: rgba(127, 127, 127, 0.15);
+    color: var(--text-primary);
+    background: var(--overlay-ink-04);
   }
 
   nav a.active {
-    opacity: 1;
-    background: rgba(127, 127, 127, 0.25);
-    font-weight: 600;
+    color: var(--text-primary);
+    background: var(--overlay-ink-06);
   }
 
   .logout {
-    margin: 0 0 1rem;
+    margin: 0 0 var(--space-md);
+    min-height: 44px;
+    padding: var(--space-sm) var(--space-md);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .logout:hover {
+    background: var(--overlay-ink-06);
+    color: var(--text-primary);
   }
 
   .shell-main {
-    max-width: 56rem;
+    max-width: var(--shell-max-width);
     margin: 0 auto;
-    padding: 0 1.5rem 2rem;
+    padding: 0 var(--space-lg) var(--space-xl);
+    outline: none;
   }
 
   .login {
     max-width: 24rem;
-    padding: 1.5rem 0;
+    padding: var(--space-lg) 0;
   }
 
   .login form {
     display: grid;
-    gap: 0.5rem;
-    margin-top: 0.75rem;
+    gap: var(--space-sm);
+    margin-top: var(--space-sm);
+  }
+
+  .login label {
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    color: var(--text-secondary);
   }
 
   .login input {
-    padding: 0.5rem 0.625rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.45);
-    background: inherit;
-    color: inherit;
-    font: inherit;
+    min-height: 44px;
+    padding: var(--space-sm) var(--space-sm);
+    border-radius: var(--radius-md);
+    border: var(--border-hairline);
+    background: var(--surface-sunken);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
+    transition: border-color var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .login input::placeholder {
+    color: var(--text-tertiary);
+  }
+
+  .login input:focus {
+    outline: none;
+    border-color: var(--color-accent);
   }
 
   .login button {
-    padding: 0.5rem 0.875rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.45);
-    background: rgba(127, 127, 127, 0.15);
-    color: inherit;
-    font: inherit;
+    min-height: 44px;
+    padding: var(--space-sm) var(--space-md);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    background: var(--color-accent);
+    color: var(--text-on-accent);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    letter-spacing: var(--text-label-tracking);
     cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .login button:hover:not(:disabled) {
+    background: var(--color-accent-deep);
+  }
+
+  .login button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
   }
 
   .hint {
-    opacity: 0.7;
-    margin: 0.25rem 0 0;
+    color: var(--text-secondary);
+    margin: var(--space-xs) 0 0;
+    font-size: var(--text-body);
   }
 
   .flash {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 1rem;
-    padding: 0.5rem 0.75rem;
-    margin: 0 0 1rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.4);
+    gap: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    margin: 0 0 var(--space-md);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-hairline);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
+    color: var(--text-primary);
   }
 
   .flash-success {
-    background: rgba(60, 160, 90, 0.18);
+    background: var(--overlay-success-soft);
   }
 
   .flash-error {
-    background: rgba(190, 70, 70, 0.18);
+    background: var(--overlay-danger-soft);
   }
 
   .flash-info {
-    background: rgba(80, 130, 200, 0.18);
+    background: var(--overlay-info-soft);
   }
 
   .flash button {
     background: transparent;
     border: none;
-    color: inherit;
+    color: var(--text-secondary);
     cursor: pointer;
-    font-weight: 600;
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* Mobile: shell padding tightens */
+  @media (max-width: 40rem) {
+    .shell,
+    .shell-main {
+      padding-left: var(--space-md);
+      padding-right: var(--space-md);
+    }
   }
 </style>
