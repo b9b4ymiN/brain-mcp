@@ -50,6 +50,7 @@
   } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
   import StateBox from '../components/StateBox.svelte'
+  import HoloPanel from '../components/HoloPanel.svelte'
   import DestructiveDialog from '../components/DestructiveDialog.svelte'
   import { formatDate } from '../lib/format'
 
@@ -359,6 +360,7 @@
 <section class="ops-page">
   <header class="ops-page-head">
     <div>
+      <p class="ops-kicker">Sector overview</p>
       <h1>Operations</h1>
       <p class="ops-tagline">
         Trust, clients, jobs, evals, and backup health. Each panel refreshes independently.
@@ -381,9 +383,15 @@
 
   <div class="ops-grid">
     <!-- ── Trust (primary surface — engineer acts on this) ────────────── -->
-    <section class="ops-panel ops-panel--primary" aria-label="Trust surface" aria-live="polite" aria-busy={trustLoading}>
-      <header class="ops-panel-head">
-        <h2>Trust</h2>
+    <HoloPanel
+      variant="primary"
+      label="Trust scanner"
+      title="Trust"
+      ariaLabel="Trust surface"
+      ariaLive="polite"
+      ariaBusy={trustLoading}
+    >
+      {#snippet actions()}
         <button
           type="button"
           class="ops-icon-btn"
@@ -400,7 +408,8 @@
             </svg>
           {/if}
         </button>
-      </header>
+      {/snippet}
+
       <StateBox
         loading={trustLoading}
         error={trustError}
@@ -473,12 +482,16 @@
           {/if}
         {/if}
       </StateBox>
-    </section>
+    </HoloPanel>
 
-    <!-- ── Jobs (inline metrics — no hero-metric template) ─────────────── -->
-    <section class="ops-panel" aria-label="Job queue" aria-live="polite" aria-busy={jobsLoading}>
-      <header class="ops-panel-head">
-        <h2>Jobs</h2>
+    <HoloPanel
+      label="Job queue"
+      title="Jobs"
+      ariaLabel="Job queue"
+      ariaLive="polite"
+      ariaBusy={jobsLoading}
+    >
+      {#snippet actions()}
         <button
           type="button"
           class="ops-icon-btn"
@@ -495,7 +508,8 @@
             </svg>
           {/if}
         </button>
-      </header>
+      {/snippet}
+
       <StateBox
         loading={jobsLoading}
         error={jobsError}
@@ -521,12 +535,17 @@
           </div>
         {/if}
       </StateBox>
-    </section>
+    </HoloPanel>
 
     <!-- ── Clients (wide — table needs room) ──────────────────────────── -->
-    <section class="ops-panel ops-panel--wide" aria-label="Registered clients" aria-live="polite" aria-busy={clientsLoading}>
-      <header class="ops-panel-head">
-        <h2>Clients</h2>
+    <HoloPanel
+      label="Registered clients"
+      title="Clients"
+      ariaLabel="Registered clients"
+      ariaLive="polite"
+      ariaBusy={clientsLoading}
+    >
+      {#snippet actions()}
         <button
           type="button"
           class="ops-icon-btn"
@@ -543,7 +562,8 @@
             </svg>
           {/if}
         </button>
-      </header>
+      {/snippet}
+
       <StateBox
         loading={clientsLoading}
         error={clientsError}
@@ -575,13 +595,14 @@
           </table>
         </div>
       </StateBox>
-    </section>
+    </HoloPanel>
 
     <!-- ── Evals ──────────────────────────────────────────────────────── -->
-    <section class="ops-panel" aria-label="Domain evals">
-      <header class="ops-panel-head">
-        <h2>Evals</h2>
-      </header>
+    <HoloPanel
+      label="Domain evals"
+      title="Evals"
+      ariaLabel="Domain evals"
+    >
       <form class="ops-evals-form" onsubmit={refreshEvals}>
         <label for="evals-domain" class="ops-field-label">Domain</label>
         <input
@@ -614,12 +635,17 @@
           </dl>
         {/if}
       </StateBox>
-    </section>
+    </HoloPanel>
 
     <!-- ── Backup health (wide — pairs with Evals on desktop) ─────────── -->
-    <section class="ops-panel ops-panel--wide" aria-label="Backup health" aria-live="polite" aria-busy={backupLoading}>
-      <header class="ops-panel-head">
-        <h2>Backup health</h2>
+    <HoloPanel
+      label="Backup integrity"
+      title="Backup health"
+      ariaLabel="Backup health"
+      ariaLive="polite"
+      ariaBusy={backupLoading}
+    >
+      {#snippet actions()}
         <button
           type="button"
           class="ops-icon-btn"
@@ -636,7 +662,8 @@
             </svg>
           {/if}
         </button>
-      </header>
+      {/snippet}
+
       <StateBox
         loading={backupLoading}
         error={backupError}
@@ -665,27 +692,20 @@
           {/if}
         {/if}
       </StateBox>
-    </section>
+    </HoloPanel>
   </div>
 
-  <!-- ── Hard purge (destructive — isolated, full visual separation) ──── -->
-  <section class="ops-destructive" aria-label="Hard purge (destructive)">
-    <header class="ops-destructive-head">
-      <span class="ops-destructive-icon" aria-hidden="true">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-          <line x1="12" y1="9" x2="12" y2="13" />
-          <line x1="12" y1="17" x2="12.01" y2="17" />
-        </svg>
-      </span>
-      <div class="ops-destructive-title">
-        <h2>Hard purge</h2>
-        <p class="ops-destructive-sub">Destroys content keys irreversibly.</p>
-      </div>
-    </header>
+  <!-- ── Hard purge (destructive — isolated, danger-chassis HoloPanel) ─ -->
+  <HoloPanel
+    variant="danger"
+    label="Irreversible — authorization required"
+    title="Hard purge"
+    ariaLabel="Hard purge (destructive)"
+  >
     <p class="ops-destructive-flow">
-      Preview the targets, read the full warning, type the server nonce verbatim,
-      re-authenticate, then confirm. Every gate must pass before the execute fires.
+      Destroys content keys irreversibly. Preview the targets, read the full
+      warning, type the server nonce verbatim, re-authenticate, then confirm.
+      Every gate must pass before the execute fires.
     </p>
     <div class="ops-destructive-form">
       <label for="purge-input" class="ops-field-label">Object ids (one per line)</label>
@@ -708,7 +728,7 @@
         </button>
       </div>
     </div>
-  </section>
+  </HoloPanel>
 </section>
 
 {#if purgeDialogOpen && purgeWarning && purgePreview}
@@ -747,6 +767,18 @@
     font-weight: var(--weight-semibold);
     letter-spacing: var(--text-headline-tracking);
     line-height: var(--text-headline-leading);
+  }
+
+  /* Sector kicker — the page-level mono label. Sits above the H1, reads
+   * like a flight-instrument page label. */
+  .ops-kicker {
+    margin: 0 0 var(--space-xs);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    font-weight: var(--weight-medium);
+    color: var(--holo-cyan);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
   .ops-tagline {

@@ -39,6 +39,30 @@
   --color-accent-deep: oklch(0.66 0.14 75); /* #c8861f */
   --color-accent-contrast: var(--color-void); /* text on amber */
 
+  /* ── Cosmic HUD palette (limited) ────────────────────────────────────
+   * Two extra hues are permitted because they are the HUD voice — panel
+   * borders, scan lines, status readouts. They never replace amber for
+   * primary CTAs (One Voice Rule holds); they're the instrument panel's
+   * secondary lights. Capped at low alpha so they read as ambient glow,
+   * not neon. */
+  --holo-cyan: oklch(0.78 0.13 195); /* instrument-panel border + scan line */
+  --holo-cyan-soft: oklch(0.78 0.13 195 / 0.18); /* nebula tint, panel edge glow */
+  --holo-cyan-faint: oklch(0.78 0.13 195 / 0.08); /* holo surface tint */
+  --holo-magenta: oklch(0.65 0.20 350); /* signal-ping accent only */
+  --holo-magenta-soft: oklch(0.65 0.20 350 / 0.14);
+  --holo-teal: oklch(0.70 0.12 200); /* alternate nebula tint */
+  --holo-teal-soft: oklch(0.70 0.12 200 / 0.12);
+
+  /* Glow vocabulary — bloom around bright points (lens flare / bloom).
+   * Used by: graph nodes, primary CTAs at focus, amber-accented elements
+   * at hover. Composed via color-mix so they inherit hue shifts. */
+  --glow-accent: 0 0 24px oklch(0.82 0.14 75 / 0.45);
+  --glow-accent-strong: 0 0 32px oklch(0.82 0.14 75 / 0.65),
+    0 0 8px oklch(0.82 0.14 75 / 0.8);
+  --glow-cyan: 0 0 18px oklch(0.78 0.13 195 / 0.35);
+  --glow-danger: 0 0 24px oklch(0.62 0.20 25 / 0.5);
+  --glow-success: 0 0 18px oklch(0.70 0.15 145 / 0.4);
+
   /* Semantic — always paired with a label, never color alone. */
   --color-danger: oklch(0.62 0.20 25); /* #e85a5a */
   --color-success: oklch(0.70 0.15 145); /* #5fbb7a */
@@ -51,6 +75,16 @@
   --surface-flat: var(--color-surface-raised); /* cards at rest */
   --surface-raised: var(--color-surface-elevated); /* hover, popovers */
   --surface-overlay: oklch(0.30 0.02 270); /* dialogs, modals */
+  /* HoloPanel surface — flat panel + a faint cyan tint that reads as a
+   * holographic readout (Death Star schematic voice). Border is cyan at
+   * 30% alpha; surface tint is cyan at 6%. Text contrast unaffected
+   * (text sits ON the surface, the tint is in the background layer). */
+  --surface-holo: color-mix(in oklch, var(--color-surface-flat) 88%,
+    var(--holo-cyan));
+  --surface-holo-raised: color-mix(in oklch, var(--color-surface-raised) 88%,
+    var(--holo-cyan));
+  --border-holo: 1px solid color-mix(in oklch, var(--holo-cyan) 35%,
+    var(--color-hairline));
 
   /* ── Semantic text ──────────────────────────────────────────────────── */
   --text-primary: var(--color-ink);
@@ -158,6 +192,9 @@
   --duration-base: 200ms;
   --duration-slow: 400ms; /* camera moves, panel reveals */
   --duration-breathe: 12s; /* ambient nebula breathing loop */
+  --duration-warp: 600ms; /* page-transition hyperspace streak */
+  --duration-scan: 4s; /* HoloPanel scan line sweep */
+  --duration-ping: 1.8s; /* pulsar ping on selected nodes */
 
   /* ── Layout ─────────────────────────────────────────────────────────── */
   --shell-max-width: 56rem; /* content pages — home is full-bleed */

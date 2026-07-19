@@ -43,6 +43,7 @@
   import type { SessionStore } from '../lib/session.svelte'
   import { consumePendingSubject, setPendingSubject } from '../lib/quickSearch'
   import StateBox from '../components/StateBox.svelte'
+  import HoloPanel from '../components/HoloPanel.svelte'
   import GalaxyGraph from '../components/GalaxyGraph.svelte'
   import EntityDestructivePanel from '../components/EntityDestructivePanel.svelte'
   import ProvenancePanel from '../components/ProvenancePanel.svelte'
@@ -269,6 +270,7 @@
 </script>
 
 <section class="page page-entity">
+  <p class="page-kicker">Subject scan</p>
   <h1>Entity</h1>
 
   <form class="subject-form" onsubmit={onSubmit}>
@@ -464,6 +466,17 @@
     line-height: var(--text-headline-leading);
   }
 
+  /* Page kicker — mono sector label. */
+  .page-kicker {
+    margin: 0 0 var(--space-xs);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    font-weight: var(--weight-medium);
+    color: var(--holo-cyan);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
   .subject-form {
     display: grid;
     grid-template-columns: 1fr;
@@ -576,13 +589,15 @@
     cursor: not-allowed;
   }
 
-  /* ── Claims table — scroll wrapper for the 9-col overflow on mobile ─ */
+  /* ── Claims table — "data terminal" holo treatment. The table reads
+   * as a holographic readout of all claims for the focused subject. */
   .table-scroll {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
-    border: var(--border-hairline);
+    border: var(--border-holo);
     border-radius: var(--radius-md);
-    background: var(--surface-flat);
+    background: var(--surface-holo);
+    box-shadow: var(--glow-cyan);
   }
 
   .claims-table {

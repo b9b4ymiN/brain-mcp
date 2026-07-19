@@ -15,6 +15,8 @@
   import Inbox from './pages/Inbox.svelte'
   import Entity from './pages/Entity.svelte'
   import Operations from './pages/Operations.svelte'
+  import SpaceBackdrop from './components/SpaceBackdrop.svelte'
+  import HudFrame from './components/HudFrame.svelte'
 
   // One session store for the whole shell. Threads into Login + nav + banner.
   const session = createSessionStore()
@@ -79,6 +81,9 @@
     navigate('home')
   }
 </script>
+
+<SpaceBackdrop />
+<HudFrame />
 
 <header class="shell">
   <a href="#main-content" class="skip-link">Skip to content</a>
@@ -177,9 +182,18 @@
   }
 
   .shell {
+    position: relative;
+    z-index: var(--z-sticky);
     max-width: var(--shell-max-width);
     margin: 0 auto;
     padding: var(--space-lg) var(--space-lg) 0;
+  }
+
+  /* Main — sits above the SpaceBackdrop (z=0) and the cursor canvas
+   * (z=1). Page content owns z-index from here up. */
+  .shell-main {
+    position: relative;
+    z-index: var(--z-base);
   }
 
   /* Shell wordmark — a <p>, not <h1>. Each page owns its own <h1>

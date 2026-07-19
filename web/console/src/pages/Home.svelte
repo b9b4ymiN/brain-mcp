@@ -27,7 +27,6 @@
   import { galaxy, ApiError, type GalaxyPayload } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
   import { navigate } from '../lib/router'
-  import SpaceBackdrop from '../components/SpaceBackdrop.svelte'
   import GalaxyGraph from '../components/GalaxyGraph.svelte'
 
   interface Props {
@@ -109,9 +108,8 @@
 </script>
 
 <div class="home-hero">
-  <SpaceBackdrop />
-
-  <!-- The galaxy canvas — full-bleed, transparent so the backdrop shows
+  <!-- The galaxy canvas — full-bleed, transparent so the global
+       SpaceBackdrop (mounted in App.svelte) shows
        through where there are no nodes/edges. GalaxyGraph in immersive
        mode mounts its own renderer (3d → 2d → list fallback chain) into
        this container. role="img" + aria-label gives SR users a one-line

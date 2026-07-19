@@ -122,6 +122,7 @@
 </script>
 
 <section class="page page-search">
+  <p class="page-kicker">Sector scan</p>
   <h1>Search</h1>
 
   <form class="search-form" onsubmit={onSubmit}>
@@ -224,6 +225,17 @@
     line-height: var(--text-headline-leading);
   }
 
+  /* Page kicker — mono sector label. */
+  .page-kicker {
+    margin: 0 0 var(--space-xs);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    font-weight: var(--weight-medium);
+    color: var(--holo-cyan);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
   /* Form: stacks by default (mobile-first), 7-col grid on tablet+. */
   .search-form {
     display: grid;
@@ -316,29 +328,34 @@
     gap: var(--space-sm);
   }
 
-  /* Hit card — was outline:none with only background tint for focus.
-   * Inset box-shadow ring restores the keyboard focus signal. */
+  /* Hit card — holo "target acquired" voice: cyan-tinted surface + glow. */
   .hit-card {
     display: block;
     padding: var(--space-md);
     border-radius: var(--radius-md);
-    border: var(--border-hairline);
-    background: var(--surface-flat);
+    border: var(--border-holo);
+    background: var(--surface-holo);
     color: var(--text-primary);
     text-decoration: none;
     cursor: pointer;
+    box-shadow: var(--glow-cyan);
     transition: background var(--duration-fast) var(--ease-out-quart),
-      border-color var(--duration-fast) var(--ease-out-quart);
+      border-color var(--duration-fast) var(--ease-out-quart),
+      box-shadow var(--duration-fast) var(--ease-out-quart);
   }
 
   .hit-card:hover {
-    background: var(--surface-raised);
-    border-color: var(--color-ink-faint);
+    background: var(--surface-holo-raised);
+    border-color: color-mix(in oklch, var(--holo-cyan) 55%,
+      var(--color-hairline));
+    box-shadow: 0 0 24px oklch(0.78 0.13 195 / 0.3),
+      inset 0 0 0 1px oklch(0.78 0.13 195 / 0.1);
   }
 
   .hit-card:focus-visible {
     outline: none;
-    box-shadow: inset 0 0 0 2px var(--color-accent);
+    box-shadow: inset 0 0 0 2px var(--color-accent),
+      var(--glow-accent);
     border-color: var(--color-accent);
   }
 

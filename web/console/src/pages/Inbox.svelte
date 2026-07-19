@@ -561,6 +561,7 @@
 </script>
 
 <section class="page page-inbox" inert={dialog !== null}>
+  <p class="page-kicker">Review queue</p>
   <h1>Inbox</h1>
   <p class="tagline">Review pending proposals. Each decision is permanent.</p>
 
@@ -769,6 +770,17 @@
     line-height: var(--text-headline-leading);
   }
 
+  /* Page kicker — mono sector label, sits above the H1. */
+  .page-kicker {
+    margin: 0 0 var(--space-xs);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    font-weight: var(--weight-medium);
+    color: var(--holo-cyan);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
   .tagline {
     margin: var(--space-xs) 0 var(--space-md);
     color: var(--text-secondary);
@@ -784,11 +796,25 @@
     gap: var(--space-sm);
   }
 
+  /* Proposal cards — holo-panel voice: cyan-tinted surface + cyan-leaning
+   * border + subtle inner glow. Reads as a queue of pending authorizations
+   * floating over the cosmic backdrop. */
   .proposal-card {
-    border: var(--border-hairline);
+    position: relative;
+    border: var(--border-holo);
     border-radius: var(--radius-lg);
-    background: var(--surface-flat);
+    background: var(--surface-holo);
+    box-shadow: var(--glow-cyan);
     overflow: hidden;
+    transition: border-color var(--duration-fast) var(--ease-out-quart),
+      box-shadow var(--duration-fast) var(--ease-out-quart);
+  }
+
+  /* Hover: stronger cyan glow + brighten border. */
+  .proposal-card:has(.proposal-head:hover) {
+    border-color: color-mix(in oklch, var(--holo-cyan) 55%, var(--color-hairline));
+    box-shadow: 0 0 24px oklch(0.78 0.13 195 / 0.3),
+      inset 0 0 0 1px oklch(0.78 0.13 195 / 0.1);
   }
 
   /* Sentence-case 5-col head on desktop; stacks to 2-col on tablet,
@@ -1028,12 +1054,15 @@
     border-color: var(--color-danger);
   }
 
-  /* ── Dialog (fixed center, clamp() width — kills mobile overflow) ──── */
+  /* ── Dialog — "command authorization" modal. Stronger holo treatment
+   * than the proposal cards: amber border (this is a primary action
+   * requiring authorization, not a passive readout), inner glow, scan
+   * line. Reads as a fire-control authorization panel. */
   .dialog-backdrop {
     position: fixed;
     inset: 0;
-    background: color-mix(in oklch, var(--color-void) 75%, transparent);
-    backdrop-filter: blur(2px);
+    background: color-mix(in oklch, var(--color-void) 78%, transparent);
+    backdrop-filter: blur(4px);
     z-index: var(--z-modal-backdrop);
   }
 
@@ -1043,17 +1072,18 @@
     left: 50%;
     transform: translate(-50%, -50%);
     z-index: var(--z-modal);
-    /* width: clamp(min, preferred, max) — was min-width:26rem which
-     * overflowed on <416px viewports and clipped the Yes/No buttons. */
     width: clamp(18rem, 92vw, 40rem);
     max-height: 86vh;
     overflow: auto;
     padding: var(--space-lg);
     border-radius: var(--radius-lg);
-    border: 1px solid var(--color-hairline);
-    background: var(--surface-overlay);
+    /* Amber border — primary-action authorization, One Voice Rule holds. */
+    border: 1px solid color-mix(in oklch, var(--color-accent) 50%,
+      var(--color-hairline));
+    background: color-mix(in oklch, var(--surface-overlay) 92%,
+      var(--color-accent));
     color: var(--text-primary);
-    box-shadow: var(--shadow-lift);
+    box-shadow: var(--shadow-lift), var(--glow-accent);
   }
 
   .dialog h2 {
