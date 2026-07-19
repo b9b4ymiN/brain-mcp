@@ -201,113 +201,203 @@
 </section>
 
 <style>
+  /* ── Search — token-driven, responsive, focus-visible fixed ──────────
+   *  - 7-col form grid → stacks on mobile (3 rows of label+input, then
+   *    the submit button full-width). Was unreadable under ~640px.
+   *  - .hit-card outline:none → replaced with inset box-shadow focus
+   *    ring (the prior stripped focus signal failed WCAG 2.4.7).
+   *  - Sub-44px touch targets → 44px min on inputs + submit.
+   *  - 8 hardcoded grays + 2 reds → tokens.
+   *  - .predicate italic + opacity → mono + token (predicate is machine
+   *    output; the Mono-Marks-Machine Rule). */
+
   .page {
-    padding: 1.5rem 0;
+    padding: var(--space-lg) 0;
   }
 
+  h1 {
+    margin: 0 0 var(--space-md);
+    font-family: var(--font-display);
+    font-size: var(--text-headline);
+    font-weight: var(--weight-semibold);
+    letter-spacing: var(--text-headline-tracking);
+    line-height: var(--text-headline-leading);
+  }
+
+  /* Form: stacks by default (mobile-first), 7-col grid on tablet+. */
   .search-form {
     display: grid;
-    grid-template-columns: max-content 1fr max-content 1fr max-content 1fr auto;
-    gap: 0.5rem;
+    grid-template-columns: 1fr;
+    gap: var(--space-sm);
     align-items: center;
-    margin: 0 0 1.25rem;
+    margin: 0 0 var(--space-md);
+  }
+
+  .search-form label {
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    color: var(--text-secondary);
   }
 
   .search-form input {
-    padding: 0.5rem 0.625rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.45);
-    background: inherit;
-    color: inherit;
-    font: inherit;
+    width: 100%;
+    min-height: 44px;
+    padding: var(--space-sm) var(--space-sm);
+    border-radius: var(--radius-md);
+    border: var(--border-hairline);
+    background: var(--surface-sunken);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
+    transition: border-color var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .search-form input::placeholder {
+    color: var(--text-tertiary);
+  }
+
+  .search-form input:focus {
+    outline: none;
+    border-color: var(--color-accent);
   }
 
   .search-form button {
-    padding: 0.5rem 0.875rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.45);
-    background: rgba(127, 127, 127, 0.15);
-    color: inherit;
-    font: inherit;
+    min-height: 44px;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    border: var(--border-hairline);
+    background: var(--color-accent);
+    color: var(--text-on-accent);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    letter-spacing: var(--text-label-tracking);
     cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-quart);
   }
 
+  .search-form button:hover:not(:disabled) {
+    background: var(--color-accent-deep);
+  }
+
+  .search-form button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  @media (min-width: 48rem) {
+    .search-form {
+      grid-template-columns: max-content 1fr max-content 1fr max-content 1fr auto;
+      align-items: end;
+    }
+    .search-form button {
+      align-self: stretch;
+    }
+  }
+
+  /* ── Hit list ─────────────────────────────────────────────────────── */
   .hit-list {
     list-style: none;
     margin: 0;
     padding: 0;
     display: grid;
-    gap: 0.6rem;
+    gap: var(--space-sm);
   }
 
+  /* Hit card — was outline:none with only background tint for focus.
+   * Inset box-shadow ring restores the keyboard focus signal. */
   .hit-card {
-    padding: 0.75rem 1rem;
-    border-radius: 0.5rem;
-    border: 1px solid rgba(127, 127, 127, 0.35);
-    background: rgba(127, 127, 127, 0.06);
+    display: block;
+    padding: var(--space-md);
+    border-radius: var(--radius-md);
+    border: var(--border-hairline);
+    background: var(--surface-flat);
+    color: var(--text-primary);
+    text-decoration: none;
     cursor: pointer;
-    outline: none;
+    transition: background var(--duration-fast) var(--ease-out-quart),
+      border-color var(--duration-fast) var(--ease-out-quart);
   }
 
-  .hit-card:hover,
+  .hit-card:hover {
+    background: var(--surface-raised);
+    border-color: var(--color-ink-faint);
+  }
+
   .hit-card:focus-visible {
-    background: rgba(127, 127, 127, 0.15);
-    border-color: rgba(127, 127, 127, 0.65);
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--color-accent);
+    border-color: var(--color-accent);
   }
 
   .hit-head {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
-    margin-bottom: 0.4rem;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-xs);
+    align-items: baseline;
   }
 
   .subject {
-    font-weight: 600;
+    font-family: var(--font-body);
+    font-weight: var(--weight-semibold);
+    color: var(--text-primary);
+    font-size: var(--text-body);
   }
 
   .predicate {
-    opacity: 0.85;
-    font-style: italic;
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--text-secondary);
   }
 
   .hit-fields {
     margin: 0;
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
-    gap: 0.25rem 1rem;
+    gap: var(--space-xs) var(--space-md);
   }
 
   .hit-fields div {
     display: flex;
-    gap: 0.4rem;
+    gap: var(--space-sm);
+    align-items: baseline;
   }
 
   .hit-fields dt {
-    opacity: 0.6;
-    font-size: 0.85rem;
+    color: var(--text-secondary);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
     min-width: 5.5rem;
   }
 
   .hit-fields dd {
     margin: 0;
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
     word-break: break-word;
   }
 
+  /* ── State banners ────────────────────────────────────────────────── */
   .state {
-    margin: 1rem 0;
-    padding: 0.75rem 1rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.35);
+    margin: var(--space-md) 0;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-hairline);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
   }
 
   .state-error {
-    background: rgba(190, 70, 70, 0.15);
-    border-color: rgba(190, 70, 70, 0.5);
+    background: var(--overlay-danger-soft);
+    border-color: var(--color-danger);
   }
 
   .state-empty {
-    opacity: 0.7;
+    color: var(--text-secondary);
     font-style: italic;
   }
 </style>

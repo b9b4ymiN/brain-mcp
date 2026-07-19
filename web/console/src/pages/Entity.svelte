@@ -325,81 +325,79 @@
       empty={claims.length === 0}
       emptyText={`No claims found for subject "${activeSubject}".`}
     >
-      <table class="claims-table">
-        <thead>
-          <tr>
-            <th>Subject</th>
-            <th>Predicate</th>
-            <th>Value</th>
-            <th>Domain</th>
-            <th>Kind</th>
-            <th>Origin</th>
-            <th>Provenance</th>
-            <th>Confidence</th>
-            <th>Entity ID</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each claims as claim (claim.claim_id)}
-            <tr
-              class="row"
-              tabindex="0"
-              role="button"
-              aria-expanded={(expanded[claim.claim_id]?.kind ?? 'idle') === 'open'}
-              aria-label={`Toggle timeline for ${claim.subject} ${claim.predicate}`}
-              onclick={() => void toggleRow(claim)}
-              onkeydown={(e) => onRowKeydown(e, claim)}
-            >
-              <td>{claim.subject}</td>
-              <td>{claim.predicate}</td>
-              <td>{formatValue(claim.value)}</td>
-              <td>{claim.domain}</td>
-              <td>{claim.kind}</td>
-              <td>{claim.origin}</td>
-              <td>{claim.provenance}</td>
-              <td>{confidencePct(claim.confidence)}</td>
-              <td>{claim.entity_id ?? '—'}</td>
+      <div class="table-scroll">
+        <table class="claims-table">
+          <thead>
+            <tr>
+              <th>Subject</th>
+              <th>Predicate</th>
+              <th>Value</th>
+              <th>Domain</th>
+              <th>Kind</th>
+              <th>Origin</th>
+              <th>Provenance</th>
+              <th>Confidence</th>
+              <th>Entity ID</th>
             </tr>
-            <tr class="expand-row">
-              <td colspan="9">
-                {#if expanded[claim.claim_id]}
-                  {#snippet rowContent()}
-                    {@const row = expanded[claim.claim_id]}
-                    {#if row.kind === 'loading'}
+          </thead>
+          <tbody>
+            {#each claims as claim (claim.claim_id)}
+              {@const rowState = expanded[claim.claim_id]}
+              {@const isOpen = rowState?.kind === 'open'}
+              <tr
+                class="row"
+                class:row-open={isOpen}
+                tabindex="0"
+                aria-expanded={rowState !== undefined}
+                aria-label={`Toggle timeline for ${claim.subject} ${claim.predicate}`}
+                onclick={() => void toggleRow(claim)}
+                onkeydown={(e) => onRowKeydown(e, claim)}
+              >
+                <td>{claim.subject}</td>
+                <td><code class="mono">{claim.predicate}</code></td>
+                <td>{formatValue(claim.value)}</td>
+                <td>{claim.domain}</td>
+                <td>{claim.kind}</td>
+                <td>{claim.origin}</td>
+                <td>{claim.provenance}</td>
+                <td><span class="mono">{confidencePct(claim.confidence)}</span></td>
+                <td>{claim.entity_id ?? '—'}</td>
+              </tr>
+              {#if rowState}
+                <tr class="expand-row">
+                  <td colspan="9">
+                    {#if rowState.kind === 'loading'}
                       <p class="state state-loading" role="status">Loading timeline…</p>
-                    {:else if row.kind === 'error'}
-                      <p class="state state-error" role="alert">{row.message}</p>
-                    {:else if row.kind === 'open'}
-                      {#if row.entries.length === 0}
+                    {:else if rowState.kind === 'error'}
+                      <p class="state state-error" role="alert">{rowState.message}</p>
+                    {:else if rowState.kind === 'open'}
+                      {#if rowState.entries.length === 0}
                         <p class="state state-empty">No timeline entries.</p>
                       {:else}
                         <ul class="timeline-list">
-                          {#each row.entries as entry (entry.claim_id)}
+                          {#each rowState.entries as entry (entry.claim_id)}
                             <li>
                               <dl>
                                 <div><dt>Status</dt><dd>{entry.status}</dd></div>
                                 <div><dt>Kind</dt><dd>{entry.claim_kind}</dd></div>
-                                <div><dt>Confirmed seq</dt><dd>{entry.confirmed_event_seq}</dd></div>
+                                <div><dt>Confirmed seq</dt><dd><span class="mono">{entry.confirmed_event_seq}</span></dd></div>
                                 <div><dt>Valid from</dt><dd>{formatDate(entry.valid_from)}</dd></div>
                                 <div><dt>Valid to</dt><dd>{formatDate(entry.valid_to)}</dd></div>
                                 <div><dt>Provenance</dt><dd>{entry.provenance_kind}</dd></div>
-                                <div><dt>Confidence (bp)</dt><dd>{entry.confidence_basis_points}</dd></div>
+                                <div><dt>Confidence (bp)</dt><dd><span class="mono">{entry.confidence_basis_points}</span></dd></div>
                               </dl>
                             </li>
                           {/each}
                         </ul>
                       {/if}
                     {/if}
-                  {/snippet}
-                  {@render rowContent()}
-                {:else}
-                  <span class="hint">Click to expand timeline.</span>
-                {/if}
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+                  </td>
+                </tr>
+              {/if}
+            {/each}
+          </tbody>
+        </table>
+      </div>
     </StateBox>
 
     {#if activeEntityId}
@@ -428,62 +426,141 @@
 </section>
 
 <style>
+  /* ── Entity — token-driven, kills the audit findings ─────────────────
+   *  - <tr role="button"> dropped (invalid per ARIA — td/tr accept only
+   *    row/gridcell/rowheader/header roles). Row stays keyboard-focusable
+   *    via tabindex=0 with aria-expanded; the click + Enter/Space handler
+   *    (onRowKeydown) provides the activation semantics.
+   *  - phantom expand-row: was always-rendered with "Click to expand"
+   *    hint; now mounts only when `expanded[claim_id]` is set, so the
+   *    table's row count matches the visible claims.
+   *  - 9-col table overflow on mobile: wrapped in .table-scroll
+   *    (overflow-x: auto) so it scrolls horizontally instead of breaking
+   *    the layout.
+   *  - tracked-uppercase eyebrow on th → sentence-case Inter.
+   *  - 11 hardcoded rgba(127,127,127,X) + 2 rgba(190,70,70,X) → tokens.
+   *  - Sub-44px touch targets → 44px min on subject-form button,
+   *    view-toggle buttons keep the toolbar compact but hit 44px via
+   *    min-height. */
+
   .page {
-    padding: 1.5rem 0;
+    padding: var(--space-lg) 0;
+  }
+
+  h1 {
+    margin: 0 0 var(--space-md);
+    font-family: var(--font-display);
+    font-size: var(--text-headline);
+    font-weight: var(--weight-semibold);
+    letter-spacing: var(--text-headline-tracking);
+    line-height: var(--text-headline-leading);
   }
 
   .subject-form {
     display: grid;
-    grid-template-columns: max-content 1fr auto;
-    gap: 0.5rem;
+    grid-template-columns: 1fr;
+    gap: var(--space-sm);
     align-items: center;
-    margin: 0 0 1.25rem;
+    margin: 0 0 var(--space-md);
+  }
+
+  @media (min-width: 30rem) {
+    .subject-form {
+      grid-template-columns: max-content 1fr auto;
+    }
+  }
+
+  .subject-form label {
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    color: var(--text-secondary);
   }
 
   .subject-form input {
-    padding: 0.5rem 0.625rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.45);
-    background: inherit;
-    color: inherit;
-    font: inherit;
+    width: 100%;
+    min-height: 44px;
+    padding: var(--space-sm) var(--space-sm);
+    border-radius: var(--radius-md);
+    border: var(--border-hairline);
+    background: var(--surface-sunken);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
+    transition: border-color var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .subject-form input::placeholder {
+    color: var(--text-tertiary);
+  }
+
+  .subject-form input:focus {
+    outline: none;
+    border-color: var(--color-accent);
   }
 
   .subject-form button {
-    padding: 0.5rem 0.875rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.45);
-    background: rgba(127, 127, 127, 0.15);
-    color: inherit;
-    font: inherit;
+    min-height: 44px;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    border: var(--border-hairline);
+    background: var(--color-accent);
+    color: var(--text-on-accent);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    letter-spacing: var(--text-label-tracking);
     cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-quart);
   }
 
+  .subject-form button:hover:not(:disabled) {
+    background: var(--color-accent-deep);
+  }
+
+  .subject-form button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  /* ── View toggle (table ↔ galaxy) ─────────────────────────────────── */
   .view-toggle {
     display: inline-flex;
-    border-radius: 0.375rem;
+    border-radius: var(--radius-md);
     overflow: hidden;
-    border: 1px solid rgba(127, 127, 127, 0.45);
-    margin: 0 0 1rem;
+    border: var(--border-hairline);
+    margin: 0 0 var(--space-md);
   }
 
   .view-toggle button {
-    padding: 0.4rem 0.875rem;
+    min-height: 44px;
+    padding: var(--space-xs) var(--space-md);
     border: none;
-    border-right: 1px solid rgba(127, 127, 127, 0.35);
-    background: rgba(127, 127, 127, 0.06);
-    color: inherit;
-    font: inherit;
+    border-right: 1px solid var(--color-hairline);
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    letter-spacing: var(--text-label-tracking);
     cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-quart),
+      color var(--duration-fast) var(--ease-out-quart);
   }
 
   .view-toggle button:last-child {
     border-right: none;
   }
 
+  .view-toggle button:hover:not(:disabled) {
+    background: var(--overlay-ink-06);
+    color: var(--text-primary);
+  }
+
   .view-toggle button.active {
-    background: rgba(127, 127, 127, 0.3);
-    font-weight: 600;
+    background: var(--overlay-ink-15);
+    color: var(--text-primary);
+    font-weight: var(--weight-semibold);
   }
 
   .view-toggle button:disabled {
@@ -491,97 +568,146 @@
     cursor: not-allowed;
   }
 
+  /* ── Claims table — scroll wrapper for the 9-col overflow on mobile ─ */
+  .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    background: var(--surface-flat);
+  }
+
   .claims-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.9rem;
+    font-family: var(--font-body);
+    font-size: var(--text-body);
+    color: var(--text-primary);
   }
 
   .claims-table th,
   .claims-table td {
     text-align: left;
-    padding: 0.5rem 0.6rem;
-    border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+    padding: var(--space-sm) var(--space-sm);
+    border-bottom: 1px solid var(--color-hairline);
     vertical-align: top;
     word-break: break-word;
   }
 
+  /* Sentence-case th — kills the tracked-uppercase eyebrow. */
   .claims-table th {
-    font-size: 0.8rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    opacity: 0.65;
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    color: var(--text-secondary);
+    letter-spacing: 0;
+    text-transform: none;
+    background: var(--surface-sunken);
+    position: sticky;
+    top: 0;
+    z-index: var(--z-base);
   }
 
+  .claims-table tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  /* Expandable row — keyboard-focusable (tabindex=0), aria-expanded.
+   * role="button" was INVALID on <tr>; we keep tabindex+aria-expanded
+   * which is the accessible pattern for an expandable table row. */
   .row {
     cursor: pointer;
-    outline: none;
+    transition: background var(--duration-fast) var(--ease-out-quart);
   }
 
-  .row:hover,
+  .row:hover {
+    background: var(--overlay-ink-04);
+  }
+
+  /* Keyboard focus ring via inset box-shadow (the global :focus-visible
+   * ring is for outline elements; rows use inset to stay inside the
+   * table bounds). */
   .row:focus-visible {
-    background: rgba(127, 127, 127, 0.12);
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--color-accent);
+  }
+
+  .row-open {
+    background: var(--overlay-ink-06);
   }
 
   .expand-row > td {
-    padding: 0.5rem 0.75rem 0.75rem;
-    background: rgba(127, 127, 127, 0.04);
+    padding: var(--space-sm) var(--space-md) var(--space-md);
+    background: var(--surface-sunken);
+    border-bottom: 1px solid var(--color-hairline);
   }
 
-  .hint {
-    opacity: 0.55;
-    font-style: italic;
-    font-size: 0.85rem;
+  /* Mono inline (predicate, confidence, seq, bp — machine output). */
+  .mono {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--text-secondary);
+    word-break: break-all;
   }
 
+  /* ── Timeline list (expanded row content) ─────────────────────────── */
   .timeline-list {
     list-style: none;
     margin: 0;
     padding: 0;
     display: grid;
-    gap: 0.5rem;
+    gap: var(--space-sm);
   }
 
   .timeline-list dl {
     margin: 0;
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-    gap: 0.2rem 1rem;
+    gap: var(--space-xs) var(--space-md);
   }
 
   .timeline-list div {
     display: flex;
-    gap: 0.4rem;
+    gap: var(--space-sm);
+    align-items: baseline;
   }
 
   .timeline-list dt {
-    opacity: 0.6;
-    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
     min-width: 6rem;
   }
 
   .timeline-list dd {
     margin: 0;
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
   }
 
+  /* ── State banners ────────────────────────────────────────────────── */
   .state {
-    margin: 0.5rem 0;
-    padding: 0.6rem 0.75rem;
-    border-radius: 0.375rem;
-    border: 1px solid rgba(127, 127, 127, 0.35);
+    margin: var(--space-xs) 0;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-hairline);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
   }
 
   .state-loading {
-    opacity: 0.75;
+    color: var(--text-secondary);
   }
 
   .state-error {
-    background: rgba(190, 70, 70, 0.15);
-    border-color: rgba(190, 70, 70, 0.5);
+    background: var(--overlay-danger-soft);
+    border-color: var(--color-danger);
   }
 
   .state-empty {
-    opacity: 0.7;
+    color: var(--text-secondary);
     font-style: italic;
   }
 </style>
