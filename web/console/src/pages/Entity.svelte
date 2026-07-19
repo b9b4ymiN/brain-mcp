@@ -44,6 +44,85 @@
   import { consumePendingSubject, setPendingSubject } from '../lib/quickSearch'
   import StateBox from '../components/StateBox.svelte'
   import HoloPanel from '../components/HoloPanel.svelte'
+
+  // ── Table controls state (filter + sort + compact + page) ────────────
+  let filterText = $state('')
+  let sortKey = $state<string | null>(null)
+  let sortDir = $state<'asc' | 'desc' | null>(null)
+  let visibleCount = $state(10)
+  const PAGE_SIZE = 10
+
+  const STORAGE_KEY = 'bc-table-compact-entity'
+  let compact = $state(false)
+  if (typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEY) === 'true') {
+    compact = true
+  }
+  function toggleCompact(): void {
+    compact = !compact
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(STORAGE_KEY, String(compact))
+    }
+  }
+
+  function toggleSort(key: string): void {
+    if (sortKey !== key) {
+      sortKey = key
+      sortDir = 'asc'
+    } else if (sortDir === 'asc') {
+      sortDir = 'desc'
+    } else {
+      sortKey = null
+      sortDir = null
+    }
+  }
+
+  function ariaSort(key: string): 'ascending' | 'descending' | 'none' {
+    if (sortKey !== key || sortDir === null) return 'none'
+    return sortDir === 'asc' ? 'ascending' : 'descending'
+  }
+
+  // Filtered + sorted claims (client-side).
+  let processedClaims = $derived.by<SubjectClaim[]>(() => {
+    let out = claims
+    const q = filterText.trim().toLowerCase()
+    if (q.length > 0) {
+      out = out.filter((c) =>
+        [c.predicate, c.subject, c.domain, c.kind, c.origin, c.provenance,
+         c.entity_id ?? '', String(c.value), String(c.confidence)]
+          .some((v) => v.toLowerCase().includes(q)),
+      )
+    }
+    if (sortKey !== null && sortDir !== null) {
+      const dir = sortDir === 'asc' ? 1 : -1
+      out = [...out].sort((a, b) => {
+        const av = a[sortKey as keyof SubjectClaim]
+        const bv = b[sortKey as keyof SubjectClaim]
+        if (av == null && bv == null) return 0
+        if (av == null) return 1
+        if (bv == null) return -1
+        if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir
+        return String(av).localeCompare(String(bv)) * dir
+      })
+    }
+    return out
+  })
+
+  let visibleClaims = $derived(processedClaims.slice(0, visibleCount))
+  let hasMore = $derived(visibleCount < processedClaims.length)
+
+  // Reset visible count when filter/sort changes.
+  $effect(() => {
+    void filterText
+    void sortKey
+    void sortDir
+    void claims.length
+    visibleCount = PAGE_SIZE
+  })
+
+  // Compact-mode column visibility.
+  let showSubject = $derived(!compact)
+  let showDomain = $derived(!compact)
+  let showEntityId = $derived(!compact)
   import GalaxyGraph from '../components/GalaxyGraph.svelte'
   import EntityDestructivePanel from '../components/EntityDestructivePanel.svelte'
   import ProvenancePanel from '../components/ProvenancePanel.svelte'
@@ -335,79 +414,163 @@
       empty={claims.length === 0}
       emptyText={`No claims found for subject "${activeSubject}".`}
     >
-      <div class="table-scroll">
-        <table class="claims-table">
-          <thead>
-            <tr>
-              <th>Subject</th>
-              <th>Predicate</th>
-              <th>Value</th>
-              <th>Domain</th>
-              <th>Kind</th>
-              <th>Origin</th>
-              <th>Provenance</th>
-              <th>Confidence</th>
-              <th>Entity ID</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each claims as claim (claim.claim_id)}
-              {@const rowState = expanded[claim.claim_id]}
-              {@const isOpen = rowState?.kind === 'open' || rowState?.kind === 'loading'}
-              <tr
-                class="row"
-                class:row-open={isOpen}
-                tabindex="0"
-                aria-expanded={isOpen}
-                aria-label={`Toggle timeline for ${claim.subject} ${claim.predicate}`}
-                onclick={() => void toggleRow(claim)}
-                onkeydown={(e) => onRowKeydown(e, claim)}
-              >
-                <td>{claim.subject}</td>
-                <td><code class="mono">{claim.predicate}</code></td>
-                <td>{formatValue(claim.value)}</td>
-                <td>{claim.domain}</td>
-                <td>{claim.kind}</td>
-                <td>{claim.origin}</td>
-                <td>{claim.provenance}</td>
-                <td><span class="mono">{confidencePct(claim.confidence)}</span></td>
-                <td>{claim.entity_id ?? '—'}</td>
-              </tr>
-              {#if rowState}
-                <tr class="expand-row">
-                  <td colspan="9">
-                    {#if rowState.kind === 'loading'}
-                      <p class="state state-loading" role="status">Loading timeline…</p>
-                    {:else if rowState.kind === 'error'}
-                      <p class="state state-error" role="alert">{rowState.message}</p>
-                    {:else if rowState.kind === 'open'}
-                      {#if rowState.entries.length === 0}
-                        <p class="state state-empty">No timeline entries.</p>
-                      {:else}
-                        <ul class="timeline-list">
-                          {#each rowState.entries as entry (entry.claim_id)}
-                            <li>
-                              <dl>
-                                <div><dt>Status</dt><dd>{entry.status}</dd></div>
-                                <div><dt>Kind</dt><dd>{entry.claim_kind}</dd></div>
-                                <div><dt>Confirmed seq</dt><dd><span class="mono">{entry.confirmed_event_seq}</span></dd></div>
-                                <div><dt>Valid from</dt><dd>{formatDate(entry.valid_from)}</dd></div>
-                                <div><dt>Valid to</dt><dd>{formatDate(entry.valid_to)}</dd></div>
-                                <div><dt>Provenance</dt><dd>{entry.provenance_kind}</dd></div>
-                                <div><dt>Confidence (bp)</dt><dd><span class="mono">{entry.confidence_basis_points}</span></dd></div>
-                              </dl>
-                            </li>
-                          {/each}
-                        </ul>
-                      {/if}
-                    {/if}
-                  </td>
-                </tr>
-              {/if}
-            {/each}
-          </tbody>
-        </table>
+      <div class="table-chrome">
+        <div class="table-filter">
+          <label for="entity-filter" class="visually-hidden">Filter claims</label>
+          <div class="filter-input-wrap">
+            <svg class="filter-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            <input
+              id="entity-filter"
+              type="search"
+              class="filter-input"
+              placeholder="Filter claims…"
+              bind:value={filterText}
+            />
+          </div>
+        </div>
+        <button
+          type="button"
+          class="compact-toggle"
+          onclick={toggleCompact}
+          aria-pressed={compact}
+          title={compact ? 'Show all columns' : 'Hide constant columns'}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="18" height="18" rx="2" />
+            <line x1="9" y1="3" x2="9" y2="21" />
+          </svg>
+          <span>{compact ? 'Expand' : 'Compact'}</span>
+        </button>
+        {#if filterText}
+          <span class="filter-count">{processedClaims.length} match{processedClaims.length === 1 ? '' : 'es'}</span>
+        {/if}
       </div>
+
+      {#if processedClaims.length === 0}
+        <div class="table-state table-state--empty">
+          {filterText ? `No claims match "${filterText}".` : `No claims found for subject "${activeSubject}".`}
+        </div>
+      {:else}
+        <div class="table-scroll">
+          <table class="claims-table">
+            <thead>
+              <tr>
+                {#if showSubject}
+                  <th
+                    class="sortable"
+                    aria-sort={ariaSort('subject')}
+                    onclick={() => toggleSort('subject')}
+                  >Subject <span class="sort-ind" aria-hidden="true">{sortKey === 'subject' ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
+                {/if}
+                <th
+                  class="sortable"
+                  aria-sort={ariaSort('predicate')}
+                  onclick={() => toggleSort('predicate')}
+                >Predicate <span class="sort-ind" aria-hidden="true">{sortKey === 'predicate' ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
+                <th>Value</th>
+                {#if showDomain}
+                  <th
+                    class="sortable"
+                    aria-sort={ariaSort('domain')}
+                    onclick={() => toggleSort('domain')}
+                  >Domain <span class="sort-ind" aria-hidden="true">{sortKey === 'domain' ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
+                {/if}
+                <th
+                  class="sortable"
+                  aria-sort={ariaSort('kind')}
+                  onclick={() => toggleSort('kind')}
+                >Kind <span class="sort-ind" aria-hidden="true">{sortKey === 'kind' ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
+                <th
+                  class="sortable"
+                  aria-sort={ariaSort('origin')}
+                  onclick={() => toggleSort('origin')}
+                >Origin <span class="sort-ind" aria-hidden="true">{sortKey === 'origin' ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
+                <th
+                  class="sortable"
+                  aria-sort={ariaSort('provenance')}
+                  onclick={() => toggleSort('provenance')}
+                >Provenance <span class="sort-ind" aria-hidden="true">{sortKey === 'provenance' ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
+                <th
+                  class="sortable numeric"
+                  aria-sort={ariaSort('confidence')}
+                  onclick={() => toggleSort('confidence')}
+                >Confidence <span class="sort-ind" aria-hidden="true">{sortKey === 'confidence' ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
+                {#if showEntityId}
+                  <th>Entity ID</th>
+                {/if}
+              </tr>
+            </thead>
+            <tbody>
+              {#each visibleClaims as claim (claim.claim_id)}
+                {@const rowState = expanded[claim.claim_id]}
+                {@const isOpen = rowState?.kind === 'open' || rowState?.kind === 'loading'}
+                <tr
+                  class="row"
+                  class:row-open={isOpen}
+                  tabindex="0"
+                  aria-expanded={isOpen}
+                  aria-label={`Toggle timeline for ${claim.subject} ${claim.predicate}`}
+                  onclick={() => void toggleRow(claim)}
+                  onkeydown={(e) => onRowKeydown(e, claim)}
+                >
+                  {#if showSubject}<td>{claim.subject}</td>{/if}
+                  <td><code class="mono">{claim.predicate}</code></td>
+                  <td>{formatValue(claim.value)}</td>
+                  {#if showDomain}<td>{claim.domain}</td>{/if}
+                  <td>{claim.kind}</td>
+                  <td>{claim.origin}</td>
+                  <td>{claim.provenance}</td>
+                  <td class="mono">{confidencePct(claim.confidence)}</td>
+                  {#if showEntityId}<td>{claim.entity_id ?? '—'}</td>{/if}
+                </tr>
+                {#if rowState}
+                  <tr class="expand-row">
+                    <td colspan={compact ? 6 : 9}>
+                      {#if rowState.kind === 'loading'}
+                        <p class="state state-loading" role="status">Loading timeline…</p>
+                      {:else if rowState.kind === 'error'}
+                        <p class="state state-error" role="alert">{rowState.message}</p>
+                      {:else if rowState.kind === 'open'}
+                        {#if rowState.entries.length === 0}
+                          <p class="state state-empty">No timeline entries.</p>
+                        {:else}
+                          <ul class="timeline-list">
+                            {#each rowState.entries as entry (entry.claim_id)}
+                              <li>
+                                <dl>
+                                  <div><dt>Status</dt><dd>{entry.status}</dd></div>
+                                  <div><dt>Kind</dt><dd>{entry.claim_kind}</dd></div>
+                                  <div><dt>Confirmed seq</dt><dd><span class="mono">{entry.confirmed_event_seq}</span></dd></div>
+                                  <div><dt>Valid from</dt><dd>{formatDate(entry.valid_from)}</dd></div>
+                                  <div><dt>Valid to</dt><dd>{formatDate(entry.valid_to)}</dd></div>
+                                  <div><dt>Provenance</dt><dd>{entry.provenance_kind}</dd></div>
+                                  <div><dt>Confidence (bp)</dt><dd><span class="mono">{entry.confidence_basis_points}</span></dd></div>
+                                </dl>
+                              </li>
+                            {/each}
+                          </ul>
+                        {/if}
+                      {/if}
+                    </td>
+                  </tr>
+                {/if}
+              {/each}
+            </tbody>
+          </table>
+        </div>
+
+        {#if hasMore}
+          <div class="table-pager">
+            <span class="pager-info">Showing {visibleClaims.length} of {processedClaims.length}</span>
+            <button type="button" class="pager-btn" onclick={() => (visibleCount += PAGE_SIZE)}>
+              Show {Math.min(PAGE_SIZE, processedClaims.length - visibleCount)} more
+            </button>
+          </div>
+        {/if}
+      {/if}
     </StateBox>
 
     {#if activeEntityId}
@@ -475,6 +638,163 @@
     color: var(--holo-cyan);
     letter-spacing: 0.08em;
     text-transform: uppercase;
+  }
+
+  /* ── Table chrome (filter + compact toggle) ───────────────────────── */
+  .table-chrome {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
+    margin-bottom: var(--space-sm);
+  }
+
+  .table-filter {
+    flex: 1;
+    min-width: 12rem;
+  }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .filter-input-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .filter-icon {
+    position: absolute;
+    left: var(--space-sm);
+    color: var(--text-tertiary);
+    pointer-events: none;
+  }
+
+  .filter-input {
+    width: 100%;
+    min-height: 44px;
+    padding: var(--space-xs) var(--space-sm) var(--space-xs) calc(var(--space-sm) + 24px);
+    border-radius: var(--radius-md);
+    border: var(--border-holo);
+    background: var(--surface-sunken);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    transition: border-color var(--duration-fast) var(--ease-out-quart),
+      box-shadow var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .filter-input::placeholder { color: var(--text-tertiary); }
+  .filter-input:focus {
+    outline: none;
+    border-color: var(--holo-cyan);
+    box-shadow: var(--focus-ring);
+  }
+
+  .compact-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    min-height: 44px;
+    padding: var(--space-xs) var(--space-sm);
+    border: var(--border-holo);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-quart),
+      color var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .compact-toggle:hover {
+    background: var(--overlay-ink-04);
+    color: var(--text-primary);
+  }
+
+  .compact-toggle[aria-pressed='true'] {
+    background: var(--overlay-ink-06);
+    color: var(--holo-cyan);
+    border-color: color-mix(in oklch, var(--holo-cyan) 45%, var(--color-hairline));
+  }
+
+  .filter-count {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--text-tertiary);
+    white-space: nowrap;
+  }
+
+  /* ── Table pager ──────────────────────────────────────────────────── */
+  .table-pager {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
+    margin-top: var(--space-sm);
+  }
+
+  .pager-info {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--text-tertiary);
+  }
+
+  .pager-btn {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: var(--space-xs) var(--space-md);
+    border: var(--border-holo);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-quart),
+      border-color var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .pager-btn:hover {
+    background: var(--overlay-ink-06);
+    border-color: color-mix(in oklch, var(--holo-cyan) 50%, var(--color-hairline));
+  }
+
+  /* ── Sortable header + indicator ──────────────────────────────────── */
+  .claims-table th.sortable {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  .claims-table th.sortable:hover {
+    color: var(--text-primary);
+  }
+
+  .claims-table th[aria-sort='ascending'],
+  .claims-table th[aria-sort='descending'] {
+    color: var(--holo-cyan);
+  }
+
+  .sort-ind {
+    display: inline-block;
+    margin-left: var(--space-xs);
+    font-size: 0.7em;
+    color: var(--holo-cyan);
+    opacity: 0.7;
+  }
+
+  .claims-table th.numeric {
+    text-align: right;
   }
 
   .subject-form {

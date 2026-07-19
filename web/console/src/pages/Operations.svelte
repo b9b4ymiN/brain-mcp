@@ -68,6 +68,31 @@
 
   // ── Clients section ──────────────────────────────────────────────────────
   let clients = $state<ClientActivity[]>([])
+  // Clients-table sort state.
+  let clientsSortKey = $state<string | null>(null)
+  let clientsSortDir = $state<'asc' | 'desc' | null>(null)
+  function toggleClientsSort(key: string): void {
+    if (clientsSortKey !== key) {
+      clientsSortKey = key
+      clientsSortDir = 'asc'
+    } else if (clientsSortDir === 'asc') {
+      clientsSortDir = 'desc'
+    } else {
+      clientsSortKey = null
+      clientsSortDir = null
+    }
+  }
+  let sortedClients = $derived.by<ClientActivity[]>(() => {
+    if (clientsSortKey === null || clientsSortDir === null) return clients
+    const key = clientsSortKey as keyof ClientActivity
+    const dir = clientsSortDir === 'asc' ? 1 : -1
+    return [...clients].sort((a, b) => {
+      const av = a[key]
+      const bv = b[key]
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir
+      return String(av).localeCompare(String(bv)) * dir
+    })
+  })
   let clientsLoading = $state(false)
   let clientsError = $state<string | null>(null)
   let clientsSeq = 0
@@ -574,15 +599,30 @@
           <table class="ops-clients-table">
             <thead>
               <tr>
-                <th>Label</th>
+                <th
+                  class="ops-sortable"
+                  class:ops-sorted={clientsSortKey === 'label'}
+                  aria-sort={clientsSortKey === 'label' ? (clientsSortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+                  onclick={() => toggleClientsSort('label')}
+                >Label <span class="ops-sort-ind" aria-hidden="true">{clientsSortKey === 'label' ? (clientsSortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
                 <th>Client ID</th>
                 <th>Capabilities</th>
-                <th>Last active</th>
-                <th>Mutations</th>
+                <th
+                  class="ops-sortable"
+                  class:ops-sorted={clientsSortKey === 'last_active_at'}
+                  aria-sort={clientsSortKey === 'last_active_at' ? (clientsSortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+                  onclick={() => toggleClientsSort('last_active_at')}
+                >Last active <span class="ops-sort-ind" aria-hidden="true">{clientsSortKey === 'last_active_at' ? (clientsSortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
+                <th
+                  class="ops-sortable ops-numeric"
+                  class:ops-sorted={clientsSortKey === 'mutation_count'}
+                  aria-sort={clientsSortKey === 'mutation_count' ? (clientsSortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+                  onclick={() => toggleClientsSort('mutation_count')}
+                >Mutations <span class="ops-sort-ind" aria-hidden="true">{clientsSortKey === 'mutation_count' ? (clientsSortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
               </tr>
             </thead>
             <tbody>
-              {#each clients as c (c.client_id)}
+              {#each sortedClients as c (c.client_id)}
                 <tr>
                   <td>{c.label}</td>
                   <td><code class="ops-mono">{c.client_id}</code></td>
@@ -1141,6 +1181,35 @@
     color: var(--text-secondary);
     letter-spacing: 0;
     text-transform: none;
+    white-space: nowrap;
+  }
+
+  /* Sortable headers */
+  .ops-clients-table th.ops-sortable {
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .ops-clients-table th.ops-sortable:hover {
+    color: var(--text-primary);
+  }
+
+  .ops-clients-table th.ops-sorted {
+    color: var(--holo-cyan);
+  }
+
+  .ops-sort-ind {
+    display: inline-block;
+    margin-left: var(--space-xs);
+    font-size: 0.7em;
+    color: var(--holo-cyan);
+    opacity: 0.7;
+  }
+
+  .ops-clients-table th.ops-numeric,
+  .ops-clients-table td:nth-child(5) {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
   }
 
   .ops-clients-table tbody tr:last-child td {

@@ -24,7 +24,7 @@
    * /galaxy fetch; Home owns the hero layout + overlay.
    */
   import { onMount } from 'svelte'
-  import { galaxy, ApiError, type GalaxyPayload } from '../lib/api'
+  import { galaxy, inbox, ApiError, type GalaxyPayload, type ProposalSummary } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
   import { navigate } from '../lib/router'
   import GalaxyGraph from '../components/GalaxyGraph.svelte'
@@ -33,6 +33,27 @@
     setBusy,
     setError as setStatusError,
   } from '../lib/systemStatus.svelte'
+
+  // ── Inbox preview (pending proposals) ───────────────────────────────
+  let pendingProposals = $state<ProposalSummary[]>([])
+  let inboxLoaded = $state(false)
+
+  // ── Top subjects (derived from galaxy payload) ──────────────────────
+  // Nodes with the most connections (degree) are the "hubs" — interesting
+  // entities to surface. We compute degree client-side from the edges.
+  let topSubjects = $derived.by<{ label: string; id: string; degree: number }[]>(() => {
+    if (!payload) return []
+    const degree = new Map<string, number>()
+    for (const edge of payload.edges) {
+      degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1)
+      degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1)
+    }
+    return payload.nodes
+      .map((n) => ({ label: n.label, id: n.id, degree: degree.get(n.id) ?? 0 }))
+      .filter((n) => n.degree > 0)
+      .sort((a, b) => b.degree - a.degree)
+      .slice(0, 8)
+  })
 
   interface Props {
     session: SessionStore
@@ -55,7 +76,21 @@
 
   onMount(() => {
     void loadStats()
+    void loadInbox()
   })
+
+  async function loadInbox(): Promise<void> {
+    try {
+      const proposals = await inbox()
+      if (!destroyed) {
+        pendingProposals = proposals.slice(0, 3)
+        inboxLoaded = true
+      }
+    } catch {
+      // Inbox is an optional preview on Home — errors are silent (the
+      // Inbox page surfaces them properly). Don't block Home.
+    }
+  }
 
   async function loadStats(): Promise<void> {
     const seq = ++statsSeq
@@ -189,6 +224,40 @@
             <polyline points="12 5 19 12 12 19" />
           </svg>
         </button>
+      </div>
+
+      <!-- Related links — Inbox preview + top subjects. Floats above the
+           galaxy hero as a holo rail; doesn't break the immersive feel. -->
+      <div class="home-related">
+        {#if inboxLoaded && pendingProposals.length > 0}
+          <div class="related-panel">
+            <p class="related-label">Review queue · {pendingProposals.length} pending</p>
+            <ul class="related-list">
+              {#each pendingProposals as p (p.proposal_id)}
+                <li>
+                  <button type="button" class="related-item" onclick={() => navigate('inbox')}>
+                    <span class="related-subject">{p.subject}</span>
+                    <span class="related-predicate">{p.predicate}</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
+
+        {#if topSubjects.length > 0}
+          <div class="related-panel">
+            <p class="related-label">Top subjects</p>
+            <div class="subject-tags">
+              {#each topSubjects as s (s.id)}
+                <button type="button" class="subject-tag" onclick={() => navigate('entity')}>
+                  {s.label}
+                  <span class="subject-degree" aria-hidden="true">{s.degree}</span>
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
       </div>
     {/if}
   </div>
@@ -444,6 +513,113 @@
 
   .home-enter:active {
     transform: translateY(0);
+  }
+
+  /* ── Related links (Inbox preview + top subjects) ─────────────────── */
+  .home-related {
+    display: flex;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .related-panel {
+    flex: 1;
+    min-width: 16rem;
+    max-width: 24rem;
+    padding: var(--space-sm) var(--space-md);
+    border: var(--border-holo);
+    border-radius: var(--radius-md);
+    background: color-mix(in oklch, var(--surface-flat) 82%, transparent);
+    backdrop-filter: blur(8px);
+  }
+
+  .related-label {
+    margin: 0 0 var(--space-xs);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--holo-cyan);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .related-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
+  .related-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+    padding: var(--space-xs) var(--space-sm);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+    min-height: 44px;
+    justify-content: center;
+    transition: background var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .related-item:hover {
+    background: var(--overlay-ink-06);
+  }
+
+  .related-subject {
+    font-family: var(--font-body);
+    font-size: var(--text-body);
+    font-weight: var(--weight-medium);
+  }
+
+  .related-predicate {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--text-secondary);
+  }
+
+  .subject-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+  }
+
+  .subject-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    min-height: 32px;
+    padding: var(--space-xs) var(--space-sm);
+    border: 1px solid oklch(0.78 0.13 195 / 0.25);
+    border-radius: var(--radius-pill);
+    background: oklch(0.78 0.13 195 / 0.06);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out-quart),
+      border-color var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .subject-tag:hover {
+    background: oklch(0.78 0.13 195 / 0.14);
+    border-color: oklch(0.78 0.13 195 / 0.5);
+  }
+
+  .subject-degree {
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    color: var(--text-tertiary);
+    background: var(--overlay-ink-06);
+    padding: 0 4px;
+    border-radius: var(--radius-pill);
   }
 
   /* ── Mobile ────────────────────────────────────────────────────────── */

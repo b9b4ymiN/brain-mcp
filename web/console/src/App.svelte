@@ -272,15 +272,21 @@
    * The header is no longer a centered max-width column; it's a full-
    * viewport HUD bar that anchors the cosmic framing. Sticky so it
    * stays visible on long pages (Operations, Entity). Backed by a
-   * subtle backdrop blur + cyan hairline bottom border. */
+   * subtle backdrop blur + cyan hairline bottom border with a soft cyan
+   * glow underneath — the "instrument panel separator". */
   .shell {
     position: sticky;
     top: 0;
     z-index: var(--z-sticky);
-    background: color-mix(in oklch, var(--color-void) 80%, transparent);
-    backdrop-filter: blur(12px);
-    border-bottom: 1px solid oklch(0.78 0.13 195 / 0.2);
-    box-shadow: 0 1px 24px oklch(0.78 0.13 195 / 0.06);
+    background:
+      linear-gradient(180deg,
+        color-mix(in oklch, var(--color-void) 92%, transparent) 0%,
+        color-mix(in oklch, var(--color-void) 75%, transparent) 100%);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid oklch(0.78 0.13 195 / 0.28);
+    box-shadow:
+      0 1px 0 oklch(0.78 0.13 195 / 0.12),
+      0 4px 32px oklch(0.78 0.13 195 / 0.08);
   }
 
   .shell-bar {
@@ -430,13 +436,19 @@
     z-index: var(--z-base);
     max-width: var(--shell-max-width);
     margin: 0 auto;
-    padding: 0 var(--space-lg) var(--space-xl);
+    padding: 0 var(--space-lg) var(--space-xxl);
     outline: none;
   }
 
   .shell-main.home-current {
     max-width: none;
-    padding: 0 0 var(--space-xl);
+    padding: 0 0 var(--space-xxl);
+  }
+
+  /* When the cockpit footer is fixed-bottom, reserve space for it so it
+   * never overlaps page content. Footer height ~28px + breathing room. */
+  .shell-main:not(.home-current) {
+    padding-bottom: calc(var(--space-xxl) + 28px);
   }
 
   .flash {
@@ -538,20 +550,24 @@
   }
 
   /* ── Cockpit status-bar footer ──────────────────────────────────────
-   * Full-viewport mono row at the bottom edge. Anchors the open-bottomed
-   * HudFrame reticle. Only on non-Home pages (Home's hero overlay
-   * already carries the counts). */
+   * Full-viewport mono row at the bottom edge. position: fixed so it's
+   * ALWAYS visible (sticky only worked when scrolled to bottom — user
+   * feedback). Anchors the open-bottomed HudFrame reticle. Only on non-
+   * Home pages (Home's hero overlay already carries the counts). */
   .cockpit-footer {
-    position: sticky;
+    position: fixed;
+    left: 0;
+    right: 0;
     bottom: 0;
     z-index: var(--z-sticky);
     display: flex;
     align-items: center;
     gap: var(--space-sm);
     padding: var(--space-xs) var(--space-md);
-    background: color-mix(in oklch, var(--color-void) 85%, transparent);
+    background: color-mix(in oklch, var(--color-void) 92%, transparent);
     backdrop-filter: blur(12px);
-    border-top: 1px solid oklch(0.78 0.13 195 / 0.2);
+    border-top: 1px solid oklch(0.78 0.13 195 / 0.25);
+    box-shadow: 0 -1px 24px oklch(0.78 0.13 195 / 0.08);
     font-family: var(--font-mono);
     font-size: 0.6875rem;
     color: var(--text-secondary);
@@ -618,42 +634,84 @@
     opacity: 0.7;
   }
 
-  /* ── Mobile ───────────────────────────────────────────────────────── */
+  /* ── Mobile ─────────────────────────────────────────────────────────
+   * Mobile header is a 2-row HUD: row 1 = brand (compact, sigil + word)
+   *   + signout (icon-only); row 2 = horizontal-scrolling nav strip.
+   * No wrapping, no cramped multi-row flex. */
   @media (max-width: 48rem) {
     .shell-bar {
       flex-wrap: wrap;
-      gap: var(--space-xs) var(--space-sm);
+      gap: 0;
       padding: var(--space-xs) var(--space-sm);
+      align-items: center;
+    }
+
+    /* Row 1: brand (left) + signout (right). */
+    .brand {
+      order: 1;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .brand-word {
+      font-size: 1rem;
     }
 
     .brand-kicker {
       display: none;
     }
 
+    .logout {
+      order: 2;
+      flex-shrink: 0;
+      padding: var(--space-xs);
+      min-width: 44px;
+      min-height: 44px;
+    }
+
+    /* Signout: icon-only on mobile (label hidden). */
+    .logout span {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+
+    /* Row 2: nav as horizontal-scroll strip with cyan divider. */
     .primary-nav {
       order: 3;
       width: 100%;
+      margin: 0;
+      padding: var(--space-xs) 0;
       justify-content: flex-start;
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
-      padding-bottom: var(--space-xs);
+      gap: var(--space-xs);
+      border-top: 1px solid oklch(0.78 0.13 195 / 0.15);
+      scrollbar-width: none;
+    }
+
+    .primary-nav::-webkit-scrollbar {
+      display: none;
     }
 
     .nav-item {
       flex-shrink: 0;
+      padding: var(--space-xs) var(--space-sm);
     }
 
-    /* Footer: hide the meta + sector cells on mobile to keep one row. */
+    /* Footer: hide SECTOR + BUILD cells on mobile to fit one row. */
     .footer-cell--meta,
-    .footer-cell:nth-child(8),
-    .footer-cell:nth-child(7),
-    .footer-sep:nth-child(6),
-    .footer-sep:nth-child(8) {
+    .cockpit-footer > .footer-cell:nth-of-type(4),
+    .cockpit-footer > .footer-sep:nth-of-type(3) {
       display: none;
     }
 
-    .shell-main {
-      padding: 0 var(--space-md) var(--space-xl);
+    .shell-main,
+    .shell-main:not(.home-current) {
+      padding-left: var(--space-md);
+      padding-right: var(--space-md);
     }
   }
 

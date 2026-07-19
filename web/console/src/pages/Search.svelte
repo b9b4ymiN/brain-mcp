@@ -51,6 +51,17 @@
   let results = $state<SearchHit[]>([])
   let hasSearched = $state(false)
   let sessionExpired = $state(false)
+  // Post-result re-filter (client-side, narrows the server's top_k hits).
+  let resultFilter = $state('')
+  let filteredResults = $derived.by<SearchHit[]>(() => {
+    const q = resultFilter.trim().toLowerCase()
+    if (q.length === 0) return results
+    return results.filter((hit) =>
+      [hit.subject, hit.predicate, String(hit.value), hit.domain,
+       hit.origin, hit.provenance, hit.entity_id ?? '']
+        .some((v) => v.toLowerCase().includes(q)),
+    )
+  })
 
   // Monotonic request-id guard: each `runSearch` invocation bumps this and
   // stamps the call with the new value. A late-arriving response from a
@@ -169,8 +180,31 @@
         empty={results.length === 0}
         emptyText="No claims matched this query."
       >
-        <ul class="hit-list">
-          {#each results as hit (hit.claim_id)}
+        {#if results.length > 0}
+          <div class="result-filter-bar">
+            <label for="result-filter" class="visually-hidden">Filter results</label>
+            <div class="filter-input-wrap">
+              <svg class="filter-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="8" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+              <input
+                id="result-filter"
+                type="search"
+                class="filter-input"
+                placeholder="Narrow results…"
+                bind:value={resultFilter}
+              />
+            </div>
+            <span class="filter-count">{filteredResults.length} of {results.length}</span>
+          </div>
+        {/if}
+
+        {#if filteredResults.length === 0 && resultFilter}
+          <p class="state state-empty">No results match "{resultFilter}".</p>
+        {:else}
+          <ul class="hit-list">
+            {#each filteredResults as hit (hit.claim_id)}
             <li>
               <a
                 class="hit-card"
@@ -196,6 +230,7 @@
             </li>
           {/each}
         </ul>
+        {/if}
       </StateBox>
     {/if}
   </section>
@@ -234,6 +269,67 @@
     color: var(--holo-cyan);
     letter-spacing: 0.08em;
     text-transform: uppercase;
+  }
+
+  /* ── Post-result filter bar ──────────────────────────────────────── */
+  .result-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-sm);
+    flex-wrap: wrap;
+  }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .filter-input-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 12rem;
+  }
+
+  .filter-icon {
+    position: absolute;
+    left: var(--space-sm);
+    color: var(--text-tertiary);
+    pointer-events: none;
+  }
+
+  .filter-input {
+    width: 100%;
+    min-height: 44px;
+    padding: var(--space-xs) var(--space-sm) var(--space-xs) calc(var(--space-sm) + 24px);
+    border-radius: var(--radius-md);
+    border: var(--border-holo);
+    background: var(--surface-sunken);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    transition: border-color var(--duration-fast) var(--ease-out-quart),
+      box-shadow var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .filter-input::placeholder { color: var(--text-tertiary); }
+  .filter-input:focus {
+    outline: none;
+    border-color: var(--holo-cyan);
+    box-shadow: var(--focus-ring);
+  }
+
+  .filter-count {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--text-tertiary);
+    white-space: nowrap;
   }
 
   /* Form: stacks by default (mobile-first), 7-col grid on tablet+. */
