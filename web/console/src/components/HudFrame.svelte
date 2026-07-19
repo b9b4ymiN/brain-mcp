@@ -29,13 +29,13 @@
   interface Props {
     /** Status slot — top-right mono readout. Caller passes a snippet
      * that renders e.g. `SYSTEMS NOMINAL · NODES 5 · SYNC ✓`. */
-    status?: Snippet
+    statusSlot?: Snippet
     /** Status dot color — green (nominal), amber (warning), red (alert).
      * Default amber (we're in active operations). */
     dotVariant?: 'nominal' | 'warning' | 'alert'
   }
 
-  let { status, dotVariant = 'nominal' }: Props = $props()
+  let { statusSlot, dotVariant = 'nominal' }: Props = $props()
 </script>
 
 <div class="hud-frame" aria-hidden="true">
@@ -45,10 +45,10 @@
   <span class="hud-bracket hud-bracket--br"></span>
 </div>
 
-{#if status}
+{#if statusSlot}
   <div class="hud-status" role="status" aria-live="off">
     <span class="hud-dot hud-dot--{dotVariant}" aria-hidden="true"></span>
-    {@render status()}
+    {@render statusSlot()}
   </div>
 {/if}
 

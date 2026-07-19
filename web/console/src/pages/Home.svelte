@@ -28,6 +28,11 @@
   import type { SessionStore } from '../lib/session.svelte'
   import { navigate } from '../lib/router'
   import GalaxyGraph from '../components/GalaxyGraph.svelte'
+  import {
+    setGalaxyCounts,
+    setBusy,
+    setError as setStatusError,
+  } from '../lib/systemStatus.svelte'
 
   interface Props {
     session: SessionStore
@@ -57,11 +62,15 @@
     loading = true
     error = null
     sessionExpired = false
+    setBusy()
     const controller = new AbortController()
     try {
       const result = await galaxy({ zoom: 'far', signal: controller.signal })
       if (destroyed || seq !== statsSeq) return
       payload = result
+      // Push counts into the global systemStatus store → drives the
+      // HudFrame readout + the cockpit footer.
+      setGalaxyCounts(result.node_count, result.edges.length)
     } catch (cause) {
       if (destroyed || seq !== statsSeq) return
       if (cause instanceof Error && cause.name === 'AbortError') return
@@ -69,12 +78,14 @@
         sessionExpired = true
         session.clear()
         session.pushFlash('error', 'Session expired — sign in again.')
+        setStatusError('session expired')
         return
       }
       error =
         cause instanceof ApiError
           ? `Lost signal (${cause.code}).`
           : 'Lost signal to the core — is the backend running on :8080?'
+      setStatusError(error)
     } finally {
       if (!destroyed && seq === statsSeq) loading = false
     }

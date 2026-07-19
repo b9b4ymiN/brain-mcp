@@ -35,6 +35,17 @@
 
 import ForceGraph3D, { type ForceGraph3DInstance } from '3d-force-graph'
 import type { NodeObject, LinkObject } from 'three-forcegraph'
+import {
+  CanvasTexture,
+  Color,
+  Group,
+  Mesh,
+  MeshBasicMaterial,
+  Sprite,
+  SpriteMaterial,
+  SphereGeometry,
+  SRGBColorSpace,
+} from 'three'
 import type { GalaxyNode, GalaxyPayload } from './api'
 import { escapeHtml } from './safeText'
 import type {
@@ -53,6 +64,10 @@ import type {
 interface GalaxyGraphNode extends NodeObject {
   /** Original Galaxy payload node (passed through for click callbacks). */
   raw: GalaxyNode
+  /** Degree count — computed once at mount from the edge list. Drives
+   * `nodeVal` so hub nodes read larger than leaf nodes (DESIGN.md §5
+   * "size by degree / weight"). */
+  __degree?: number
 }
 
 /**
@@ -67,6 +82,49 @@ interface GalaxyGraphLink {
   target: string
   kind: string
 }
+
+// ── Star texture cache ─────────────────────────────────────────────────────
+// A procedural radial-gradient texture (bright core, soft amber halo) that
+// reads as a real star rather than a flat-shaded sphere. Built once and
+// reused across every node; tinted per kind via SpriteMaterial.color.
+let starTexture: CanvasTexture | null = null
+
+function getStarTexture(): CanvasTexture {
+  if (starTexture !== null) return starTexture
+  const size = 64
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')!
+  const mid = size / 2
+  const gradient = ctx.createRadialGradient(mid, mid, 0, mid, mid, mid)
+  gradient.addColorStop(0.0, 'rgba(255, 255, 255, 1.0)') // hot white core
+  gradient.addColorStop(0.18, 'rgba(255, 244, 214, 0.95)') // warm white
+  gradient.addColorStop(0.4, 'rgba(245, 179, 66, 0.5)') // amber halo
+  gradient.addColorStop(0.7, 'rgba(245, 179, 66, 0.15)')
+  gradient.addColorStop(1.0, 'rgba(245, 179, 66, 0.0)')
+  ctx.fillStyle = gradient
+  ctx.fillRect(0, 0, size, size)
+  const tex = new CanvasTexture(canvas)
+  tex.colorSpace = SRGBColorSpace
+  starTexture = tex
+  return tex
+}
+
+// ── Color by kind — but cool/neutral by default (DESIGN.md §5 + One-Voice) ─
+// Most kinds read as cool-white or holo-cyan; only specific semantic kinds
+// get saturated color (danger=red, accent=amber for "active" kinds). This
+// keeps the One-Voice Rule intact: amber still carries ≤10% of the screen.
+const KIND_COLOR: Record<string, string> = {
+  // default cosmic palette
+  source: '#dce8f5', // cool white — most claims
+  concept: '#a8d4e8', // holo-cyan tint
+  entity: '#c8d4e8', // pale blue
+  project: '#e8d4c8', // warm pale
+  decision: '#f5b342', // amber — important nodes get the accent
+  error: '#e85a5a', // danger — contradictions
+}
+const DEFAULT_NODE_COLOR = '#dce8f5'
 
 /**
  * Build the renderer. Returned object's `mount` constructs the ForceGraph3D
@@ -124,6 +182,19 @@ export function createRenderer3d(opts: RendererOpts): GraphRenderer {
       ) => ForceGraph3DInstance<GalaxyGraphNode, GalaxyGraphLink>
       const instance = new Ctor(host)
 
+      // Compute degree per node (edge count) → drives nodeVal so hub
+      // nodes visibly read larger (DESIGN.md §5: "size by weight"). The
+      // degree is also surfaced to the per-node object so nodeThreeObject
+      // can scale the sprite accordingly.
+      const degreeMap = new Map<string, number>()
+      for (const link of links) {
+        degreeMap.set(link.source, (degreeMap.get(link.source) ?? 0) + 1)
+        degreeMap.set(link.target, (degreeMap.get(link.target) ?? 0) + 1)
+      }
+      for (const n of nodes) {
+        n.__degree = degreeMap.get(n.id as string) ?? 1
+      }
+
       instance
         .width(opts.width)
         .height(opts.height)
@@ -135,19 +206,66 @@ export function createRenderer3d(opts: RendererOpts): GraphRenderer {
           // PRIMARY XSS defense — float-tooltip routes strings through
           // d3 `.html()` (= innerHTML). Every untrusted field is escaped
           // first; only the `<b>` / `<br/>` formatting tags are literal.
-          // `node` is typed `GalaxyNode` via the constructor generic.
           const g = node as GalaxyGraphNode
           const label = escapeHtml(g.raw.label)
           const kind = escapeHtml(g.raw.kind)
-          // E2.2 Carry 3 — only join the domain with a middot if it's
-          // non-empty. An empty domain (which the benchmark fixtures and some
-          // ego-neighborhood nodes carry) otherwise renders a trailing
-          // " · " that looks like a broken separator.
           const domainPart = g.raw.domain ? ' · ' + escapeHtml(g.raw.domain) : ''
           return `<b>${label}</b><br/>${kind}${domainPart}`
         })
-        .nodeAutoColorBy('kind')
-        .linkAutoColorBy('kind')
+        // ── Star rendering ─────────────────────────────────────────────
+        // Replace the lib's default flat-shaded spheres with additive
+        // sprite halos over a small bright core. Reads as actual starlight,
+        // not geometry. nodeColor is per-kind (cool/neutral default, amber
+        // only on "active" kinds, danger on errors — One Voice Rule holds).
+        .nodeColor((node) => {
+          const g = node as GalaxyGraphNode
+          return KIND_COLOR[g.raw.kind] ?? DEFAULT_NODE_COLOR
+        })
+        .nodeRelSize(2.5)
+        // nodeVal scales the node by its lib-rendered default-size; combined
+        // with our per-node sprite (below) it makes hubs visibly larger.
+        .nodeVal((node) => {
+          const g = node as GalaxyGraphNode
+          return Math.min(12, 1 + Math.sqrt(g.__degree ?? 1))
+        })
+        // nodeThreeObject — wrap the node in a Group containing a bright
+        // core sphere + an additive halo sprite. The Group lets us scale
+        // both together. Bright core uses MeshBasicMaterial (unlit = pure
+        // color, reads as light not geometry).
+        .nodeThreeObject((node) => {
+          const g = node as GalaxyGraphNode
+          const val = Math.min(12, 1 + Math.sqrt(g.__degree ?? 1))
+          const coreSize = Math.max(1.5, val * 0.6)
+          const haloScale = Math.max(8, val * 6)
+          const colorHex = KIND_COLOR[g.raw.kind] ?? DEFAULT_NODE_COLOR
+
+          const group = new Group()
+          // Bright core — small sphere that always reads as a pinpoint.
+          const core = new Mesh(
+            new SphereGeometry(coreSize, 12, 12),
+            new MeshBasicMaterial({ color: new Color('#ffffff') }),
+          )
+          group.add(core)
+          // Halo sprite — the radial-gradient texture, tinted to the kind
+          // color. Additive blending = light stacks where stars overlap.
+          const haloMat = new SpriteMaterial({
+            map: getStarTexture(),
+            color: new Color(colorHex),
+            transparent: true,
+            opacity: 0.85,
+            blending: 2, // THREE.AdditiveBlending (avoid importing enum)
+            depthWrite: false,
+          })
+          const halo = new Sprite(haloMat)
+          halo.scale.set(haloScale, haloScale, 1)
+          group.add(halo)
+          return group
+        })
+        // Cool-white links, low opacity; kind isn't really meaningful for
+        // edges (most are generic), and one neutral color reads cleaner.
+        .linkColor(() => 'rgba(216, 232, 245, 0.18)')
+        .linkWidth(0.4)
+        .linkOpacity(0.35)
         .onNodeClick((node) => {
           callbacks.onNodeClick?.((node as GalaxyGraphNode).raw)
         })

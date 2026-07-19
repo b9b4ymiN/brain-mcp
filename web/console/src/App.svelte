@@ -17,9 +17,21 @@
   import Operations from './pages/Operations.svelte'
   import SpaceBackdrop from './components/SpaceBackdrop.svelte'
   import HudFrame from './components/HudFrame.svelte'
+  import { systemStatus } from './lib/systemStatus.svelte'
 
   // One session store for the whole shell. Threads into Login + nav + banner.
   const session = createSessionStore()
+
+  // System status store (cockpit HUD readout) — Home pushes galaxy
+  // counts into it; HudFrame + the cockpit footer render it. No
+  // prop-drilling. Plain object — Svelte 5 wraps it.
+  let status = $state({
+    nodeCount: 0,
+    edgeCount: 0,
+    dotVariant: 'nominal' as 'nominal' | 'warning' | 'alert',
+    statusLine: 'BOOTING · STANDBY',
+  })
+  let unsubscribeStatus: (() => void) | null = null
 
   // Current route — initialized from parseHash(), updated by hashchange.
   let currentPage = $state<ConsolePage>(parseHash())
@@ -33,9 +45,13 @@
     unsubscribe = onRouteChange((page) => {
       currentPage = page
     })
+    unsubscribeStatus = systemStatus.subscribe((s) => {
+      status = s
+    })
   })
   onDestroy(() => {
     if (unsubscribe) unsubscribe()
+    if (unsubscribeStatus) unsubscribeStatus()
   })
 
   // Whether a given page is the active route (for nav active-state styling).
@@ -83,40 +99,79 @@
 </script>
 
 <SpaceBackdrop />
-<HudFrame />
+<HudFrame dotVariant={status.dotVariant}>
+  {#snippet statusSlot()}
+    {status.statusLine}
+  {/snippet}
+</HudFrame>
 
-<header class="shell">
+<header class="shell" class:logged-in={session.isLoggedIn}>
   <a href="#main-content" class="skip-link">Skip to content</a>
-  <p class="shell-brand">Brain Console</p>
+
+  <div class="shell-bar">
+    <a
+      class="brand"
+      href="#/home"
+      onclick={(e) => {
+        e.preventDefault()
+        navigate('home')
+      }}
+      aria-label="Brain Console — home"
+    >
+      <span class="brand-sigil" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+          <!-- Brain sigil: a stylized node-graph mark — central amber node
+               with 4 orbital nodes, one elliptical orbit ring. Reads as
+               "knowledge graph" + "star system" simultaneously. -->
+          <ellipse cx="16" cy="16" rx="13" ry="6" transform="rotate(-20 16 16)" />
+          <circle cx="16" cy="16" r="3" fill="currentColor" stroke="none" />
+          <circle cx="3" cy="14" r="1.6" fill="currentColor" stroke="none" />
+          <circle cx="27" cy="11" r="1.6" fill="currentColor" stroke="none" />
+          <circle cx="22" cy="24" r="1.6" fill="currentColor" stroke="none" />
+          <circle cx="8" cy="23" r="1.6" fill="currentColor" stroke="none" />
+        </svg>
+      </span>
+      <span class="brand-text">
+        <span class="brand-word">Brain Console</span>
+        <span class="brand-kicker">Observer's Deck</span>
+      </span>
+    </a>
+
+    {#if session.isLoggedIn}
+      <nav class="primary-nav" aria-label="Primary">
+        {#each PAGES as page (page)}
+          <a
+            href={`#/${page}`}
+            class="nav-item"
+            class:active={isActive(page)}
+            aria-current={isActive(page) ? 'page' : undefined}
+            onclick={(e) => {
+              e.preventDefault()
+              navigate(page)
+            }}
+          >
+            <span class="nav-label">{PAGE_LABELS[page]}</span>
+            <span class="nav-tick" aria-hidden="true"></span>
+          </a>
+        {/each}
+      </nav>
+
+      <button type="button" class="logout" onclick={handleLogout}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+          <polyline points="16 17 21 12 16 7" />
+          <line x1="21" y1="12" x2="9" y2="12" />
+        </svg>
+        <span>Sign out</span>
+      </button>
+    {/if}
+  </div>
 
   {#if session.flash}
     <div class="flash flash-{session.flash.kind}" role="status" aria-live="polite">
       <span>{session.flash.text}</span>
       <button type="button" onclick={() => session.clearFlash()} aria-label="Dismiss">x</button>
     </div>
-  {/if}
-
-  {#if session.isLoggedIn}
-    <nav aria-label="Primary">
-      <ul>
-        {#each PAGES as page (page)}
-          <li>
-            <a
-              href={`#/${page}`}
-              class:active={isActive(page)}
-              aria-current={isActive(page) ? 'page' : undefined}
-              onclick={(e) => {
-                e.preventDefault()
-                navigate(page)
-              }}
-            >
-              {PAGE_LABELS[page]}
-            </a>
-          </li>
-        {/each}
-      </ul>
-    </nav>
-    <button type="button" class="logout" onclick={handleLogout}>Sign out</button>
   {/if}
 </header>
 
@@ -158,6 +213,38 @@
   {/if}
 </main>
 
+{#if session.isLoggedIn && currentPage !== 'home'}
+  <!-- Cockpit status-bar footer — anchors the open-bottomed reticle on
+       non-Home pages. On Home the hero overlay already carries counts,
+       so the footer collapses to nothing there. -->
+  <footer class="cockpit-footer" aria-label="System status">
+    <span class="footer-cell">
+      <span class="footer-dot footer-dot--{status.dotVariant}" aria-hidden="true"></span>
+      <span class="footer-label">{status.dotVariant === 'nominal' ? 'LINK' : status.dotVariant === 'warning' ? 'SYNC' : 'LOST'}</span>
+    </span>
+    <span class="footer-sep" aria-hidden="true">·</span>
+    <span class="footer-cell">
+      <span class="footer-key">NODES</span>
+      <span class="footer-val">{status.nodeCount}</span>
+    </span>
+    <span class="footer-sep" aria-hidden="true">·</span>
+    <span class="footer-cell">
+      <span class="footer-key">EDGES</span>
+      <span class="footer-val">{status.edgeCount}</span>
+    </span>
+    <span class="footer-sep" aria-hidden="true">·</span>
+    <span class="footer-cell">
+      <span class="footer-key">SECTOR</span>
+      <span class="footer-val">{PAGE_LABELS[currentPage].toUpperCase()}</span>
+    </span>
+    <span class="footer-spacer"></span>
+    <span class="footer-cell footer-cell--meta">
+      <span class="footer-key">BUILD</span>
+      <span class="footer-val">v0.1</span>
+    </span>
+  </footer>
+{/if}
+
 <style>
   /* Skip-to-content link — visible on focus only (a11y). */
   .skip-link {
@@ -181,73 +268,144 @@
     outline: none;
   }
 
+  /* ── Shell — full-bleed cockpit header bar ───────────────────────────
+   * The header is no longer a centered max-width column; it's a full-
+   * viewport HUD bar that anchors the cosmic framing. Sticky so it
+   * stays visible on long pages (Operations, Entity). Backed by a
+   * subtle backdrop blur + cyan hairline bottom border. */
   .shell {
-    position: relative;
+    position: sticky;
+    top: 0;
     z-index: var(--z-sticky);
+    background: color-mix(in oklch, var(--color-void) 80%, transparent);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid oklch(0.78 0.13 195 / 0.2);
+    box-shadow: 0 1px 24px oklch(0.78 0.13 195 / 0.06);
+  }
+
+  .shell-bar {
     max-width: var(--shell-max-width);
     margin: 0 auto;
-    padding: var(--space-lg) var(--space-lg) 0;
+    padding: var(--space-sm) var(--space-md);
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
   }
 
-  /* Main — sits above the SpaceBackdrop (z=0) and the cursor canvas
-   * (z=1). Page content owns z-index from here up. */
-  .shell-main {
-    position: relative;
-    z-index: var(--z-base);
+  /* ── Brand: sigil + wordmark + kicker ─────────────────────────────── */
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-sm);
+    text-decoration: none;
+    color: var(--text-primary);
+    padding: var(--space-xs) var(--space-xs);
+    border-radius: var(--radius-md);
+    transition: background var(--duration-fast) var(--ease-out-quart);
+    flex-shrink: 0;
   }
 
-  /* Shell wordmark — a <p>, not <h1>. Each page owns its own <h1>
-   * (Home: the wordmark; others: the page title). Two <h1> per page
-   * violated the one-h1-per-page convention (WCAG 1.3.1). */
-  .shell-brand {
-    margin: 0 0 var(--space-sm);
+  .brand:hover {
+    background: var(--overlay-ink-04);
+  }
+
+  .brand-sigil {
+    display: inline-flex;
+    color: var(--color-accent);
+    filter: drop-shadow(0 0 8px oklch(0.82 0.14 75 / 0.5));
+  }
+
+  .brand-text {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.1;
+  }
+
+  .brand-word {
     font-family: var(--font-display);
-    font-size: var(--text-headline);
+    font-size: 1.0625rem;
     font-weight: var(--weight-semibold);
-    letter-spacing: var(--text-headline-tracking);
-    line-height: var(--text-headline-leading);
+    letter-spacing: -0.01em;
     color: var(--text-primary);
   }
 
-  nav ul {
-    list-style: none;
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-xs);
-    padding: 0;
-    margin: 0 0 var(--space-md);
+  .brand-kicker {
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    color: var(--holo-cyan);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-top: 1px;
   }
 
-  nav a {
-    display: inline-flex;
+  /* ── Primary nav — instrument selectors ─────────────────────────────
+   * Each nav item is a pill with a tiny cyan tick mark above the label.
+   * Active item: amber tick + amber label + subtle surface. */
+  .primary-nav {
+    display: flex;
     align-items: center;
+    gap: var(--space-xs);
+    margin: 0 auto;
+    padding: 0;
+  }
+
+  .nav-item {
+    position: relative;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
     min-height: 44px;
-    padding: var(--space-sm) var(--space-md);
-    border-radius: var(--radius-md);
+    padding: var(--space-xs) var(--space-sm);
     text-decoration: none;
     color: var(--text-secondary);
     font-family: var(--font-body);
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
     letter-spacing: var(--text-label-tracking);
-    transition: background var(--duration-fast) var(--ease-out-quart),
-      color var(--duration-fast) var(--ease-out-quart);
+    border-radius: var(--radius-md);
+    transition: color var(--duration-fast) var(--ease-out-quart),
+      background var(--duration-fast) var(--ease-out-quart);
   }
 
-  nav a:hover {
+  .nav-tick {
+    width: 16px;
+    height: 1px;
+    background: var(--color-hairline);
+    transform: scaleX(0.6);
+    transform-origin: center;
+    transition: background var(--duration-fast) var(--ease-out-quart),
+      transform var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .nav-item:hover {
     color: var(--text-primary);
     background: var(--overlay-ink-04);
   }
 
-  nav a.active {
+  .nav-item:hover .nav-tick {
+    background: var(--holo-cyan);
+    transform: scaleX(1);
+  }
+
+  .nav-item.active {
     color: var(--text-primary);
     background: var(--overlay-ink-06);
   }
 
+  .nav-item.active .nav-tick {
+    background: var(--color-accent);
+    transform: scaleX(1);
+    box-shadow: 0 0 8px var(--color-accent);
+  }
+
+  /* ── Logout ───────────────────────────────────────────────────────── */
   .logout {
-    margin: 0 0 var(--space-md);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
     min-height: 44px;
-    padding: var(--space-sm) var(--space-md);
+    padding: var(--space-xs) var(--space-sm);
     border: var(--border-hairline);
     border-radius: var(--radius-md);
     background: transparent;
@@ -256,7 +414,9 @@
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
     cursor: pointer;
-    transition: background var(--duration-fast) var(--ease-out-quart);
+    flex-shrink: 0;
+    transition: background var(--duration-fast) var(--ease-out-quart),
+      color var(--duration-fast) var(--ease-out-quart);
   }
 
   .logout:hover {
@@ -264,24 +424,59 @@
     color: var(--text-primary);
   }
 
+  /* ── Main + flash ─────────────────────────────────────────────────── */
   .shell-main {
+    position: relative;
+    z-index: var(--z-base);
     max-width: var(--shell-max-width);
     margin: 0 auto;
     padding: 0 var(--space-lg) var(--space-xl);
     outline: none;
   }
 
-  /* Home is full-bleed — the galaxy hero IS the page. Drop the max-width
-   * + horizontal padding so the hero can break out to the viewport edges.
-   * Vertical padding stays so the hero doesn't touch the header. */
   .shell-main.home-current {
     max-width: none;
     padding: 0 0 var(--space-xl);
   }
 
+  .flash {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    margin: var(--space-md) auto 0;
+    max-width: var(--shell-max-width);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-hairline);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
+    color: var(--text-primary);
+    position: relative;
+    z-index: var(--z-sticky);
+  }
+
+  .flash-success { background: var(--overlay-success-soft); }
+  .flash-error   { background: var(--overlay-danger-soft); }
+  .flash-info    { background: var(--overlay-info-soft); }
+
+  .flash button {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-family: var(--font-body);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* ── Login form ───────────────────────────────────────────────────── */
   .login {
     max-width: 24rem;
-    padding: var(--space-lg) 0;
+    padding: var(--space-xl) 0;
+    margin: 0 auto;
   }
 
   .login form {
@@ -309,10 +504,7 @@
     transition: border-color var(--duration-fast) var(--ease-out-quart);
   }
 
-  .login input::placeholder {
-    color: var(--text-tertiary);
-  }
-
+  .login input::placeholder { color: var(--text-tertiary); }
   .login input:focus {
     outline: none;
     border-color: var(--color-accent);
@@ -333,10 +525,7 @@
     transition: background var(--duration-fast) var(--ease-out-quart);
   }
 
-  .login button:hover:not(:disabled) {
-    background: var(--color-accent-deep);
-  }
-
+  .login button:hover:not(:disabled) { background: var(--color-accent-deep); }
   .login button:disabled {
     opacity: 0.55;
     cursor: not-allowed;
@@ -348,50 +537,130 @@
     font-size: var(--text-body);
   }
 
-  .flash {
+  /* ── Cockpit status-bar footer ──────────────────────────────────────
+   * Full-viewport mono row at the bottom edge. Anchors the open-bottomed
+   * HudFrame reticle. Only on non-Home pages (Home's hero overlay
+   * already carries the counts). */
+  .cockpit-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: var(--z-sticky);
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: var(--space-md);
-    padding: var(--space-sm) var(--space-md);
-    margin: 0 0 var(--space-md);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-hairline);
-    font-family: var(--font-body);
-    font-size: var(--text-body);
-    color: var(--text-primary);
-  }
-
-  .flash-success {
-    background: var(--overlay-success-soft);
-  }
-
-  .flash-error {
-    background: var(--overlay-danger-soft);
-  }
-
-  .flash-info {
-    background: var(--overlay-info-soft);
-  }
-
-  .flash button {
-    background: transparent;
-    border: none;
+    gap: var(--space-sm);
+    padding: var(--space-xs) var(--space-md);
+    background: color-mix(in oklch, var(--color-void) 85%, transparent);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid oklch(0.78 0.13 195 / 0.2);
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
     color: var(--text-secondary);
-    cursor: pointer;
-    font-family: var(--font-body);
-    font-size: var(--text-label);
-    font-weight: var(--weight-medium);
-    min-width: 44px;
-    min-height: 44px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
   }
 
-  /* Mobile: shell padding tightens */
-  @media (max-width: 40rem) {
-    .shell,
+  .footer-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    white-space: nowrap;
+  }
+
+  .footer-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+
+  .footer-dot--nominal {
+    background: var(--color-success);
+    box-shadow: 0 0 6px var(--color-success);
+  }
+
+  .footer-dot--warning {
+    background: var(--color-accent);
+    box-shadow: 0 0 6px var(--color-accent);
+    animation: footer-pulse 1.4s var(--ease-breathe) infinite;
+  }
+
+  .footer-dot--alert {
+    background: var(--color-danger);
+    box-shadow: 0 0 8px var(--color-danger);
+    animation: footer-pulse 0.8s var(--ease-breathe) infinite;
+  }
+
+  @keyframes footer-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.4; }
+  }
+
+  .footer-key {
+    color: var(--text-tertiary);
+    font-weight: var(--weight-medium);
+  }
+
+  .footer-val {
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .footer-sep {
+    color: var(--text-tertiary);
+    opacity: 0.6;
+  }
+
+  .footer-spacer {
+    flex: 1;
+  }
+
+  .footer-cell--meta {
+    opacity: 0.7;
+  }
+
+  /* ── Mobile ───────────────────────────────────────────────────────── */
+  @media (max-width: 48rem) {
+    .shell-bar {
+      flex-wrap: wrap;
+      gap: var(--space-xs) var(--space-sm);
+      padding: var(--space-xs) var(--space-sm);
+    }
+
+    .brand-kicker {
+      display: none;
+    }
+
+    .primary-nav {
+      order: 3;
+      width: 100%;
+      justify-content: flex-start;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: var(--space-xs);
+    }
+
+    .nav-item {
+      flex-shrink: 0;
+    }
+
+    /* Footer: hide the meta + sector cells on mobile to keep one row. */
+    .footer-cell--meta,
+    .footer-cell:nth-child(8),
+    .footer-cell:nth-child(7),
+    .footer-sep:nth-child(6),
+    .footer-sep:nth-child(8) {
+      display: none;
+    }
+
     .shell-main {
-      padding-left: var(--space-md);
-      padding-right: var(--space-md);
+      padding: 0 var(--space-md) var(--space-xl);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .footer-dot {
+      animation: none;
+      opacity: 0.85;
     }
   }
 </style>
