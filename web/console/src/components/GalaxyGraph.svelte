@@ -44,6 +44,7 @@
     type ZoomLevel,
   } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
+  import type { ToastStore } from '../lib/toast.svelte'
   import {
     createRenderer,
     detectRenderer,
@@ -57,6 +58,8 @@
   interface Props {
     /** Session store — for `clear()` on 401 + flash banners. */
     session: SessionStore
+    /** Toast store — for `push()` on session expiry. */
+    toasts: ToastStore
     /** Zoom level. When `focus` is set, `'close'` is the natural default. */
     zoom?: ZoomLevel
     /** Optional entity-id to pin an ego neighborhood around. */
@@ -83,6 +86,7 @@
 
   let {
     session,
+    toasts,
     zoom = 'far',
     focus,
     domain,
@@ -176,7 +180,7 @@
       if (cause instanceof ApiError && cause.status === 401) {
         sessionExpired = true
         session.clear()
-        session.pushFlash('error', 'Session expired — sign in again.')
+        toasts.push('error', 'Session expired', 'Please sign in again.')
         return
       }
       error =
@@ -421,7 +425,9 @@
   {/if}
 
   {#if sessionExpired}
-    <p class="state state-error" role="alert">Session expired — sign in again.</p>
+    <p class="state state-loading" role="status" aria-live="polite">
+      Session ended — sign in again via the prompt.
+    </p>
   {:else if error}
     <p class="state state-error" role="alert">
       {error}

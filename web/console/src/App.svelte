@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte'
   import { login as apiLogin, logout as apiLogout, ApiError } from './lib/api'
   import { createSessionStore } from './lib/session.svelte'
+  import { createToastStore } from './lib/toast.svelte'
   import {
     navigate,
     onRouteChange,
@@ -17,10 +18,16 @@
   import Operations from './pages/Operations.svelte'
   import SpaceBackdrop from './components/SpaceBackdrop.svelte'
   import HudFrame from './components/HudFrame.svelte'
+  import Toaster from './components/Toaster.svelte'
   import { systemStatus } from './lib/systemStatus.svelte'
 
   // One session store for the whole shell. Threads into Login + nav + banner.
   const session = createSessionStore()
+
+  // One toast store for the whole shell (Phase G, 2026-07-20). Mounted once;
+  // threaded into every page so any component can push a notification. The
+  // Toaster component renders the active stack at z-toast:500.
+  const toasts = createToastStore()
 
   // System status store (cockpit HUD readout) — Home pushes galaxy
   // counts into it; HudFrame + the cockpit footer render it. No
@@ -64,23 +71,23 @@
     if (submitting) return
     const trimmedUser = username.trim()
     if (!trimmedUser || !password) {
-      session.pushFlash('error', 'Enter your username and password to sign in.')
+      toasts.push('error', 'Sign-in incomplete', 'Enter your username and password.')
       return
     }
     submitting = true
     try {
       const result = await apiLogin({ username: trimmedUser, password })
       session.setCsrf(result.csrf_token, trimmedUser)
-      session.pushFlash('success', 'Signed in.')
+      toasts.push('success', `Welcome, ${trimmedUser}`)
       navigate('home')
     } catch (cause) {
-      const message =
-        cause instanceof ApiError && cause.code === 'unauthorized'
-          ? 'Wrong username or password — try again.'
-          : cause instanceof ApiError
-            ? `Sign-in failed (${cause.code}).`
-            : 'Sign-in failed — is the backend running on :8080?'
-      session.pushFlash('error', message)
+      if (cause instanceof ApiError && cause.code === 'unauthorized') {
+        toasts.push('error', 'Wrong username or password', 'Check your credentials and try again.')
+      } else if (cause instanceof ApiError) {
+        toasts.push('error', 'Sign-in failed', `Server returned: ${cause.code}`)
+      } else {
+        toasts.push('error', 'Sign-in failed', 'Is the backend running on :8080?')
+      }
     } finally {
       submitting = false
     }
@@ -94,9 +101,13 @@
       // clear local state so the user is dropped back to the login screen.
     }
     session.clear()
+    toasts.clear()
     username = ''
     password = ''
     navigate('home')
+    // Logout was silent before (no feedback at all). A brief info toast
+    // confirms the action without nagging.
+    toasts.push('info', 'Signed out')
   }
 </script>
 
@@ -106,6 +117,7 @@
     {status.statusLine}
   {/snippet}
 </HudFrame>
+<Toaster {toasts} />
 
 <header class="shell" class:logged-in={session.isLoggedIn}>
   <a href="#main-content" class="skip-link">Skip to content</a>
@@ -168,13 +180,6 @@
       </button>
     {/if}
   </div>
-
-  {#if session.flash}
-    <div class="flash flash-{session.flash.kind}" role="status" aria-live="polite">
-      <span>{session.flash.text}</span>
-      <button type="button" onclick={() => session.clearFlash()} aria-label="Dismiss">x</button>
-    </div>
-  {/if}
 </header>
 
 <main class="shell-main" class:home-current={currentPage === 'home'} id="main-content" tabindex="-1">
@@ -214,15 +219,15 @@
       </form>
     </section>
   {:else if currentPage === 'home'}
-    <Home {session} />
+    <Home {session} {toasts} />
   {:else if currentPage === 'search'}
-    <Search {session} />
+    <Search {session} {toasts} />
   {:else if currentPage === 'inbox'}
-    <Inbox {session} />
+    <Inbox {session} {toasts} />
   {:else if currentPage === 'entity'}
-    <Entity {session} />
+    <Entity {session} {toasts} />
   {:else if currentPage === 'operations'}
-    <Operations {session} />
+    <Operations {session} {toasts} />
   {/if}
 </main>
 
@@ -471,39 +476,6 @@
    * never overlaps page content. Footer height ~28px + breathing room. */
   .shell-main:not(.home-current) {
     padding-bottom: calc(var(--space-xxl) + 28px);
-  }
-
-  .flash {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-md);
-    padding: var(--space-sm) var(--space-md);
-    margin: var(--space-md) auto 0;
-    max-width: var(--shell-max-width);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--color-hairline);
-    font-family: var(--font-body);
-    font-size: var(--text-body);
-    color: var(--text-primary);
-    position: relative;
-    z-index: var(--z-sticky);
-  }
-
-  .flash-success { background: var(--overlay-success-soft); }
-  .flash-error   { background: var(--overlay-danger-soft); }
-  .flash-info    { background: var(--overlay-info-soft); }
-
-  .flash button {
-    background: transparent;
-    border: none;
-    color: var(--text-secondary);
-    cursor: pointer;
-    font-family: var(--font-body);
-    font-size: var(--text-label);
-    font-weight: var(--weight-medium);
-    min-width: 44px;
-    min-height: 44px;
   }
 
   /* ── Login form ───────────────────────────────────────────────────── */

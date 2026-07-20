@@ -35,6 +35,7 @@
   } from '../lib/api'
   import { tick } from 'svelte'
   import type { SessionStore } from '../lib/session.svelte'
+  import type { ToastStore } from '../lib/toast.svelte'
   import DestructiveDialog from './DestructiveDialog.svelte'
   import { formatValue } from '../lib/format'
 
@@ -53,6 +54,8 @@
   interface Props {
     /** Active session (used for flash banners on success/error). */
     session: SessionStore
+    /** Toast store — for success/error toasts. */
+    toasts: ToastStore
     /** The current entity's UUID — `source` for merge/split. */
     entityId: string
     /**
@@ -67,7 +70,7 @@
     onMutated: () => void
   }
 
-  let { session, entityId, claims, onMutated }: Props = $props()
+  let { session, toasts, entityId, claims, onMutated }: Props = $props()
 
   // ── Dialog state ─────────────────────────────────────────────────────────
   type Dialog =
@@ -148,7 +151,7 @@
   async function startMerge(): Promise<void> {
     const target = mergeTarget.trim()
     if (!target) {
-      session.pushFlash('error', 'Enter a target entity UUID.')
+      toasts.push('error', 'Target required', 'Enter a target entity UUID.')
       return
     }
     mergeLoading = true
@@ -183,8 +186,9 @@
       }))
       .filter((r) => r.predicate && r.target_entity_id)
     if (cleaned.length === 0) {
-      session.pushFlash(
+      toasts.push(
         'error',
+        'Assignment rows required',
         'Add at least one predicate → target row before splitting.',
       )
       return
@@ -193,8 +197,9 @@
     const predicates = new Set<string>()
     for (const row of cleaned) {
       if (predicates.has(row.predicate)) {
-        session.pushFlash(
+        toasts.push(
           'error',
+          'Duplicate predicate',
           `Predicate "${row.predicate}" appears more than once — pick distinct predicates.`,
         )
         return
@@ -225,15 +230,17 @@
     try {
       if (d.kind === 'merge') {
         const result = await apiEntityMerge(entityId, d.target)
-        session.pushFlash(
+        toasts.push(
           'success',
-          `Merged entity into ${d.target.slice(0, 8)}… (event_seq=${result.event_seq}).`,
+          'Entity merged',
+          `target ${d.target.slice(0, 8)}… · event_seq=${result.event_seq}`,
         )
       } else if (d.kind === 'split') {
         const result = await apiEntitySplit(entityId, d.assignments)
-        session.pushFlash(
+        toasts.push(
           'success',
-          `Split: moved ${result.moved_claim_count} claim(s), ${result.source_remaining_claim_count} remain (event_seq=${result.event_seq}).`,
+          'Entity split',
+          `moved ${result.moved_claim_count} claim(s), ${result.source_remaining_claim_count} remain · event_seq=${result.event_seq}`,
         )
       }
       dialog = null
@@ -268,37 +275,36 @@
     if (!t || retracting) return
     const op = t.confirmOp.trim()
     if (!op) {
-      session.pushFlash('error', 'Enter the claim confirm operation id.')
+      toasts.push('error', 'Operation id required', 'Enter the claim confirm operation id.')
       return
     }
     retracting = true
     try {
       const result = await claimRetractLocal(op)
-      session.pushFlash(
+      toasts.push(
         'success',
-        `Retracted claim ${t.claim.claim_id.slice(0, 8)}… (event_seq=${result.event_seq}). Undo: supersede.`,
+        'Claim retracted',
+        `claim ${t.claim.claim_id.slice(0, 8)}… · event_seq=${result.event_seq} · undo: supersede`,
       )
       retractTarget = null
       onMutated()
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401) {
         session.clear()
-        session.pushFlash('error', 'Session expired — sign in again.')
+        toasts.push('error', 'Session expired', 'Please sign in again.')
         retractTarget = null
         return
       }
       if (cause instanceof ApiError && cause.status === 404) {
-        session.pushFlash(
+        toasts.push(
           'error',
+          'Operation id not found',
           'Confirm operation id not found — check it matches the claim.',
         )
       } else if (cause instanceof ApiError) {
-        session.pushFlash('error', `Retract failed (${cause.code}).`)
+        toasts.push('error', 'Retract failed', `Server returned: ${cause.code}`)
       } else {
-        session.pushFlash(
-          'error',
-          'Retract failed — is the backend running on :8080?',
-        )
+        toasts.push('error', 'Retract failed', 'Is the backend running on :8080?')
       }
     } finally {
       retracting = false
@@ -309,13 +315,14 @@
   function onDestructiveFetchError(cause: unknown): void {
     if (cause instanceof ApiError && cause.status === 401) {
       session.clear()
-      session.pushFlash('error', 'Session expired — sign in again.')
+      toasts.push('error', 'Session expired', 'Please sign in again.')
       return
     }
-    session.pushFlash(
+    toasts.push(
       'error',
+      'Warning unavailable',
       cause instanceof ApiError
-        ? `Could not load destructive warning (${cause.code}).`
+        ? `Server returned: ${cause.code}`
         : 'Could not load destructive warning — is the backend running on :8080?',
     )
   }
@@ -324,39 +331,38 @@
     if (cause instanceof ApiError) {
       if (cause.status === 401) {
         session.clear()
-        session.pushFlash('error', 'Session expired — sign in again.')
+        toasts.push('error', 'Session expired', 'Please sign in again.')
         dialog = null
         return
       }
       if (cause.status === 403) {
         session.clear()
-        session.pushFlash(
+        toasts.push(
           'error',
-          'Session expired or CSRF failed — please sign in again.',
+          'Session expired',
+          'Session or CSRF token rejected. Please sign in again.',
         )
         dialog = null
         return
       }
       if (cause.status === 404) {
-        session.pushFlash('error', 'Entity not found.')
+        toasts.push('error', 'Entity not found')
         dialog = null
         return
       }
       if (cause.status === 409) {
-        session.pushFlash(
+        toasts.push(
           'error',
-          'Conflict — another client already mutated this entity concurrently.',
+          'Conflict',
+          'Another client already mutated this entity concurrently.',
         )
         dialog = null
         return
       }
-      session.pushFlash('error', `Action failed (${cause.code}).`)
+      toasts.push('error', 'Action failed', `Server returned: ${cause.code}`)
       return
     }
-    session.pushFlash(
-      'error',
-      'Action failed — is the backend running on :8080?',
-    )
+    toasts.push('error', 'Action failed', 'Is the backend running on :8080?')
   }
 </script>
 

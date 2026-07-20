@@ -32,10 +32,10 @@ export async function loginAsConsole(page: Page): Promise<void> {
   await page.getByLabel('Username').fill(CONSOLE_USERNAME)
   await page.getByLabel('Password').fill(CONSOLE_PASSWORD)
   await page.getByRole('button', { name: 'Sign in' }).click()
-  // Post-login: a success flash (the `.flash` banner in App.svelte — scoped
-  // by class because StateBox's loading paragraph also uses role="status",
-  // which would make a role-based selector ambiguous) + the primary nav.
-  await expect(page.locator('.flash')).toContainText('Signed in')
+  // Post-login: a success toast (Phase G, 2026-07-20 — the old `.flash`
+  // banner was replaced with a stack of `.toast` cards). The success toast
+  // title greets the signed-in user, so we assert it contains the username.
+  await expect(page.locator('.toast-success')).toContainText(CONSOLE_USERNAME)
   await expect(page.getByRole('navigation', { name: 'Primary' })).toBeVisible()
 }
 

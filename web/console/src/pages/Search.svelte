@@ -25,6 +25,7 @@
   import { onMount } from 'svelte'
   import { search, ApiError, type SearchHit } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
+  import type { ToastStore } from '../lib/toast.svelte'
   import { navigate } from '../lib/router'
   import {
     consumePendingQuery,
@@ -36,9 +37,10 @@
 
   interface Props {
     session: SessionStore
+    toasts: ToastStore
   }
 
-  let { session }: Props = $props()
+  let { session, toasts }: Props = $props()
 
   // Form state.
   let query = $state('')
@@ -104,7 +106,7 @@
       if (cause instanceof ApiError && cause.status === 401) {
         sessionExpired = true
         session.clear()
-        session.pushFlash('error', 'Session expired — sign in again.')
+        toasts.push('error', 'Session expired', 'Please sign in again.')
         return
       }
       results = []
@@ -171,7 +173,9 @@
 
   <section class="results" aria-live="polite" aria-busy={loading}>
     {#if sessionExpired}
-      <p class="state state-error" role="alert">Session expired — sign in again.</p>
+      <p class="state state-loading" role="status" aria-live="polite">
+        Session ended — sign in again via the prompt.
+      </p>
     {:else if !hasSearched}
       <div class="state state-empty">
         <p class="state-empty-headline">Run a search to see matching claims.</p>
@@ -500,11 +504,6 @@
     color: var(--text-primary);
     font-family: var(--font-body);
     font-size: var(--text-body);
-  }
-
-  .state-error {
-    background: var(--surface-danger-soft);
-    border-color: var(--color-danger);
   }
 
   .state-empty {

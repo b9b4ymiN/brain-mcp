@@ -41,6 +41,7 @@
     type ClientActivity,
   } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
+  import type { ToastStore } from '../lib/toast.svelte'
   import { consumePendingSubject, setPendingSubject } from '../lib/quickSearch'
   import StateBox from '../components/StateBox.svelte'
   import HoloPanel from '../components/HoloPanel.svelte'
@@ -138,9 +139,10 @@
 
   interface Props {
     session: SessionStore
+    toasts: ToastStore
   }
 
-  let { session }: Props = $props()
+  let { session, toasts }: Props = $props()
 
   // Picker form.
   let subjectInput = $state('')
@@ -215,7 +217,7 @@
       if (cause instanceof ApiError && cause.status === 401) {
         sessionExpired = true
         session.clear()
-        session.pushFlash('error', 'Session expired — sign in again.')
+        toasts.push('error', 'Session expired', 'Please sign in again.')
         return
       }
       claims = []
@@ -398,7 +400,9 @@
   {/if}
 
   {#if sessionExpired}
-    <p class="state state-error" role="alert">Session expired — sign in again.</p>
+    <p class="state state-loading" role="status" aria-live="polite">
+      Session ended — sign in again via the prompt.
+    </p>
   {:else if !hasLoaded}
     <div class="state state-empty-cta">
       <p class="state-empty-cta-headline">Enter a subject to view its claims.</p>
@@ -410,6 +414,7 @@
     {@const focusId = activeEntityId}
     <GalaxyGraph
       {session}
+      {toasts}
       zoom="close"
       focus={focusId ?? undefined}
       domain={claims[0]?.domain}
@@ -595,6 +600,7 @@
       />
       <EntityDestructivePanel
         {session}
+        {toasts}
         entityId={activeEntityId}
         claims={claims.map((c) => ({
           claim_id: c.claim_id,

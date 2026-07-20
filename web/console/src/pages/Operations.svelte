@@ -49,6 +49,7 @@
     type DestructivePreviewItem,
   } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
+  import type { ToastStore } from '../lib/toast.svelte'
   import { navigate } from '../lib/router'
   import { setPendingSubject } from '../lib/quickSearch'
   import StateBox from '../components/StateBox.svelte'
@@ -67,9 +68,10 @@
 
   interface Props {
     session: SessionStore
+    toasts: ToastStore
   }
 
-  let { session }: Props = $props()
+  let { session, toasts }: Props = $props()
 
   // ── Trust section ────────────────────────────────────────────────────────
   let trustData = $state<TrustResponse | null>(null)
@@ -261,7 +263,7 @@
   ): void {
     if (cause instanceof ApiError && cause.status === 401) {
       session.clear()
-      session.pushFlash('error', 'Session expired — sign in again.')
+      toasts.push('error', 'Session expired', 'Please sign in again.')
       return
     }
     setError(
@@ -290,7 +292,7 @@
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
     if (ids.length === 0) {
-      session.pushFlash('error', 'Enter at least one object id to purge.')
+      toasts.push('error', 'Object ids required', 'Enter at least one object id to purge.')
       return
     }
     purgePreviewing = true
@@ -303,19 +305,13 @@
       if (cause instanceof ApiError) {
         if (cause.status === 401) {
           session.clear()
-          session.pushFlash('error', 'Session expired — sign in again.')
+          toasts.push('error', 'Session expired', 'Please sign in again.')
           return
         }
-        session.pushFlash(
-          'error',
-          `Purge preview failed (${cause.code}).`,
-        )
+        toasts.push('error', 'Purge preview failed', `Server returned: ${cause.code}`)
         return
       }
-      session.pushFlash(
-        'error',
-        'Purge preview failed — is the backend running on :8080?',
-      )
+      toasts.push('error', 'Purge preview failed', 'Is the backend running on :8080?')
     } finally {
       purgePreviewing = false
     }
@@ -329,9 +325,10 @@
         purgePreview.preview_hash,
         purgePreview.nonce,
       )
-      session.pushFlash(
+      toasts.push(
         'success',
-        `Hard purge ${receipt.state} (purge_id=${receipt.purge_id.slice(0, 8)}…).`,
+        `Hard purge ${receipt.state}`,
+        `purge_id=${receipt.purge_id.slice(0, 8)}…`,
       )
       closePurgeDialog()
       // Reset the textarea + cached preview so a second purge starts clean.
@@ -342,7 +339,7 @@
       if (cause instanceof ApiError) {
         if (cause.status === 401) {
           session.clear()
-          session.pushFlash('error', 'Session expired — sign in again.')
+          toasts.push('error', 'Session expired', 'Please sign in again.')
           closePurgeDialog()
           return
         }
@@ -350,21 +347,21 @@
           // reauth_required OR CSRF — either way the user must re-auth. Keep
           // the dialog open so they can re-auth inline without losing the
           // preview.
-          session.pushFlash(
-            'error',
-            cause.code === 'reauth_required'
-              ? 'Re-authentication required — use the form below.'
-              : 'Session expired or CSRF failed — please sign in again.',
-          )
+          if (cause.code === 'reauth_required') {
+            toasts.push('error', 'Re-authentication required', 'Use the form below.')
+          } else {
+            toasts.push(
+              'error',
+              'Session expired',
+              'Session or CSRF token rejected. Please sign in again.',
+            )
+          }
           return
         }
-        session.pushFlash('error', `Purge failed (${cause.code}).`)
+        toasts.push('error', 'Purge failed', `Server returned: ${cause.code}`)
         return
       }
-      session.pushFlash(
-        'error',
-        'Purge failed — is the backend running on :8080?',
-      )
+      toasts.push('error', 'Purge failed', 'Is the backend running on :8080?')
     } finally {
       purgeExecuting = false
     }

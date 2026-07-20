@@ -1,25 +1,21 @@
 /**
  * Svelte 5 rune-based session store for the Console.
  *
- * Holds the CSRF token + login state + a transient flash banner. Svelte 5
+ * Holds the CSRF token + login state + the signed-in username. Svelte 5
  * runes (`$state`/`$derived`) work in `.svelte.ts` modules — the compiler
  * transforms them, and importing modules read reactive `.svelte.ts` exports
  * as live bindings. No SvelteKit, no external store library.
  *
  * The store is intentionally per-instance: `createSessionStore()` returns a
  * fresh object. App.svelte creates one and threads it into Login + nav.
+ *
+ * Phase G (2026-07-20): the transient flash banner fields were removed.
+ * Transient user notifications now flow through the toast store
+ * (`web/console/src/lib/toast.svelte.ts` + `components/Toaster.svelte`),
+ * which supports a stack of dismissible cards instead of a single slot.
  */
 
 import { setCsrfToken } from './api'
-
-/** Flash banner severity — mirrors the three UI severities used in nav. */
-export type FlashKind = 'success' | 'error' | 'info'
-
-/** One transient banner message. `null` means "no banner visible". */
-export interface Flash {
-  kind: FlashKind
-  text: string
-}
 
 /**
  * Reactive session state. Returned by `createSessionStore()`. Mutators are
@@ -36,16 +32,10 @@ export interface SessionStore {
    * Not used as an auth credential on its own.
    */
   readonly username: string | null
-  /** Current flash banner, or `null` if none. */
-  readonly flash: Flash | null
   /** Cache the CSRF token + username (and sync the token to the API client). */
   setCsrf: (token: string | null, username?: string | null) => void
   /** Clear the session (logout). */
   clear: () => void
-  /** Show a transient banner. Replaces any existing flash. */
-  pushFlash: (kind: FlashKind, text: string) => void
-  /** Dismiss the current banner. */
-  clearFlash: () => void
 }
 
 /**
@@ -59,19 +49,6 @@ export interface SessionStore {
 export function createSessionStore(): SessionStore {
   let csrf = $state<string | null>(null)
   let username = $state<string | null>(null)
-  let flash = $state<Flash | null>(null)
-  // Auto-dismiss timer id for the current flash. We track it so a new flash
-  // replaces (not stacks with) the previous timer — otherwise rapid re-pushes
-  // leak timeouts and the last-spawned one fires early. Cleared on dismiss.
-  let flashTimer: ReturnType<typeof setTimeout> | null = null
-  const FLASH_AUTO_DISMISS_MS = 6000
-
-  function clearFlashTimer(): void {
-    if (flashTimer !== null) {
-      clearTimeout(flashTimer)
-      flashTimer = null
-    }
-  }
 
   return {
     get csrf(): string | null {
@@ -82,9 +59,6 @@ export function createSessionStore(): SessionStore {
     },
     get username(): string | null {
       return username
-    },
-    get flash(): Flash | null {
-      return flash
     },
     setCsrf(token: string | null, newUser?: string | null): void {
       csrf = token
@@ -100,25 +74,7 @@ export function createSessionStore(): SessionStore {
     clear(): void {
       csrf = null
       username = null
-      flash = null
       setCsrfToken(null)
-      clearFlashTimer()
-    },
-    pushFlash(kind: FlashKind, text: string): void {
-      // Replace any pending auto-dismiss timer before staging a new one. This
-      // keeps at most one in-flight timer per store and prevents leaks when
-      // the caller pushes a fresh banner while the old one is still counting
-      // down. The manual `x` button (clearFlash) also cancels the timer.
-      clearFlashTimer()
-      flash = { kind, text }
-      flashTimer = setTimeout(() => {
-        flashTimer = null
-        flash = null
-      }, FLASH_AUTO_DISMISS_MS)
-    },
-    clearFlash(): void {
-      flash = null
-      clearFlashTimer()
     },
   }
 }

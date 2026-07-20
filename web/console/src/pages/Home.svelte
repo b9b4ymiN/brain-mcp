@@ -26,6 +26,7 @@
   import { onMount } from 'svelte'
   import { galaxy, inbox, ApiError, type GalaxyPayload, type ProposalSummary, type GalaxyNode } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
+  import type { ToastStore } from '../lib/toast.svelte'
   import { navigate } from '../lib/router'
   import { setPendingSubject } from '../lib/quickSearch'
   import GalaxyGraph from '../components/GalaxyGraph.svelte'
@@ -80,9 +81,10 @@
 
   interface Props {
     session: SessionStore
+    toasts: ToastStore
   }
 
-  let { session }: Props = $props()
+  let { session, toasts }: Props = $props()
 
   // ── Galaxy summary state (for the overlay stats) ───────────────────────
   // Home does its own light /galaxy read for the counts; GalaxyGraph does
@@ -135,7 +137,7 @@
       if (cause instanceof ApiError && cause.status === 401) {
         sessionExpired = true
         session.clear()
-        session.pushFlash('error', 'Session expired — sign in again.')
+        toasts.push('error', 'Session expired', 'Please sign in again.')
         setStatusError('session expired')
         return
       }
@@ -193,7 +195,7 @@
        through). Full-height, immersive. Clicking a node → Entity. -->
   <div class="home-split-left">
     <div class="home-galaxy" role="img" aria-label="Knowledge galaxy: {nodeCount} nodes, {edgeCount} edges">
-      <GalaxyGraph {session} zoom="far" immersive height={0} onNodeClick={onNodeClick} />
+      <GalaxyGraph {session} {toasts} zoom="far" immersive height={0} onNodeClick={onNodeClick} />
     </div>
 
     <!-- Overlay (brand + stats + CTA) floats above the galaxy canvas. -->

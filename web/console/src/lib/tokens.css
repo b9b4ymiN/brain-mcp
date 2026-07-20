@@ -207,6 +207,9 @@
   --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-breathe: cubic-bezier(0.4, 0, 0.6, 1);
+  /* Toast enter uses a gentle overshoot so notifications arrive with a
+   * little lift, not a flat slide. Exit is straight ease-out-quart (calm). */
+  --ease-toast-in: cubic-bezier(0.2, 0.9, 0.3, 1);
 
   --duration-fast: 150ms; /* state transitions (product register: 150-250ms) */
   --duration-base: 200ms;
@@ -217,6 +220,11 @@
                         * the 2026-07-19 audit flagged visual noise on the
                         * Operations grid (6 HoloPanels × 4s sweep = busy). */
   --duration-ping: 1.8s; /* pulsar ping on selected nodes */
+  /* Toast enter/exit. Product register: 150-250ms for state transitions.
+   * Enter is slightly longer than exit so arrivals feel deliberate; exits
+   * vanish quickly so they don't compete for attention. */
+  --duration-toast-in: 220ms;
+  --duration-toast-out: 180ms;
 
   /* ── Layout ─────────────────────────────────────────────────────────── */
   --shell-max-width: 56rem; /* content pages — home is full-bleed */

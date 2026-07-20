@@ -58,6 +58,7 @@
     type Uuid,
   } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
+  import type { ToastStore } from '../lib/toast.svelte'
   import {
     transition,
     buildDiff,
@@ -71,9 +72,10 @@
 
   interface Props {
     session: SessionStore
+    toasts: ToastStore
   }
 
-  let { session }: Props = $props()
+  let { session, toasts }: Props = $props()
 
   // ── Inbox list state ───────────────────────────────────────────────────
   let proposals = $state<ProposalSummary[]>([])
@@ -193,7 +195,7 @@
       if (cause instanceof ApiError && cause.status === 401) {
         sessionExpired = true
         session.clear()
-        session.pushFlash('error', 'Session expired — sign in again.')
+        toasts.push('error', 'Session expired', 'Please sign in again.')
         return
       }
       proposals = []
@@ -263,7 +265,7 @@
         if (seq === detailSeq) {
           sessionExpired = true
           session.clear()
-          session.pushFlash('error', 'Session expired — sign in again.')
+          toasts.push('error', 'Session expired', 'Please sign in again.')
         }
         return
       }
@@ -436,13 +438,28 @@
       let eventSeq: number
       if (plan.action === 'approve') {
         eventSeq = (await apiApprove(plan.proposalId)).event_seq
-        finalize(plan.proposalId, 'approve', `Approved proposal ${short(plan.proposalId)} (event_seq=${eventSeq}).`)
+        finalize(
+          plan.proposalId,
+          'approve',
+          'Proposal approved',
+          `proposal ${short(plan.proposalId)} · event_seq=${eventSeq}`,
+        )
       } else if (plan.action === 'reject') {
         eventSeq = (await apiReject(plan.proposalId)).event_seq
-        finalize(plan.proposalId, 'reject', `Rejected proposal ${short(plan.proposalId)} (event_seq=${eventSeq}).`)
+        finalize(
+          plan.proposalId,
+          'reject',
+          'Proposal rejected',
+          `proposal ${short(plan.proposalId)} · event_seq=${eventSeq}`,
+        )
       } else {
         eventSeq = (await apiSupersede(plan.proposalId, plan.ids)).event_seq
-        finalize(plan.proposalId, 'supersede', `Superseded proposal ${short(plan.proposalId)} (event_seq=${eventSeq}).`)
+        finalize(
+          plan.proposalId,
+          'supersede',
+          'Proposal superseded',
+          `proposal ${short(plan.proposalId)} · event_seq=${eventSeq}`,
+        )
       }
     } catch (cause) {
       onMutationError(cause)
@@ -454,12 +471,13 @@
   /**
    * Apply the post-success common path: flip local review state via the
    * state machine (defensive — should never return an error since the row
-   * was pending), push a success flash, refetch the inbox, close the
+   * was pending), push a success toast, refetch the inbox, close the
    * dialog, and collapse the detail panel.
    */
   function finalize(
     proposalId: Uuid,
     action: ReviewAction,
+    title: string,
     message: string,
   ): void {
     const prior = reviewStates[proposalId] ?? 'pending'
@@ -478,7 +496,7 @@
       )
     }
     reviewStates = { ...reviewStates, [proposalId]: next }
-    session.pushFlash('success', message)
+    toasts.push('success', title, message)
     dialog = null
     openId = null
     // Restore focus to the action button on success too (same WCAG 2.4.3
@@ -511,40 +529,45 @@
       if (cause.status === 401) {
         sessionExpired = true
         session.clear()
-        session.pushFlash('error', 'Session expired — sign in again.')
+        toasts.push('error', 'Session expired', 'Please sign in again.')
         dialog = null
         return
       }
       if (cause.status === 403) {
         sessionExpired = true
         session.clear()
-        session.pushFlash('error', 'Session expired or CSRF failed — please sign in again.')
+        toasts.push(
+          'error',
+          'Session expired',
+          'Session or CSRF token rejected. Please sign in again.',
+        )
         dialog = null
         return
       }
       if (cause.status === 404) {
-        session.pushFlash('error', 'Proposal not found (already decided?).')
+        toasts.push('error', 'Proposal not found', 'Already decided? Refreshing the inbox.')
         dialog = null
         void refreshList()
         return
       }
       if (cause.status === 409) {
         // Fix M2: dedicated conflict branch — the proposal was already
-        // decided concurrently. Surface a distinct flash (not the 404
+        // decided concurrently. Surface a distinct toast (not the 404
         // "not found" wording) and refresh so the row reflects the
         // winning decision.
-        session.pushFlash(
-          'error',
-          'Proposal was already decided concurrently — refreshing.',
+        toasts.push(
+          'warning',
+          'Already decided',
+          'Proposal was decided concurrently — refreshing.',
         )
         dialog = null
         void refreshList()
         return
       }
-      session.pushFlash('error', `Action failed (${cause.code}).`)
+      toasts.push('error', 'Action failed', `Server returned: ${cause.code}`)
       return
     }
-    session.pushFlash('error', 'Action failed — is the backend running on :8080?')
+    toasts.push('error', 'Action failed', 'Is the backend running on :8080?')
   }
 
   function short(id: Uuid): string {
@@ -629,7 +652,9 @@
   {/if}
 
   {#if sessionExpired}
-    <p class="state state-error" role="alert">Session expired — sign in again.</p>
+    <p class="state state-loading" role="status" aria-live="polite">
+      Session ended — sign in again via the prompt.
+    </p>
   {:else}
     <StateBox
       loading={listLoading}
