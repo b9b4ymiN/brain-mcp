@@ -50,6 +50,36 @@ and re-plan. Surface the risk to the user when in doubt.
 
 ---
 
+## Note on automated enforcement (2026-07-20)
+
+Rules **#16, #17, #18, #19, #20** are now machine-enforced in two places,
+so an agent that emits a dirty claim will see it flagged at review time
+(and, for new ingests, the model is told not to emit it in the first place):
+
+- **At extraction time** — the extraction prompt embeds the 10 QUALITY RULES
+  section (`EXTRACTION_PROMPT_VERSION = "d3-extraction-v3"` in
+  `src/extraction.rs`). The rules below are a superset of those 10; the
+  prompt covers the subset the model can be trusted to honor up front.
+- **At review time** — the Console's `GET /api/v1/inbox/{proposal_id}/ai-review`
+  endpoint runs `QualityChecker` (`src/quality.rs`,
+  `QUALITY_CHECKER_VERSION = "quality-v1"`) which tags proposals with
+  `double_bracket`, `taxonomy_drift`, `packed_facts`,
+  `duplicate_predicate`, `vague_predicate`, `confidence_too_high`, and
+  `kind_mismatch` (rules #11, #16, #17, #18, #19, #20). An optional
+  `AiQualityChecker` (Phase 3) adds `source_claim_mismatch`,
+  `semantic_duplicate`, and `provenance_loss` when a provider is attached.
+
+Tags are **advisory** (`warning` severity by default) — the human reviewer
+stays the approver (ADR-0001 §Decision 1). See
+`docs/plans/feature-ai-review-and-quality-rules.md` for the full design.
+
+The other rules (#1-#15, #21) are agent-discipline, type-system,
+authority, or operational concerns that don't fit a content-quality
+checker and remain manual.
+
+
+---
+
 ## 1. Silent write to profile or claim
 
 ### Wrong
