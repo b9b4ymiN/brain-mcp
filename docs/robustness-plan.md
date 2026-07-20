@@ -19,6 +19,12 @@
 | E — React Console + Galaxy | [`plans/phase-E-console-galaxy.md`](plans/phase-E-console-galaxy.md) | ✅ **CLOSED** | Phase 5 Gate (UAT 3 โดเมน + a11y + Validator PASS) |
 | F — Production (Docker) | [`plans/phase-F-production.md`](plans/phase-F-production.md) | ⬜ pending | Phase 6 Gate |
 
+### Feature specs (นอก phase gate — ทำตามลำดับความสำคัญ)
+
+| Feature | ไฟล์ | สถานะ | เป้าหมาย |
+|---|---|---|---|
+| AI Pre-Review (Inbox) + Quality Rules (Extraction) | [`plans/feature-ai-review-and-quality-rules.md`](plans/feature-ai-review-and-quality-rules.md) | ⬜ **SPEC ONLY** | แก้ "approve ยาก + AI extract ขยะ" — 4 phases (QualityChecker → endpoint → AI rules → extraction v3) |
+
 Evidence: [`baseline/audit-20260716-report.md`](baseline/audit-20260716-report.md) · [`baseline/review-phaseBC-20260716.md`](baseline/review-phaseBC-20260716.md) · [`final-report-20260716.md`](final-report-20260716.md)
 
 ---
