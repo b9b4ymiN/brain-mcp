@@ -19,6 +19,7 @@
   import SpaceBackdrop from './components/SpaceBackdrop.svelte'
   import HudFrame from './components/HudFrame.svelte'
   import Toaster from './components/Toaster.svelte'
+  import ErrorBoundary from './components/ErrorBoundary.svelte'
   import { systemStatus } from './lib/systemStatus.svelte'
 
   // One session store for the whole shell. Threads into Login + nav + banner.
@@ -28,6 +29,15 @@
   // threaded into every page so any component can push a notification. The
   // Toaster component renders the active stack at z-toast:500.
   const toasts = createToastStore()
+
+  // ErrorBoundary ref — main.ts sets window.__brainTrapError to the
+  // boundary's trap() so global error handlers route uncaught throws here.
+  let errorBoundary = $state<ErrorBoundary | null>(null)
+  $effect(() => {
+    if (errorBoundary) {
+      window.__brainTrapError = (err: unknown) => errorBoundary!.trap(err)
+    }
+  })
 
   // System status store (cockpit HUD readout) — Home pushes galaxy
   // counts into it; HudFrame + the cockpit footer render it. No
@@ -111,15 +121,16 @@
   }
 </script>
 
-<SpaceBackdrop />
-<HudFrame dotVariant={status.dotVariant}>
-  {#snippet statusSlot()}
-    {status.statusLine}
-  {/snippet}
-</HudFrame>
-<Toaster {toasts} />
+<ErrorBoundary bind:this={errorBoundary}>
+  <SpaceBackdrop />
+  <HudFrame dotVariant={status.dotVariant}>
+    {#snippet statusSlot()}
+      {status.statusLine}
+    {/snippet}
+  </HudFrame>
+  <Toaster {toasts} />
 
-<header class="shell" class:logged-in={session.isLoggedIn}>
+  <header class="shell" class:logged-in={session.isLoggedIn}>
   <a href="#main-content" class="skip-link">Skip to content</a>
 
   <div class="shell-bar">
@@ -262,6 +273,7 @@
     </span>
   </footer>
 {/if}
+</ErrorBoundary>
 
 <style>
   /* Skip-to-content link — visible on focus only (a11y). */

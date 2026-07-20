@@ -727,13 +727,42 @@
       min-height: calc(100vh - var(--shell-header-height-mobile, 5rem));
     }
 
+    /* P0-6 (2026-07-20): the overlay's min-height was calc(100vh - 5rem)
+     * but its container (.home-split-left) is only flex: 0 0 50vh — so the
+     * overlay was taller than the galaxy pane, causing wordmark + stats +
+     * CTA to squeeze/overlap/clip. Fix: match the overlay height to the
+     * galaxy pane (50vh) and shrink the galaxy pane slightly (40vh) to give
+     * the data pane more room. */
+    .home-split-left {
+      flex: 0 0 40vh;
+    }
+
+    .home-split-right {
+      flex: 1 1 auto;
+      max-height: 60vh;
+      overflow-y: auto;
+    }
+
     .home-overlay {
-      min-height: calc(100vh - var(--shell-header-height-mobile, 5rem));
-      padding: var(--space-md);
+      min-height: unset;
+      height: 40vh;
+      padding: var(--space-sm) var(--space-md);
+      /* Drop the space-between stretch — on mobile we want everything
+       * packed near the bottom of the 40vh pane, above the data section. */
+      justify-content: flex-end;
+      gap: var(--space-xs);
+    }
+
+    /* Hide the hero wordmark on mobile — it's redundant with the header
+     * brand mark and eats precious vertical space in the 40vh galaxy pane. */
+    .home-overlay > .home-head {
+      display: none;
     }
 
     .home-wordmark {
-      font-size: clamp(1.5rem, 7vw, 2.5rem);
+      font-size: clamp(1.25rem, 5vw, 1.75rem);
+      /* Tighter leading so the tagline fits in 1-2 lines max. */
+      line-height: 1.2;
     }
 
     .home-cta {

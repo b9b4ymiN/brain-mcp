@@ -710,15 +710,15 @@
                 {#if backup.last_restore_drill_ok}
                   passed
                 {:else}
-                  not yet drilled — Phase F
+                  not yet run
                 {/if}
               </dd>
             </div>
           </dl>
           {#if !backup.last_restore_drill_ok}
             <p class="ops-callout ops-callout--warning" role="note">
-              The restore-drill harness ships in Phase F. The current value is
-              honestly false — no drill has run yet.
+              No restore drill has been run yet. Run one periodically to verify
+              your backups are recoverable.
             </p>
           {/if}
         {/if}

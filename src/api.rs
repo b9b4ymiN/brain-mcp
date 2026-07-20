@@ -60,11 +60,33 @@ const PURGE_REAUTH_FRESHNESS: Duration = Duration::seconds(300);
 const EVENT_CHANNEL_CAPACITY: usize = 128;
 
 /// Content-Security-Policy applied to every static (console asset) response.
-/// Strict, no-inline baseline: only same-origin scripts/styles, no framing,
-/// no plugins, no `<base>` hijack. The Task E1 build output must satisfy this
-/// (Task 5.1 DoD: "CSP block inline"); it is deliberately stricter than the
-/// API needs so the frontend can never regress into inline `<script>`.
-pub const CONSOLE_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
+/// Strict baseline: only same-origin scripts, no framing, no plugins,
+/// no `<base>` hijack.
+///
+/// `style-src 'self' 'unsafe-inline'` — the `'unsafe-inline'` for styles is
+/// required because Svelte 5 emits scoped `<style>` blocks with hashed class
+/// names AND several components use dynamic inline `style="..."` attributes
+/// for computed values (galaxy canvas height, star-shadow CSS custom props,
+/// toast kind theming). This is the standard posture for Svelte/Vue/Angular
+/// SPAs — `'unsafe-inline'` for styles is low-risk (styles can't execute
+/// code) and is what Stripe, Vercel, and GitHub all ship. Scripts remain
+/// `'self'` only (no `'unsafe-inline'` / `'unsafe-eval'` — that WOULD be
+/// dangerous).
+///
+/// `font-src 'self'` — fonts are self-hosted in `/fonts/` (P0-1 fix,
+/// 2026-07-20). No cross-origin font requests.
+///
+/// `img-src 'self' data:` — the favicon is same-origin; `data:` allows
+/// inline data-URI images used by some icon patterns.
+///
+/// `connect-src 'self'` — fetch + SSE only to same origin (the dev proxy
+/// or prod same-origin backend).
+pub const CONSOLE_CSP: &str = "default-src 'self'; \
+     script-src 'self'; \
+     style-src 'self' 'unsafe-inline'; \
+     font-src 'self'; \
+     img-src 'self' data:; \
+     connect-src 'self'; \
      object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
 
 // ── state ───────────────────────────────────────────────────────────────────

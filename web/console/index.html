@@ -2,12 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Brain Console — the observer's deck for your knowledge graph. Monitor claims, review proposals, and navigate the galaxy of what your brain knows." />
+    <meta name="theme-color" content="#05070d" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <!-- Preload the display font (critical for first paint of brand wordmark).
+         Self-hosted — no third-party round-trip. font-display: swap in the
+         @font-face declaration means text renders immediately in the system
+         fallback and swaps to Bricolage when the woff2 arrives. -->
+    <link rel="preload" href="/fonts/bricolage-grotesque-v9-latin-600.woff2" as="font" type="font/woff2" crossorigin />
     <title>Brain Console</title>
   </head>
   <body>
     <div id="app"></div>
+    <noscript>
+      <div style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 2rem; color: #e8ecf4; background: #05070d; border: 1px solid #2a3142; border-radius: 8px;">
+        <h1 style="font-size: 1.5rem; margin: 0 0 1rem;">JavaScript required</h1>
+        <p style="margin: 0; line-height: 1.5;">The Brain Console is a single-page application that needs JavaScript to run. Please enable JavaScript in your browser settings to continue.</p>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

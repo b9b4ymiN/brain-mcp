@@ -7,11 +7,62 @@
  * lives in each component's co-located <style> block and consumes tokens.
  */
 
-/* ── Web fonts (display + mono only) ─────────────────────────────────── */
-/* Body uses the OS system sans (no Google Font import) — see tokens.css.
+/* ── Web fonts (self-hosted, display + mono only) ────────────────────── */
+/* Body uses the OS system sans (no web font for body) — see tokens.css.
  * Bricolage Grotesque (display): instrument-label voice, not the overused
- * Inter/Space Grotesk/Geist set. JetBrains Mono (machine output). */
-@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=JetBrains+Mono:wght@400;500&display=swap');
+ * Inter/Space Grotesk/Geist set. JetBrains Mono (machine output).
+ *
+ * Self-hosted (P0-1 fix, 2026-07-20): the previous render-blocking
+ * @import url('https://fonts.googleapis.com/...') was (a) incompatible
+ * with the strict CSP (style-src 'self' — the cross-origin CSS silently
+ * failed in prod, falling back to system fonts), (b) a critical-path
+ * round-trip to a third party on every page load, and (c) a privacy leak
+ * (Google sees every visitor). The woff2 files live in /public/fonts/ and
+ * load same-origin — no CSP exception, no third-party request, no privacy
+ * leak. Total weight ~133KB for 6 files (4 Bricolage + 2 JetBrains Mono),
+ * vs ~30KB per weight round-trip to Google. */
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/bricolage-grotesque-v9-latin-regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/bricolage-grotesque-v9-latin-500.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/bricolage-grotesque-v9-latin-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/bricolage-grotesque-v9-latin-700.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/jetbrains-mono-v24-latin-regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/jetbrains-mono-v24-latin-500.woff2') format('woff2');
+}
 
 :root {
   color-scheme: dark;

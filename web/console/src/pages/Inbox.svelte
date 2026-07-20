@@ -664,8 +664,7 @@
     >
       {#snippet emptySnippet()}
         <p class="inbox-empty-hint">
-          Claims staged by <code>brain_extract</code> or <code>brain_propose</code>
-          will land here for review.
+          Claims staged for review will appear here.
         </p>
       {/snippet}
       <ul class="proposal-list" aria-label="Pending proposals">

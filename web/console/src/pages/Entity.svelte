@@ -502,12 +502,12 @@
                   onclick={() => toggleSort('kind')}
                 >Kind <span class="sort-ind" aria-hidden="true">{sortKey === 'kind' ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
                 <th
-                  class="sortable"
+                  class="sortable col-origin"
                   aria-sort={ariaSort('origin')}
                   onclick={() => toggleSort('origin')}
                 >Origin <span class="sort-ind" aria-hidden="true">{sortKey === 'origin' ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
                 <th
-                  class="sortable"
+                  class="sortable col-provenance"
                   aria-sort={ariaSort('provenance')}
                   onclick={() => toggleSort('provenance')}
                 >Provenance <span class="sort-ind" aria-hidden="true">{sortKey === 'provenance' ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span></th>
@@ -539,8 +539,8 @@
                   <td>{formatValue(claim.value)}</td>
                   {#if showDomain}<td>{claim.domain}</td>{/if}
                   <td>{claim.kind}</td>
-                  <td>{claim.origin}</td>
-                  <td>{claim.provenance}</td>
+                  <td class="col-origin">{claim.origin}</td>
+                  <td class="col-provenance">{claim.provenance}</td>
                   <td class="mono">{confidencePct(claim.confidence)}</td>
                   {#if showEntityId}<td>{claim.entity_id ?? '—'}</td>{/if}
                 </tr>
@@ -1100,5 +1100,16 @@
     margin: 0;
     color: var(--text-secondary);
     font-size: var(--text-label);
+  }
+
+  /* P0-5 (2026-07-20): hide Origin + Provenance columns on mobile to avoid
+   * 7+ columns of horizontal scroll inside a HoloPanel inside page scroll.
+   * Subject/Predicate/Value/Kind/Confidence remain — the 5 most actionable
+   * columns for a reviewer on a phone. */
+  @media (max-width: 48rem) {
+    .claims-table .col-origin,
+    .claims-table .col-provenance {
+      display: none;
+    }
   }
 </style>

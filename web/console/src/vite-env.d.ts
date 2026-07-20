@@ -9,3 +9,12 @@
  * without a runtime fetch or a hardcoded literal that drifts out of sync.
  */
 declare const __APP_VERSION__: string
+
+/**
+ * Global error trap wired in main.ts and consumed by ErrorBoundary in
+ * App.svelte. Set by App on mount; called by the window error/unhandledrejection
+ * listeners. Optional because it's only set after the SPA boots.
+ */
+interface Window {
+  __brainTrapError?: (err: unknown) => void
+}

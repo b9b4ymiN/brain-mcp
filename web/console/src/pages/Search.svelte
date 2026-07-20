@@ -53,6 +53,7 @@
   let error = $state<string | null>(null)
   let results = $state<SearchHit[]>([])
   let hasSearched = $state(false)
+  let lastQuery = $state('')
   let sessionExpired = $state(false)
   // Post-result re-filter (client-side, narrows the server's top_k hits).
   let resultFilter = $state('')
@@ -101,6 +102,7 @@
       // Discard stale response — a newer search supersedes us.
       if (seq !== searchSeq) return
       results = response.results
+      lastQuery = trimmed
     } catch (cause) {
       if (seq !== searchSeq) return
       if (cause instanceof ApiError && cause.status === 401) {
@@ -140,24 +142,26 @@
   <h1>Search</h1>
 
   <form class="search-form" onsubmit={onSubmit}>
-    <label for="query">Query</label>
+    <label for="query" class="field-required">Query <span aria-hidden="true">*</span></label>
     <input
       id="query"
       type="search"
       required
-      placeholder="subject, predicate, or value fragment…"
+      maxlength="256"
+      placeholder="Search claims by subject, predicate, or value…"
       bind:value={query}
     />
 
-    <label for="domain">Domain (optional)</label>
-    <input id="domain" type="text" bind:value={domain} />
+    <label for="domain" class="field-optional">Domain <span class="opt-hint">optional</span></label>
+    <input id="domain" type="text" maxlength="64" bind:value={domain} />
 
-    <label for="top_k">Top K (optional)</label>
+    <label for="top_k" class="field-optional">Top K <span class="opt-hint">optional</span></label>
     <input
       id="top_k"
       type="number"
       min="1"
       max="100"
+      maxlength="3"
       placeholder="10"
       value={topK ?? ''}
       oninput={(e) => {
@@ -170,6 +174,13 @@
       {submitting ? 'Searching…' : 'Search'}
     </button>
   </form>
+
+  {#if hasSearched && !loading && !error && results.length > 0}
+    <p class="results-echo">
+      {results.length} {results.length === 1 ? 'claim' : 'claims'} for
+      <strong>“{lastQuery}”</strong>
+    </p>
+  {/if}
 
   <section class="results" aria-live="polite" aria-busy={loading}>
     {#if sessionExpired}
@@ -335,6 +346,40 @@
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
     color: var(--text-secondary);
+  }
+
+  /* Required field — slightly louder than optional to guide first-time
+   * users to the one field that matters. */
+  .search-form .field-required {
+    color: var(--text-primary);
+    font-weight: var(--weight-semibold);
+  }
+
+  .search-form .field-required span {
+    color: var(--color-accent);
+  }
+
+  /* Optional fields — visually demoted via the "optional" hint suffix. */
+  .search-form .field-optional .opt-hint {
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-left: var(--space-xs);
+  }
+
+  /* Results echo — confirms what the user searched for + how many hits. */
+  .results-echo {
+    margin: 0 0 var(--space-sm);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
+    color: var(--text-secondary);
+  }
+
+  .results-echo strong {
+    color: var(--text-primary);
+    font-weight: var(--weight-semibold);
   }
 
   .search-form input {
