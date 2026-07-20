@@ -30,10 +30,16 @@ export interface SessionStore {
   readonly csrf: string | null
   /** Derived: `true` iff `csrf` is non-null. */
   readonly isLoggedIn: boolean
+  /**
+   * The signed-in username (Phase G, 2026-07-20), or `null` when logged out.
+   * Surfaced for personalized greetings, reauth form pre-fill, and audit UI.
+   * Not used as an auth credential on its own.
+   */
+  readonly username: string | null
   /** Current flash banner, or `null` if none. */
   readonly flash: Flash | null
-  /** Cache the CSRF token (and sync to the API client). */
-  setCsrf: (token: string | null) => void
+  /** Cache the CSRF token + username (and sync the token to the API client). */
+  setCsrf: (token: string | null, username?: string | null) => void
   /** Clear the session (logout). */
   clear: () => void
   /** Show a transient banner. Replaces any existing flash. */
@@ -52,6 +58,7 @@ export interface SessionStore {
  */
 export function createSessionStore(): SessionStore {
   let csrf = $state<string | null>(null)
+  let username = $state<string | null>(null)
   let flash = $state<Flash | null>(null)
   // Auto-dismiss timer id for the current flash. We track it so a new flash
   // replaces (not stacks with) the previous timer — otherwise rapid re-pushes
@@ -73,17 +80,26 @@ export function createSessionStore(): SessionStore {
     get isLoggedIn(): boolean {
       return csrf !== null
     },
+    get username(): string | null {
+      return username
+    },
     get flash(): Flash | null {
       return flash
     },
-    setCsrf(token: string | null): void {
+    setCsrf(token: string | null, newUser?: string | null): void {
       csrf = token
+      // Explicit `null` clears the username; `undefined` preserves it (so a
+      // CSRF-only refresh doesn't wipe the displayed username).
+      if (newUser !== undefined) {
+        username = newUser
+      }
       // Keep the API client's module-level CSRF cache in sync so mutation
       // POSTs automatically attach the right X-CSRF-Token header.
       setCsrfToken(token)
     },
     clear(): void {
       csrf = null
+      username = null
       flash = null
       setCsrfToken(null)
       clearFlashTimer()

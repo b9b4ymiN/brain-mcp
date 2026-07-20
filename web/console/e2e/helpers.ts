@@ -3,17 +3,22 @@
  *
  * Centralises the login flow so every spec starts from an authenticated
  * session against the Rust server at baseURL (http://127.0.0.1:8080). The
- * dev bootstrap secret is fixed by the webServer launcher
- * (`scripts/serve_e2e.mjs` → `console_dev_bootstrap_secret`); specs never
- * hardcode a per-run value.
+ * dev bootstrap credentials are fixed by the webServer launcher
+ * (`scripts/serve_e2e.mjs` → `console_dev_bootstrap_username_env` +
+ * `console_dev_bootstrap_password_env`); specs never hardcode a per-run value.
  *
  * Do NOT use this from the unit specs — they run against `vite preview` with
  * no backend, and `loginAsConsole` would hit a non-existent `/api/v1`.
  */
 import { expect, type Page } from '@playwright/test'
 
-/** The dev bootstrap secret stamped into the temp TOML by serve_e2e.mjs. */
-export const CONSOLE_SECRET = 'e2e-bootstrap-secret'
+/**
+ * The dev bootstrap credentials stamped into the env (USERNAME/PASSWORD) by
+ * serve_e2e.mjs. Phase G (2026-07-20) replaced the single shared secret with
+ * a username+password pair sourced from env vars.
+ */
+export const CONSOLE_USERNAME = 'e2e-admin'
+export const CONSOLE_PASSWORD = 'e2e-bootstrap-secret'
 
 /**
  * Navigates to the shell and logs in via the real login form. Asserts the
@@ -24,7 +29,8 @@ export const CONSOLE_SECRET = 'e2e-bootstrap-secret'
 export async function loginAsConsole(page: Page): Promise<void> {
   await page.goto('/')
   // Login form is the unauthenticated shell — see App.svelte.
-  await page.getByLabel('Bootstrap secret').fill(CONSOLE_SECRET)
+  await page.getByLabel('Username').fill(CONSOLE_USERNAME)
+  await page.getByLabel('Password').fill(CONSOLE_PASSWORD)
   await page.getByRole('button', { name: 'Sign in' }).click()
   // Post-login: a success flash (the `.flash` banner in App.svelte — scoped
   // by class because StateBox's loading paragraph also uses role="status",

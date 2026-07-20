@@ -54,7 +54,11 @@ const WORKSPACE_DIR = resolve(CONSOLE_DIR, '..', '..')
 const DIST_DIR = join(CONSOLE_DIR, 'dist')
 
 const E2E_PORT = process.env.E2E_PORT ?? '8080'
-const E2E_SECRET = process.env.E2E_SECRET ?? 'e2e-bootstrap-secret'
+// Phase G (2026-07-20): login now uses USERNAME + PASSWORD env vars. The
+// defaults here mirror e2e/helpers.ts (CONSOLE_USERNAME / CONSOLE_PASSWORD)
+// so both sides stay in sync.
+const E2E_USERNAME = process.env.E2E_USERNAME ?? 'e2e-admin'
+const E2E_PASSWORD = process.env.E2E_PASSWORD ?? 'e2e-bootstrap-secret'
 
 // ── 1. dist guard ─────────────────────────────────────────────────────────
 if (!existsSync(join(DIST_DIR, 'index.html'))) {
@@ -75,18 +79,27 @@ const configPath = join(tmpRoot, 'config.toml')
 // fine inside double quotes. Absolute path so the server resolves it
 // regardless of its own cwd.
 const distAbs = DIST_DIR.replace(/\\/g, '\\\\')
+// Phase G: the env-var names default to "USERNAME"/"PASSWORD", so a vanilla
+// config is enough. We pin them here for clarity + so the file is hermetic.
 const configToml = [
   '[serve]',
-  `console_dev_bootstrap_secret = "${E2E_SECRET}"`,
+  'console_dev_bootstrap_username_env = "E2E_USERNAME"',
+  'console_dev_bootstrap_password_env = "E2E_PASSWORD"',
   `console_static_dir = "${distAbs}"`,
   // Loopback + default port; explicit so the test is reproducible. We do NOT
   // set http_bind_all_interfaces (default false = loopback only — the secure
-  // default; never expose the dev-bootstrap-secret server publicly).
+  // default; never expose the dev-bootstrap-credential server publicly).
   '',
 ].join('\n')
 writeFileSync(configPath, configToml, 'utf8')
 console.log(`[serve_e2e] temp config at ${configPath}`)
 console.log(`[serve_e2e] console_static_dir = ${DIST_DIR}`)
+// Seed the env vars for the child cargo process (the server reads them at
+// startup via std::env::var). Setting on process.env means the spawn below
+// inherits them automatically.
+process.env.E2E_USERNAME = E2E_USERNAME
+process.env.E2E_PASSWORD = E2E_PASSWORD
+console.log(`[serve_e2e] E2E_USERNAME set (${E2E_USERNAME.length} chars)`)
 
 // Helper: run a cargo command, inherit stdio, throw on non-zero exit.
 function runCargo(args, label) {

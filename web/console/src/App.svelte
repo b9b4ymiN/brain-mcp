@@ -36,8 +36,9 @@
   // Current route — initialized from parseHash(), updated by hashchange.
   let currentPage = $state<ConsolePage>(parseHash())
 
-  // Login form local state.
-  let secret = $state('')
+  // Login form local state (Phase G, 2026-07-20: username + password).
+  let username = $state('')
+  let password = $state('')
   let submitting = $state(false)
 
   let unsubscribe: (() => void) | null = null
@@ -61,21 +62,21 @@
 
   async function handleLogin(): Promise<void> {
     if (submitting) return
-    const trimmed = secret.trim()
-    if (!trimmed) {
-      session.pushFlash('error', 'Enter the bootstrap secret to sign in.')
+    const trimmedUser = username.trim()
+    if (!trimmedUser || !password) {
+      session.pushFlash('error', 'Enter your username and password to sign in.')
       return
     }
     submitting = true
     try {
-      const result = await apiLogin(trimmed)
-      session.setCsrf(result.csrf_token)
+      const result = await apiLogin({ username: trimmedUser, password })
+      session.setCsrf(result.csrf_token, trimmedUser)
       session.pushFlash('success', 'Signed in.')
       navigate('home')
     } catch (cause) {
       const message =
         cause instanceof ApiError && cause.code === 'unauthorized'
-          ? 'Wrong secret — try again.'
+          ? 'Wrong username or password — try again.'
           : cause instanceof ApiError
             ? `Sign-in failed (${cause.code}).`
             : 'Sign-in failed — is the backend running on :8080?'
@@ -93,7 +94,8 @@
       // clear local state so the user is dropped back to the login screen.
     }
     session.clear()
-    secret = ''
+    username = ''
+    password = ''
     navigate('home')
   }
 </script>
@@ -179,21 +181,32 @@
   {#if !session.isLoggedIn}
     <section class="login">
       <h2>Sign in</h2>
-      <p class="hint">Enter the console bootstrap secret to continue.</p>
+      <p class="hint">Enter your username and password to continue.</p>
       <form
         onsubmit={(e) => {
           e.preventDefault()
           void handleLogin()
         }}
       >
-        <label for="secret">Bootstrap secret</label>
+        <label for="username">Username</label>
         <input
-          id="secret"
+          id="username"
+          name="username"
+          type="text"
+          autocomplete="username"
+          bind:value={username}
+          disabled={submitting}
+          placeholder="username"
+        />
+        <label for="password">Password</label>
+        <input
+          id="password"
+          name="password"
           type="password"
           autocomplete="current-password"
-          bind:value={secret}
+          bind:value={password}
           disabled={submitting}
-          placeholder="secret"
+          placeholder="password"
         />
         <button type="submit" disabled={submitting}>
           {submitting ? 'Signing in…' : 'Sign in'}

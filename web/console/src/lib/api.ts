@@ -546,12 +546,19 @@ export interface TimelineParams {
 
 // ── public API ──────────────────────────────────────────────────────────────
 
-/** `POST /auth/login` body `{secret}` → caches CSRF token, returns it. */
-export async function login(secret: string): Promise<LoginResponse> {
+/**
+ * `POST /auth/login` body `{username, password}` (Phase G, 2026-07-20) →
+ * caches CSRF token, returns it. The backend still accepts the legacy
+ * `{secret}` shape on this route, but the SPA always sends the new shape.
+ */
+export async function login(credentials: {
+  username: string
+  password: string
+}): Promise<LoginResponse> {
   const result = await request<LoginResponse>({
     method: 'POST',
     path: '/auth/login',
-    body: { secret },
+    body: { username: credentials.username, password: credentials.password },
   })
   csrfToken = result.csrf_token
   return result
@@ -835,15 +842,19 @@ export async function purgeExecute(
 }
 
 /**
- * `POST /auth/reauth` body `{secret}`. Re-validates the bootstrap secret
- * against an EXISTING session and bumps its freshness anchor so the next
- * `/purge/execute` passes the recent-reauth gate. Wrong secret → 401.
+ * `POST /auth/reauth` body `{username, password}` (Phase G, 2026-07-20).
+ * Re-validates credentials against an EXISTING session and bumps its
+ * freshness anchor so the next `/purge/execute` passes the recent-reauth
+ * gate. Wrong credentials → 401.
  */
-export async function reauth(secret: string): Promise<ReauthResponse> {
+export async function reauth(credentials: {
+  username: string
+  password: string
+}): Promise<ReauthResponse> {
   return request<ReauthResponse>({
     method: 'POST',
     path: '/auth/reauth',
-    body: { secret },
+    body: { username: credentials.username, password: credentials.password },
   })
 }
 

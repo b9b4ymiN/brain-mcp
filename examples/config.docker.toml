@@ -1,19 +1,25 @@
 # examples/config.docker.toml
 #
-# Production-style config for Docker / Compose deployment (Phase F1.2).
+# Production-style config for Docker / Compose deployment
+# (Phase F1.2 + Phase G 2026-07-20).
 #
 # Usage:
-#   1. mkdir -p ./config ./secrets ./data ./backups
+#   1. mkdir -p ./config ./data ./backups
 #   2. cp examples/config.docker.toml ./config/config.toml
-#   3. (umask 077; printf '%s' "$(openssl rand -hex 32)" > ./secrets/bootstrap_secret.txt)
+#   3. cp .env.example .env  # then edit USERNAME + PASSWORD
 #   4. docker compose up -d --build
 #
-# The bootstrap secret is loaded from a Docker secret file mounted at
-# /run/secrets/bootstrap_secret (see `docker-compose.yml`'s `secrets:` block).
-# It is NEVER inlined in this file and NEVER placed in `environment:` — env
-# values leak via `docker inspect`, file values do not. The compose smoke
-# (`scripts/docker_compose_smoke.sh`) asserts the secret is absent from the
-# container's `Config.Env`.
+# The Console API is gated by a USERNAME + PASSWORD pair sourced from env
+# vars (read by the Rust server at startup via std::env::var). The values
+# are set in `.env` (gitignored) and forwarded into the container by
+# docker-compose's `${USERNAME:-}` / `${PASSWORD:-}` substitution.
+#
+# Tradeoff: env-var credentials land in `docker inspect Config.Env`. This is
+# acceptable for dev-grade auth behind a loopback-only publish + TLS fronting
+# proxy. For higher-stakes deployments, restore the legacy Docker-secret path:
+# comment out the env-var lines below, uncomment the *_secret_file line, and
+# keep using the secrets/ bind mount (mode 0600 on the host). Priority:
+# password-env > secret-file > direct-string.
 
 [serve]
 # HTTP transport on. ACP (stdio bridge) off for the docker shape.
@@ -30,11 +36,27 @@ acp = false
 # console-builder stage of the Dockerfile.
 console_static_dir = "/app/web/console/dist"
 
-# Bootstrap secret from Docker secret file. The file is bind-mounted by
-# compose at /run/secrets/bootstrap_secret (mode 0600 on the host).
-# Override priority: file > direct string. Fail-closed: if the file is
-# missing/unreadable, the server refuses to start (no fallback to empty).
-console_dev_bootstrap_secret_file = "/run/secrets/bootstrap_secret"
+# Console dev credentials (Phase G, 2026-07-20).
+#
+# The Console API is gated by a USERNAME + PASSWORD pair read from env vars
+# at startup. Defaults: env vars named `USERNAME` and `PASSWORD`. Override
+# the env-var names here if you prefer different keys (e.g. to avoid
+# colliding with another process that already defines `USERNAME`).
+#
+#   console_dev_bootstrap_username_env = "BRAIN_USERNAME"
+#   console_dev_bootstrap_password_env = "BRAIN_PASSWORD"
+#
+# The credential values themselves are NEVER in this file — only the names
+# of the env vars to read. They land in `docker inspect Config.Env` (same
+# tradeoff as ZAI_API_KEY). For higher-stakes deployments, restore the
+# legacy Docker-secret path:
+#
+#   console_dev_bootstrap_secret_file = "/run/secrets/bootstrap_secret"
+#
+# …and unset PASSWORD — the server falls back to the file when the password
+# env var is absent. Priority: password-env > secret-file > direct-string.
+console_dev_bootstrap_username_env = "USERNAME"
+console_dev_bootstrap_password_env = "PASSWORD"
 
 [logging]
 # JSON log lines for container log aggregators (Loki / Datadog / CloudWatch).

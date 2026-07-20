@@ -135,6 +135,36 @@ async fn login(client: &reqwest::Client, base: &str, secret: &str) -> Option<(St
     Some((cookie, csrf))
 }
 
+/// Phase G (2026-07-20): logs in with the new username+password shape.
+/// Mirrors [`login`] but POSTs `{username, password}`. Used to exercise the
+/// dual-mode handler against state built with `with_credentials`.
+async fn login_with_credentials(
+    client: &reqwest::Client,
+    base: &str,
+    username: &str,
+    password: &str,
+) -> Option<(String, String)> {
+    let resp = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({ "username": username, "password": password }))
+        .send()
+        .await
+        .unwrap();
+    if resp.status() != 200 {
+        return None;
+    }
+    let set_cookie = resp
+        .headers()
+        .get("set-cookie")
+        .expect("login sets a cookie")
+        .to_str()
+        .unwrap();
+    let cookie = set_cookie.split(';').next().unwrap().to_owned();
+    let body: Value = resp.json().await.unwrap();
+    let csrf = body["csrf_token"].as_str().unwrap().to_owned();
+    Some((cookie, csrf))
+}
+
 // ── auth: negative ──────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -150,6 +180,105 @@ async fn login_wrong_secret_returns_401() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 401);
+}
+
+// ── Phase G (2026-07-20): username+password login mode ─────────────────────
+//
+// `ConsoleApiState::with_credentials(store, Some(username), password, _)`
+// turns on username+password mode: the login route requires BOTH fields to
+// match, and the legacy `{secret}` body is rejected. These tests cover the
+// happy path + both rejection paths (wrong username, wrong password).
+
+const USERNAME: &str = "console-admin";
+
+#[tokio::test]
+async fn login_with_credentials_succeeds() {
+    let (_parent, store, _ctx) = make_store();
+    let base = spawn(ConsoleApiState::with_credentials(
+        store,
+        Some(USERNAME.to_owned()),
+        SECRET.to_owned(),
+        false,
+    ))
+    .await;
+    let client = reqwest::Client::new();
+    let result = login_with_credentials(&client, &base, USERNAME, SECRET).await;
+    assert!(result.is_some(), "correct username+password → 200 + csrf");
+}
+
+#[tokio::test]
+async fn login_with_wrong_username_returns_401() {
+    let (_parent, store, _ctx) = make_store();
+    let base = spawn(ConsoleApiState::with_credentials(
+        store,
+        Some(USERNAME.to_owned()),
+        SECRET.to_owned(),
+        false,
+    ))
+    .await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({ "username": "wrong-user", "password": SECRET }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn login_with_wrong_password_returns_401() {
+    let (_parent, store, _ctx) = make_store();
+    let base = spawn(ConsoleApiState::with_credentials(
+        store,
+        Some(USERNAME.to_owned()),
+        SECRET.to_owned(),
+        false,
+    ))
+    .await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({ "username": USERNAME, "password": "wrong-pw" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn login_username_mode_rejects_legacy_secret_body() {
+    // When username mode is ON, an old client posting `{secret}` is rejected,
+    // even if `secret` matches the configured password. This forces the
+    // migration: nobody silently authenticates without identifying themselves.
+    let (_parent, store, _ctx) = make_store();
+    let base = spawn(ConsoleApiState::with_credentials(
+        store,
+        Some(USERNAME.to_owned()),
+        SECRET.to_owned(),
+        false,
+    ))
+    .await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/api/v1/auth/login"))
+        .json(&json!({ "secret": SECRET }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn login_legacy_mode_still_accepts_secret_body() {
+    // Backward-compat: state built with `::new` (no username) must still
+    // accept `{secret}` alone. Old deployments and old CLI clients keep
+    // working through the migration.
+    let (_parent, store, _ctx) = make_store();
+    let base = spawn(ConsoleApiState::new(store, SECRET.to_owned(), false)).await;
+    let client = reqwest::Client::new();
+    let result = login(&client, &base, SECRET).await;
+    assert!(result.is_some(), "legacy single-credential mode still works");
 }
 
 #[tokio::test]

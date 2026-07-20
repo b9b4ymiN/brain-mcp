@@ -1,57 +1,60 @@
 <script lang="ts">
   /**
-   * ReauthForm — inline bootstrap-secret re-authentication (Task E3.3 Part C).
-   *
-   * Used inside `<DestructiveDialog>` to satisfy the
-   * `requires_recent_reauth` gate before a hard purge. Calls
-   * `api.reauth(secret)`; on success emits `onsuccess` with the freshness
-   * window (so the parent can flip a `reauthed` flag and enable the confirm
-   * button). On failure renders the error inline (no flash — the dialog owns
-   * the surface).
+   * ReauthForm — inline username/password re-authentication (Phase G,
+   * 2026-07-20). Used inside `<DestructiveDialog>` to satisfy the
+   * `requires_recent_reauth` gate before a hard purge, entity merge/split,
+   * or retract. Calls `api.reauth({username, password})`; on success emits
+   * `onsuccess` with the freshness window (so the parent can flip a
+   * `reauthed` flag and enable the confirm button). On failure renders the
+   * error inline (no flash — the dialog owns the surface).
    *
    * Anti-XSS: the only dynamic text is the per-field error string, bound as
-   * text via Svelte's `{error}`. No `{@html}`. The `secret` input is
-   * `type=password` with an explicit `<label>` for a11y.
+   * text via Svelte's `{error}`. No `{@html}`. Inputs are typed (text +
+   * password) with explicit `<label>`s for a11y.
    */
   import { reauth as apiReauth, ApiError } from '../lib/api'
 
   interface Props {
+    /** Pre-fill the username field with the signed-in user (best-effort UX). */
+    usernamePrefill?: string | null
     /** Emitted when reauth succeeds. Carries `fresh_for_seconds` from server. */
     onsuccess: (freshForSeconds: number) => void
   }
 
-  let { onsuccess }: Props = $props()
+  let { usernamePrefill = null, onsuccess }: Props = $props()
 
-  let secret = $state('')
+  let username = $state(usernamePrefill ?? '')
+  let password = $state('')
   let submitting = $state(false)
   let error = $state<string | null>(null)
 
   async function submit(event: SubmitEvent): Promise<void> {
     event.preventDefault()
     if (submitting) return
-    const trimmed = secret.trim()
-    if (!trimmed) {
-      error = 'Enter the bootstrap secret.'
+    const trimmedUser = username.trim()
+    if (!trimmedUser || !password) {
+      error = 'Enter your username and password.'
       return
     }
     submitting = true
     error = null
     try {
-      const result = await apiReauth(trimmed)
+      const result = await apiReauth({ username: trimmedUser, password })
       if (!result.reauthenticated) {
-        // Defensive — the server returns 401 for a wrong secret rather than
-        // `{reauthenticated:false}`, so this branch is unlikely. Treat as
-        // failure regardless so the parent confirm button stays disabled.
+        // Defensive — the server returns 401 for wrong credentials rather
+        // than `{reauthenticated:false}`, so this branch is unlikely. Treat
+        // as failure regardless so the parent confirm button stays disabled.
         error = 'Re-authentication failed.'
         return
       }
       onsuccess(result.fresh_for_seconds)
-      // Clear the secret from local state as soon as the server accepts it —
-      // minimises the window during which the value is held in memory.
-      secret = ''
+      // Clear the password from local state as soon as the server accepts
+      // it — minimises the window during which the value is held in memory.
+      // Keep the username for the next reauth (less friction).
+      password = ''
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401) {
-        error = 'Wrong secret — try again.'
+        error = 'Wrong username or password — try again.'
       } else if (cause instanceof ApiError) {
         error = `Re-auth failed (${cause.code}).`
       } else {
@@ -64,13 +67,22 @@
 </script>
 
 <form class="reauth-form" onsubmit={submit}>
-  <label for="reauth-secret" class="reauth-label">Bootstrap secret</label>
+  <label for="reauth-username" class="reauth-label">Username</label>
   <input
-    id="reauth-secret"
+    id="reauth-username"
+    type="text"
+    autocomplete="username"
+    placeholder="username"
+    bind:value={username}
+    disabled={submitting}
+  />
+  <label for="reauth-password" class="reauth-label">Password</label>
+  <input
+    id="reauth-password"
     type="password"
     autocomplete="current-password"
-    placeholder="secret"
-    bind:value={secret}
+    placeholder="password"
+    bind:value={password}
     disabled={submitting}
     aria-describedby={error ? 'reauth-error' : undefined}
   />

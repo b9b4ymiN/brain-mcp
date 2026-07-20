@@ -251,7 +251,7 @@
         </p>
       {:else}
         <p class="reauth-prompt">
-          Enter the bootstrap secret to unlock destructive actions.
+          Re-enter your username and password to unlock destructive actions.
         </p>
         <ReauthForm onsuccess={onReauthSuccess} />
       {/if}

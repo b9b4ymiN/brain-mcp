@@ -144,33 +144,45 @@ async fn serve_http(
         );
     }
 
-    // Console HTTP API (Task E0.2). Fail-closed: only build it when a bootstrap
-    // secret is configured AND a semantic store is attached (F1 lesson — the
-    // gate is on the real serve path, not just a contract). Clone the store
-    // handle out before `server` is moved into the MCP service closure below.
+    // Console HTTP API (Task E0.2). Fail-closed: only build it when bootstrap
+    // credentials are configured AND a semantic store is attached (F1 lesson
+    // — the gate is on the real serve path, not just a contract). Clone the
+    // store handle out before `server` is moved into the MCP service closure
+    // below.
     //
-    // Secret resolution priority (Phase F1.2): file > direct string. A set
-    // `console_dev_bootstrap_secret_file` that fails to read is a fatal
-    // startup error — we do NOT fall back to an empty secret or to the direct
-    // string. An empty resolved secret keeps the Console API router unmounted
-    // (matches the pre-F1.2 contract).
-    let resolved_secret = serve_cfg.resolve_bootstrap_secret()?;
-    if resolved_secret.is_some() {
+    // Credential resolution (Phase G, 2026-07-20):
+    //   - username: `console_dev_bootstrap_username_env` env var (default
+    //     "USERNAME"). Optional — when unset, login falls back to the legacy
+    //     single-credential shape.
+    //   - password: `console_dev_bootstrap_password_env` env var (default
+    //     "PASSWORD") > `console_dev_bootstrap_secret_file` (legacy Docker
+    //     secret) > `console_dev_bootstrap_secret` (legacy direct string).
+    //
+    // A set password-env-var that resolves to empty is a fatal startup error
+    // — we do NOT silently fall back to legacy secrets. An absent password
+    // keeps the Console API router unmounted (matches the pre-G contract).
+    let resolved_creds = serve_cfg.resolve_bootstrap_credentials()?;
+    if resolved_creds.is_some() {
+        let username_source = if resolved_creds.as_ref().and_then(|c| c.username.as_ref()).is_some() {
+            "env"
+        } else {
+            "unset"
+        };
         tracing::info!(
-            source = if serve_cfg.console_dev_bootstrap_secret_file.is_some() {
-                "file"
-            } else {
-                "direct"
-            },
-            "console bootstrap secret resolved"
+            username_source,
+            "console bootstrap credentials resolved"
         );
     }
-    let console_api = match (resolved_secret, server.semantic_store.clone()) {
-        (Some(secret), Some(store)) if !secret.is_empty() => {
-            tracing::info!("Console HTTP API mounted at /api/v1 (dev bootstrap auth)");
-            Some(crate::api::router(crate::api::ConsoleApiState::new(
+    let console_api = match (resolved_creds, server.semantic_store.clone()) {
+        (Some(creds), Some(store)) => {
+            tracing::info!(
+                mode = if creds.username.is_some() { "username+password" } else { "legacy-secret" },
+                "Console HTTP API mounted at /api/v1 (dev bootstrap auth)"
+            );
+            Some(crate::api::router(crate::api::ConsoleApiState::with_credentials(
                 store,
-                secret,
+                creds.username,
+                creds.password,
                 serve_cfg.http_bind_all_interfaces,
             )))
         }

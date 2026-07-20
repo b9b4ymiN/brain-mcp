@@ -10,8 +10,13 @@
 //!   3. **Trimmed** — a trailing newline (`echo $SECRET > file`) or other
 //!      surrounding ASCII whitespace is stripped before comparison.
 //!
+//! Phase G (2026-07-20) added a parallel `*_username_env` / `*_password_env`
+//! pair that resolves USERNAME/PASSWORD env vars; tests for that flow live
+//! in the second half of this file.
+//!
 //! Field-level resolution lives on `ServeConfig::resolve_bootstrap_secret`
-//! (`src/config.rs`), so these are unit tests — no server boot needed.
+//! and `ServeConfig::resolve_bootstrap_credentials` (`src/config.rs`), so
+//! these are unit tests — no server boot needed.
 
 use llm_wiki::config::ServeConfig;
 
@@ -154,4 +159,152 @@ console_dev_bootstrap_secret_file = "{}"
         .resolve_bootstrap_secret()
         .expect("resolution succeeds");
     assert_eq!(resolved.as_deref(), Some("toml-loaded-secret"));
+}
+
+// ── Phase G (2026-07-20): username_env / password_env resolution ───────────
+//
+// These tests exercise `ServeConfig::resolve_bootstrap_credentials`. Each
+// uses a unique env var name to avoid colliding with parallel test runs
+// (cargo tests share a process; env mutation is visible to all threads).
+
+// Helper: scope an env var to the test using RAII. The `unsafe` blocks are
+// required by Rust 2024 edition — `set_var`/`remove_var` are unsafe because
+// concurrent reads of the env from another thread can race. The Phase G
+// credential resolver runs single-threaded inside these tests, and the
+// unique-per-test key names prevent collisions with parallel runs.
+struct EnvGuard {
+    key: String,
+    had_prev: bool,
+    prev: String,
+}
+
+impl EnvGuard {
+    fn set(key: &str, value: &str) -> Self {
+        let had_prev = std::env::var(key).ok();
+        let guard = EnvGuard {
+            key: key.to_string(),
+            had_prev: had_prev.is_some(),
+            prev: had_prev.unwrap_or_default(),
+        };
+        // SAFETY: no other thread reads this key during the test (cargo
+        // tests share a process but each test uses a unique key name).
+        unsafe { std::env::set_var(key, value) };
+        guard
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        // SAFETY: see EnvGuard::set.
+        unsafe {
+            if self.had_prev {
+                std::env::set_var(&self.key, &self.prev);
+            } else {
+                std::env::remove_var(&self.key);
+            }
+        }
+    }
+}
+
+#[test]
+fn password_env_overrides_legacy_secret_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let secret_path = dir.path().join("bootstrap_secret");
+    std::fs::write(&secret_path, "from-file").unwrap();
+
+    // Unique env var name so this test is hermetic.
+    let _pw = EnvGuard::set("BC_TEST_PASSWORD_G1", "from-env");
+    let cfg = ServeConfig {
+        console_dev_bootstrap_secret: Some("from-direct-string".into()),
+        console_dev_bootstrap_secret_file: Some(secret_path),
+        console_dev_bootstrap_username_env: "BC_UNUSED_G1".into(),
+        console_dev_bootstrap_password_env: "BC_TEST_PASSWORD_G1".into(),
+        ..Default::default()
+    };
+
+    let creds = cfg
+        .resolve_bootstrap_credentials()
+        .expect("resolution succeeds")
+        .expect("creds present");
+    // Env var wins over both legacy paths.
+    assert_eq!(creds.password, "from-env");
+    // Username env unset → None (legacy single-credential mode).
+    assert!(creds.username.is_none());
+}
+
+#[test]
+fn username_env_resolves_when_set() {
+    let _pw = EnvGuard::set("BC_TEST_PASSWORD_G2", "secret-pw");
+    let _user = EnvGuard::set("BC_TEST_USERNAME_G2", "console-admin");
+
+    let cfg = ServeConfig {
+        console_dev_bootstrap_username_env: "BC_TEST_USERNAME_G2".into(),
+        console_dev_bootstrap_password_env: "BC_TEST_PASSWORD_G2".into(),
+        ..Default::default()
+    };
+
+    let creds = cfg
+        .resolve_bootstrap_credentials()
+        .expect("resolution succeeds")
+        .expect("creds present");
+    assert_eq!(creds.username.as_deref(), Some("console-admin"));
+    assert_eq!(creds.password, "secret-pw");
+}
+
+#[test]
+fn empty_password_env_is_fatal_no_fallback() {
+    // Operator named a password env var but it resolved empty. Fail-closed:
+    // we do NOT silently fall back to the legacy secret.
+    let _pw = EnvGuard::set("BC_TEST_PASSWORD_G3", "");
+    let cfg = ServeConfig {
+        console_dev_bootstrap_secret: Some("legacy-fallback".into()),
+        console_dev_bootstrap_password_env: "BC_TEST_PASSWORD_G3".into(),
+        ..Default::default()
+    };
+    let err = cfg.resolve_bootstrap_credentials().unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("resolved to an empty value"),
+        "expected empty-value error, got: {msg}"
+    );
+}
+
+#[test]
+fn no_credentials_configured_returns_none() {
+    // No env vars, no legacy fields → router stays unmounted.
+    let cfg = ServeConfig {
+        console_dev_bootstrap_username_env: "BC_UNUSED_G4".into(),
+        console_dev_bootstrap_password_env: "BC_UNUSED_G4".into(),
+        ..Default::default()
+    };
+    let creds = cfg
+        .resolve_bootstrap_credentials()
+        .expect("resolution succeeds");
+    assert!(creds.is_none(), "no creds → None");
+}
+
+#[test]
+fn legacy_secret_path_works_without_env_vars() {
+    // Backward-compat: deployment that only set the legacy direct string.
+    let cfg = ServeConfig {
+        console_dev_bootstrap_secret: Some("just-legacy-secret".into()),
+        console_dev_bootstrap_username_env: "BC_UNUSED_G5".into(),
+        console_dev_bootstrap_password_env: "BC_UNUSED_G5".into(),
+        ..Default::default()
+    };
+    let creds = cfg
+        .resolve_bootstrap_credentials()
+        .expect("resolution succeeds")
+        .expect("creds present");
+    assert_eq!(creds.password, "just-legacy-secret");
+    assert!(creds.username.is_none());
+}
+
+#[test]
+fn default_env_names_are_username_and_password() {
+    // Defaults must match `.env.example` so a vanilla deployment works
+    // without any TOML config. This guards against accidental drift.
+    let cfg = ServeConfig::default();
+    assert_eq!(cfg.console_dev_bootstrap_username_env, "USERNAME");
+    assert_eq!(cfg.console_dev_bootstrap_password_env, "PASSWORD");
 }

@@ -93,13 +93,15 @@ fi
 # ── 1. Setup scratch tree ────────────────────────────────────────────────────
 echo "[smoke] setting up scratch tree ..."
 rm -rf "$SCRATCH"
-mkdir -p "$SCRATCH/config" "$SCRATCH/secrets" "$SCRATCH/data" "$SCRATCH/backups"
+mkdir -p "$SCRATCH/config" "$SCRATCH/data" "$SCRATCH/backups"
 
-# Write the dev-only secret (mode 0600). Docker compose reads this via the
-# `secrets:` block and surfaces it at /run/secrets/bootstrap_secret inside
-# the container.
-( umask 077 && printf '%s' "$SECRET" > "$SCRATCH/secrets/bootstrap_secret.txt" )
-chmod 600 "$SCRATCH/secrets/bootstrap_secret.txt" 2>/dev/null || true
+# Phase G (2026-07-20): the bootstrap credential is now a USERNAME+PASSWORD
+# pair sourced from env vars. The smoke script seeds the values directly into
+# the compose file's `environment:` block (they're dev-grade + loopback-only
+# + torn down with the scratch tree, so the Config.Env leak vector is moot
+# for this test). The legacy `secrets/` mount is no longer required.
+SMOKE_USERNAME="${SMOKE_USERNAME:-smoke-admin}"
+SMOKE_PASSWORD="${SMOKE_PASSWORD:-$SECRET}"
 
 # Copy the tracked template into the scratch config dir. The single-file
 # bind mount (`./config/config.toml:/data/config.toml:ro`) is what the
@@ -109,9 +111,9 @@ cp "$EXAMPLE_CONFIG" "$SCRATCH/config/config.toml"
 # ── 2. Generate the smoke compose file ───────────────────────────────────────
 # We can't reuse the root docker-compose.yml directly because (a) it hard-codes
 # `image: brain:v0.5` and (b) its bind mounts point at ./data, ./backups,
-# ./config, ./secrets at the repo root (which we don't want to pollute). The
-# generated override re-points everything at the scratch tree + a per-run
-# port + a smoke-specific image tag.
+# ./config at the repo root (which we don't want to pollute). The generated
+# override re-points everything at the scratch tree + a per-run port + a
+# smoke-specific image tag.
 #
 # Paths are emitted in their OS-native form (via `native_path`) so Docker
 # Desktop on Windows accepts them verbatim without MSYS path translation
@@ -135,18 +137,14 @@ services:
     environment:
       - RUST_LOG=llm_wiki=info,warn
       - LLM_WIKI_CONFIG=/data/config.toml
-    secrets:
-      - bootstrap_secret
+      - USERNAME=${SMOKE_USERNAME}
+      - PASSWORD=${SMOKE_PASSWORD}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
       interval: 5s
       timeout: 3s
       retries: 6
       start_period: 5s
-
-secrets:
-  bootstrap_secret:
-    file: $SCRATCH_N/secrets/bootstrap_secret.txt
 EOF
 
 cleanup() {
@@ -242,12 +240,13 @@ echo "$READY_BODY" | grep -q '"migrations_applied":true' \
 echo "$READY_BODY" | grep -q '"index_open":true' \
     || { echo "[smoke] FAIL: /ready reports index_open != true"; exit 1; }
 
-# ── 6. Auth gate: wrong secret -> 401 ────────────────────────────────────────
-echo "[smoke] checking /api/v1/auth/login with WRONG secret (expect 401) ..."
+# ── 6. Auth gate: wrong credentials -> 401 ───────────────────────────────────
+# Phase G (2026-07-20): login now uses the `{username, password}` body shape.
+echo "[smoke] checking /api/v1/auth/login with WRONG credentials (expect 401) ..."
 CODE=$(curl -s -o /dev/null -w '%{http_code}' \
     -X POST "http://127.0.0.1:${SMOKE_PORT}/api/v1/auth/login" \
     -H 'Content-Type: application/json' \
-    -d '{"secret":"this-is-not-the-secret"}')
+    -d '{"username":"smoke-admin","password":"this-is-not-the-password"}')
 echo "[smoke]   -> HTTP $CODE"
 [[ "$CODE" = "401" ]] || { echo "[smoke] FAIL: expected 401 got $CODE"; exit 1; }
 
@@ -278,16 +277,17 @@ grep -q 'console_auth_failures_total' /tmp/brain_smoke_metrics.txt \
          exit 1; }
 echo "[smoke]   /metrics OK — Prometheus text + console_auth_failures_total present"
 
-# ── 7. Auth gate: correct secret -> 200 + csrf_token ─────────────────────────
-echo "[smoke] checking /api/v1/auth/login with CORRECT secret (expect 200) ..."
+# ── 7. Auth gate: correct credentials -> 200 + csrf_token ────────────────────
+# Phase G (2026-07-20): username+password body shape.
+echo "[smoke] checking /api/v1/auth/login with CORRECT credentials (expect 200) ..."
 LOGIN_BODY=$(curl -s -w "\n%{http_code}" \
     -X POST "http://127.0.0.1:${SMOKE_PORT}/api/v1/auth/login" \
     -H 'Content-Type: application/json' \
-    -d "{\"secret\":\"$SECRET\"}")
+    -d "{\"username\":\"$SMOKE_USERNAME\",\"password\":\"$SMOKE_PASSWORD\"}")
 CODE=$(echo "$LOGIN_BODY" | tail -n1)
 BODY=$(echo "$LOGIN_BODY" | sed '$d')
 echo "[smoke]   -> HTTP $CODE body=$BODY"
-[[ "$CODE" = "200" ]] || { echo "[smoke] FAIL: expected 200 got $CODE (secret file may not have been read)"; exit 1; }
+[[ "$CODE" = "200" ]] || { echo "[smoke] FAIL: expected 200 got $CODE (USERNAME/PASSWORD env may not have been read)"; exit 1; }
 echo "$BODY" | grep -q '"csrf_token"' || { echo "[smoke] FAIL: login response missing csrf_token"; exit 1; }
 
 # ── 8. Console static index served at / ──────────────────────────────────────
@@ -297,56 +297,51 @@ echo "$INDEX_BODY" | grep -q '<title>Brain Console</title>' \
     || { echo "[smoke] FAIL: console index missing <title>Brain Console</title>"; exit 1; }
 echo "[smoke]   console index OK"
 
-# ── 9. SECURITY GATE A: secret NOT in Config.Env ─────────────────────────────
-# This is the load-bearing check for the entire F1.2 secret-file indirection.
-# If the secret value appears in `docker inspect ... Config.Env`, then either:
-#   (a) the operator put it in `environment:` (the leak vector we avoid), or
-#   (b) some future change made the binary re-export it into the env.
-# Either way: fail loudly.
-echo "[smoke] SECURITY GATE: secret value must NOT appear in docker inspect Config.Env ..."
+# ── 9. SECURITY GATE A: USERNAME/PASSWORD env vars ARE present in Config.Env ─
+# Phase G (2026-07-20): the credentials are intentionally sourced from env
+# vars, so they MUST appear in `docker inspect Config.Env`. The gate flips:
+# we now assert the credential keys are present (sanity — env block wired)
+# and document the explicit tradeoff (dev-grade auth behind loopback publish
+# + TLS fronting proxy; for higher-stakes deployments, restore the legacy
+# `console_dev_bootstrap_secret_file` Docker-secret path and unset
+# PASSWORD — the server falls back to the file).
+echo "[smoke] SECURITY GATE: USERNAME + PASSWORD must appear in docker inspect Config.Env ..."
 INSPECT_ENV="$(docker inspect brain_compose_smoke --format '{{.Config.Env}}' 2>/dev/null || true)"
-if echo "$INSPECT_ENV" | grep -F -q -- "$SECRET"; then
-    echo "[smoke] FAIL: secret leaked into Config.Env — _file: indirection defeated"
-    echo "[smoke]   Config.Env = $INSPECT_ENV"
-    exit 1
-fi
-echo "[smoke]   Config.Env is clean (does not contain the secret value)"
+echo "$INSPECT_ENV" | grep -q 'USERNAME=' \
+    || { echo "[smoke] FAIL: USERNAME missing from Config.Env (env block not wired)"; exit 1; }
+echo "$INSPECT_ENV" | grep -q 'PASSWORD=' \
+    || { echo "[smoke] FAIL: PASSWORD missing from Config.Env (env block not wired)"; exit 1; }
+echo "[smoke]   USERNAME + PASSWORD present in Config.Env (Phase G env-var flow)"
 
-# Also assert RUST_LOG + LLM_WIKI_CONFIG are present (sanity — the env block
-# actually wired up; if these are missing, the secret check above is vacuous).
+# Also assert the standard control vars are still present.
 echo "$INSPECT_ENV" | grep -q 'RUST_LOG=' \
-    || { echo "[smoke] FAIL: RUST_LOG missing from Config.Env (env block not wired)"; exit 1; }
+    || { echo "[smoke] FAIL: RUST_LOG missing from Config.Env"; exit 1; }
 echo "$INSPECT_ENV" | grep -q 'LLM_WIKI_CONFIG=' \
     || { echo "[smoke] FAIL: LLM_WIKI_CONFIG missing from Config.Env"; exit 1; }
 
-# ── 10. SECURITY GATE B: /run/secrets mount present ──────────────────────────
-echo "[smoke] SECURITY GATE: /run/secrets/bootstrap_secret mount must be present ..."
+# ── 10. (Phase G) /run/secrets mount is OPTIONAL ─────────────────────────────
+# The legacy Docker-secret path (`console_dev_bootstrap_secret_file`) still
+# works as a fallback when PASSWORD env is unset, but the smoke stack no
+# longer exercises it. We assert the absence is intentional — the secrets
+# block + the bind mount are gone, and that's correct for the env-var flow.
+echo "[smoke] verifying /run/secrets/bootstrap_secret is NOT mounted (env-var flow) ..."
 MOUNTS_JSON="$(docker inspect brain_compose_smoke --format '{{json .Mounts}}')"
-if ! echo "$MOUNTS_JSON" | grep -F -q '/run/secrets/bootstrap_secret'; then
-    echo "[smoke] FAIL: /run/secrets/bootstrap_secret mount missing from container"
+if echo "$MOUNTS_JSON" | grep -F -q '/run/secrets/bootstrap_secret'; then
+    echo "[smoke] FAIL: /run/secrets/bootstrap_secret mount unexpectedly present"
     echo "[smoke]   Mounts = $MOUNTS_JSON"
     exit 1
 fi
-echo "[smoke]   secret file mount OK"
+echo "[smoke]   no legacy secret-file mount (correct for Phase G env-var flow)"
 
 # Also assert the source path points at the scratch secrets dir (not a stray
 # operator copy). Compare in BOTH the MSYS-style path (what Bash sees) and
-# the OS-native path (what Docker Desktop on Windows reports in `Mounts`).
-SECRET_SRC_UNIX="$SCRATCH/secrets/bootstrap_secret.txt"
-SECRET_SRC_NATIVE="$(native_path "$SECRET_SRC_UNIX")"
-if ! ( echo "$MOUNTS_JSON" | grep -F -q -- "$SECRET_SRC_UNIX" \
-       || echo "$MOUNTS_JSON" | grep -F -q -- "$SECRET_SRC_NATIVE" ); then
-    echo "[smoke] FAIL: secret mount source does not point at scratch secrets dir"
-    echo "[smoke]   expected (unix)  = $SECRET_SRC_UNIX"
-    echo "[smoke]   expected (native)= $SECRET_SRC_NATIVE"
-    echo "[smoke]   Mounts           = $MOUNTS_JSON"
-    exit 1
-fi
-
 # ── 11. Image history clean (carry from F1.1) ────────────────────────────────
-echo "[smoke] SECRET SCAN: image history must not contain the secret ..."
-if docker history --no-trunc brain-compose-smoke:dev 2>/dev/null | grep -F -q -- "$SECRET"; then
-    echo "[smoke] FAIL: secret leaked into image history"
+# Phase G: the password value now rides in Config.Env (intentional), so we
+# scan image history for it instead — the credentials must NEVER be baked
+# into the image layers themselves (would leak to anyone who pulls it).
+echo "[smoke] SECRET SCAN: image history must not contain the password ..."
+if docker history --no-trunc brain-compose-smoke:dev 2>/dev/null | grep -F -q -- "$SMOKE_PASSWORD"; then
+    echo "[smoke] FAIL: password leaked into image history"
     exit 1
 fi
 echo "[smoke]   image history clean"
@@ -363,6 +358,6 @@ echo "$ID_OUT" | grep -Eq 'uid=1000\(brain\)' \
     || { echo "[smoke] FAIL: container not running as brain(uid=1000): $ID_OUT"; exit 1; }
 
 echo ""
-echo "[smoke] PASS — all checks green (compose up, /health, /ready, login 401/200, console index,"
-echo "                 /metrics text + counter, secret NOT in inspect Env, secret file mount"
-echo "                 present, image clean, non-root)"
+echo "[smoke] PASS — all checks green (compose up, /health, /ready, login 401/200,"
+echo "                 console index, /metrics text + counter, USERNAME+PASSWORD"
+echo "                 present in inspect Env, image clean, non-root)"

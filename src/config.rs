@@ -185,6 +185,20 @@ fn default_max_nodes_for_diameter() -> usize {
 fn default_acp_max_sessions() -> usize {
     20
 }
+
+/// Default env var name holding the Console dev USERNAME (Phase G:
+/// username/password migration, 2026-07-20). Operators can override the
+/// name in TOML if they prefer a different env key, but the default
+/// matches `.env.example` so a vanilla deployment "just works".
+fn default_console_username_env() -> String {
+    "USERNAME".to_string()
+}
+
+/// Default env var name holding the Console dev PASSWORD. See
+/// [`default_console_username_env`].
+fn default_console_password_env() -> String {
+    "PASSWORD".to_string()
+}
 fn default_acp_session_ttl_secs() -> u64 {
     1800
 }
@@ -223,6 +237,16 @@ fn default_mcp_stateful_mode() -> bool {
 
 fn default_mcp_json_response() -> bool {
     true
+}
+
+/// Resolved Console credentials produced by
+/// [`ServeConfig::resolve_bootstrap_credentials`]. `username` may be `None`
+/// (legacy single-credential mode); `password` is always present and
+/// non-empty when this struct is `Some`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootstrapCredentials {
+    pub username: Option<String>,
+    pub password: String,
 }
 
 /// `[serve]` section — HTTP and ACP server configuration.
@@ -306,6 +330,23 @@ pub struct ServeConfig {
     /// to an empty/direct secret. Priority: `file > direct string`.
     #[serde(default)]
     pub console_dev_bootstrap_secret_file: Option<std::path::PathBuf>,
+    /// Env var name holding the Console dev USERNAME (Phase G:
+    /// username/password migration, 2026-07-20). Read at server startup via
+    /// [`std::env::var`]; the value never enters config-file or disk. Default
+    /// `"USERNAME"`. When the env var is unset, no username is enforced —
+    /// legacy deployments that only set `console_dev_bootstrap_secret` keep
+    /// working (single-credential mode). When the env var IS set, the login
+    /// route requires `body.username` to match it.
+    #[serde(default = "default_console_username_env")]
+    pub console_dev_bootstrap_username_env: String,
+    /// Env var name holding the Console dev PASSWORD. Default `"PASSWORD"`.
+    /// Priority for the password credential:
+    ///   1. this env var (if set at startup)
+    ///   2. `console_dev_bootstrap_secret_file` (legacy Docker-secret path)
+    ///   3. `console_dev_bootstrap_secret` (legacy direct-string fallback)
+    /// See [`Self::resolve_bootstrap_credentials`].
+    #[serde(default = "default_console_password_env")]
+    pub console_dev_bootstrap_password_env: String,
     /// Directory of built Console static assets, served at `/` as a fallback
     /// with a strict CSP and path-traversal protection (Phase E Task E0.3).
     /// `None` (default) = no static serving. Points at the Task E1 Svelte build
@@ -351,6 +392,8 @@ impl Default for ServeConfig {
             mcp_json_response: default_mcp_json_response(),
             console_dev_bootstrap_secret: None,
             console_dev_bootstrap_secret_file: None,
+            console_dev_bootstrap_username_env: default_console_username_env(),
+            console_dev_bootstrap_password_env: default_console_password_env(),
             console_static_dir: None,
             ingest_max_source_bytes: default_ingest_max_source_bytes(),
             ingest_max_sources_per_minute: default_ingest_max_sources_per_minute(),
@@ -385,6 +428,57 @@ impl ServeConfig {
             return Ok(Some(trimmed));
         }
         Ok(self.console_dev_bootstrap_secret.clone())
+    }
+
+    /// The resolved Console credentials (Phase G: username/password
+    /// migration, 2026-07-20). Replaces [`Self::resolve_bootstrap_secret`]
+    /// for the production server-boot path while keeping the legacy method
+    /// intact for tests and backward compatibility.
+    ///
+    /// Resolution priority:
+    /// - **username**: `console_dev_bootstrap_username_env` → `std::env::var(name)`.
+    ///   `None` if the env var is unset (legacy single-credential mode).
+    /// - **password**:
+    ///   1. `console_dev_bootstrap_password_env` → `std::env::var(name)` (wins)
+    ///   2. `console_dev_bootstrap_secret_file` (legacy Docker-secret path)
+    ///   3. `console_dev_bootstrap_secret` (legacy direct-string fallback)
+    ///
+    /// **Fail-closed:** if the password env var is set but empty, or if the
+    /// legacy file path is set but unreadable, this returns an error. The
+    /// caller MUST NOT fall back to an empty password.
+    ///
+    /// Returns `Ok(None)` when no credential is configured (Console API not
+    /// mounted). Returns `Ok(Some(creds))` with a non-empty password
+    /// otherwise — the username may be `None`.
+    pub fn resolve_bootstrap_credentials(&self) -> Result<Option<BootstrapCredentials>> {
+        // Username: optional. Unset env var → None (legacy mode).
+        let username = std::env::var(&self.console_dev_bootstrap_username_env)
+            .ok()
+            .filter(|s| !s.is_empty());
+
+        // Password: env var wins; otherwise fall back to legacy resolution.
+        let password = match std::env::var(&self.console_dev_bootstrap_password_env) {
+            Ok(p) if !p.is_empty() => Some(p),
+            // Empty string is an explicit configuration error — we do NOT
+            // silently fall back to legacy secrets when the operator named a
+            // password env var that resolves to empty.
+            Ok(_) => {
+                anyhow::bail!(
+                    "console_dev_bootstrap_password_env='{}' resolved to an empty value",
+                    self.console_dev_bootstrap_password_env
+                );
+            }
+            Err(_) => self.resolve_bootstrap_secret()?,
+        };
+
+        match (username, password) {
+            (u, Some(p)) if !p.is_empty() => Ok(Some(BootstrapCredentials {
+                username: u,
+                password: p,
+            })),
+            // No password configured → Console API not mounted (fail-closed).
+            _ => Ok(None),
+        }
     }
 }
 

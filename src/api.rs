@@ -93,7 +93,15 @@ struct Session {
 pub struct ConsoleApiState {
     store: Arc<SemanticStore>,
     sessions: Arc<RwLock<HashMap<String, Session>>>,
+    /// The configured password (the legacy "bootstrap secret"). Compared in
+    /// constant time against either `body.password` (new username+password
+    /// mode) or `body.secret` (legacy single-credential mode) at login.
     bootstrap_secret: Arc<String>,
+    /// The configured username, if any. `None` = legacy single-credential
+    /// mode (the login route accepts `{secret}` alone). `Some(u)` = new
+    /// username+password mode (the login route requires `{username, password}`
+    /// and both must match).
+    bootstrap_username: Arc<Option<String>>,
     session_ttl: Duration,
     /// Destructive-action re-auth freshness window (§5.3 "recent re-auth").
     /// `/purge/execute` rejects a session whose freshness anchor
@@ -112,15 +120,39 @@ pub struct ConsoleApiState {
 }
 
 impl ConsoleApiState {
-    /// Builds state with the default 24h session TTL.
+    /// Builds state with the default 24h session TTL. Legacy single-credential
+    /// constructor — kept for backward compatibility with tests that exercise
+    /// the `{secret}` login shape. Equivalent to
+    /// `Self::with_credentials(store, None, bootstrap_secret, secure_cookie)`.
     pub fn new(store: Arc<SemanticStore>, bootstrap_secret: String, secure_cookie: bool) -> Self {
-        Self::with_session_ttl(store, bootstrap_secret, secure_cookie, Duration::hours(24))
+        Self::with_credentials(store, None, bootstrap_secret, secure_cookie)
     }
 
-    /// Builds state with an explicit session TTL (test seam for expiry).
-    pub fn with_session_ttl(
+    /// Builds state with explicit credentials and the default 24h session
+    /// TTL. When `username` is `Some`, the login route requires both
+    /// `{username, password}` to match; when `None`, the login route falls
+    /// back to legacy `{secret}` mode (matching `password` against `body.secret`).
+    pub fn with_credentials(
         store: Arc<SemanticStore>,
-        bootstrap_secret: String,
+        username: Option<String>,
+        password: String,
+        secure_cookie: bool,
+    ) -> Self {
+        Self::with_credentials_and_ttl(
+            store,
+            username,
+            password,
+            secure_cookie,
+            Duration::hours(24),
+        )
+    }
+
+    /// Builds state with explicit credentials AND an explicit session TTL
+    /// (test seam for expiry). Replaces the old `with_session_ttl`.
+    pub fn with_credentials_and_ttl(
+        store: Arc<SemanticStore>,
+        username: Option<String>,
+        password: String,
         secure_cookie: bool,
         session_ttl: Duration,
     ) -> Self {
@@ -128,7 +160,8 @@ impl ConsoleApiState {
         Self {
             store,
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            bootstrap_secret: Arc::new(bootstrap_secret),
+            bootstrap_secret: Arc::new(password),
+            bootstrap_username: Arc::new(username),
             session_ttl,
             reauth_freshness: PURGE_REAUTH_FRESHNESS,
             secure_cookie,
@@ -136,7 +169,20 @@ impl ConsoleApiState {
         }
     }
 
-    /// Test seam: same as [`Self::with_session_ttl`] but also pins the
+    /// Legacy alias for [`Self::with_credentials_and_ttl`] (single-credential
+    /// signature). Preserved so existing test call sites keep compiling
+    /// without a rewrite; new code should call `with_credentials_and_ttl`.
+    #[doc(hidden)]
+    pub fn with_session_ttl(
+        store: Arc<SemanticStore>,
+        bootstrap_secret: String,
+        secure_cookie: bool,
+        session_ttl: Duration,
+    ) -> Self {
+        Self::with_credentials_and_ttl(store, None, bootstrap_secret, secure_cookie, session_ttl)
+    }
+
+    /// Test seam: same as [`Self::with_credentials_and_ttl`] but also pins the
     /// destructive-action re-auth freshness window. Lets the contract tests
     /// force a session to be "stale" for hard-purge purposes without waiting
     /// [`PURGE_REAUTH_FRESHNESS`] in wall-clock time.
@@ -148,7 +194,31 @@ impl ConsoleApiState {
         session_ttl: Duration,
         reauth_freshness: Duration,
     ) -> Self {
-        let mut state = Self::with_session_ttl(store, bootstrap_secret, secure_cookie, session_ttl);
+        let mut state =
+            Self::with_credentials_and_ttl(store, None, bootstrap_secret, secure_cookie, session_ttl);
+        state.reauth_freshness = reauth_freshness;
+        state
+    }
+
+    /// Test seam variant: full credentials + TTL + reauth-freshness pin.
+    /// Used by `tests/api_trust_ops_v1.rs` to exercise the
+    /// username+password flow with a controlled freshness window.
+    #[doc(hidden)]
+    pub fn with_credentials_ttl_and_reauth_freshness(
+        store: Arc<SemanticStore>,
+        username: Option<String>,
+        password: String,
+        secure_cookie: bool,
+        session_ttl: Duration,
+        reauth_freshness: Duration,
+    ) -> Self {
+        let mut state = Self::with_credentials_and_ttl(
+            store,
+            username,
+            password,
+            secure_cookie,
+            session_ttl,
+        );
         state.reauth_freshness = reauth_freshness;
         state
     }
@@ -453,14 +523,59 @@ impl FromRequestParts<ConsoleApiState> for CsrfSession {
 
 #[derive(Deserialize)]
 struct LoginRequest {
-    secret: String,
+    /// Legacy single-credential field. Ignored when the server is configured
+    /// with a username (username+password mode); compared against the
+    /// configured password otherwise. Accepting both shapes on the same
+    /// route keeps old CLI clients working through the migration.
+    #[serde(default)]
+    secret: Option<String>,
+    /// Username+password mode (Phase G, 2026-07-20). Required when the server
+    /// has a configured username; ignored otherwise.
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+}
+
+/// Verifies the login body against the configured credentials.
+///
+/// Two modes, dispatched on [`ConsoleApiState::bootstrap_username`]:
+/// - **username+password** (`Some(username)`): both `body.username` AND
+///   `body.password` must be present and match (constant-time). `body.secret`
+///   is ignored.
+/// - **legacy single-credential** (`None`): `body.secret` must match the
+///   configured password (constant-time). `body.username`/`body.password` are
+///   ignored. This preserves backward compatibility with deployments that
+///   only set `console_dev_bootstrap_secret` and with old CLI clients.
+///
+/// Returns `true` on a match, `false` otherwise. The caller is responsible
+/// for incrementing `console_auth_failures_total` on `false`.
+fn verify_login(state: &ConsoleApiState, body: &LoginRequest) -> bool {
+    if let Some(configured_username) = state.bootstrap_username.as_ref() {
+        // Username+password mode.
+        match (body.username.as_deref(), body.password.as_deref()) {
+            (Some(u), Some(p))
+                if constant_time_eq(u.as_bytes(), configured_username.as_bytes())
+                    && constant_time_eq(p.as_bytes(), state.bootstrap_secret.as_bytes()) =>
+            {
+                true
+            }
+            _ => false,
+        }
+    } else {
+        // Legacy single-credential mode.
+        match body.secret.as_deref() {
+            Some(s) => constant_time_eq(s.as_bytes(), state.bootstrap_secret.as_bytes()),
+            None => false,
+        }
+    }
 }
 
 async fn login(State(state): State<ConsoleApiState>, body: Option<Json<LoginRequest>>) -> Response {
     let Some(Json(body)) = body else {
         return ApiError::new(StatusCode::BAD_REQUEST, "invalid_request").into_response();
     };
-    if !constant_time_eq(body.secret.as_bytes(), state.bootstrap_secret.as_bytes()) {
+    if !verify_login(&state, &body) {
         // Task F2.2: failed Console login counter. Side-effect only; the 401
         // response contract is unchanged. The metrics facade is a no-op when
         // no recorder is installed.
@@ -1192,20 +1307,29 @@ async fn purge_status(
 
 // ── auth: re-authentication (Task E3.2) ─────────────────────────────────────
 
-/// `POST /api/v1/auth/reauth` body — the bootstrap secret again. Same shape as
-/// `LoginRequest` so the client can reuse the same form.
+/// `POST /api/v1/auth/reauth` body — accepts BOTH credential shapes so the
+/// Svelte client and any CLI clients can reuse the same form. Mirrors
+/// [`LoginRequest`] field-for-field.
 #[derive(Deserialize)]
 struct ReauthRequest {
-    secret: String,
+    #[serde(default)]
+    secret: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
 }
 
-/// `POST /api/v1/auth/reauth` — re-validate the bootstrap secret against an
+/// `POST /api/v1/auth/reauth` — re-validate credentials against an
 /// EXISTING session and bump its freshness anchor (§5.3 "recent re-auth"). The
 /// destructive-action gate (`/purge/execute`) compares
 /// `reauthenticated_at.unwrap_or(issued_at)` against
 /// [`PURGE_REAUTH_FRESHNESS`]; without a re-auth after login, hard purge is
-/// blocked. Requires a valid session (AuthSession); wrong secret → 401. Returns
-/// `{reauthenticated:true, fresh_for_seconds:300}`.
+/// blocked. Requires a valid session (AuthSession); wrong credentials → 401.
+/// Returns `{reauthenticated:true, fresh_for_seconds:300}`.
+///
+/// In username+password mode both fields must match; in legacy mode the
+/// `secret` field is checked against the configured password.
 async fn reauth(
     State(state): State<ConsoleApiState>,
     session: AuthSession,
@@ -1214,9 +1338,15 @@ async fn reauth(
     let Some(Json(body)) = body else {
         return ApiError::invalid_request().into_response();
     };
-    if !constant_time_eq(body.secret.as_bytes(), state.bootstrap_secret.as_bytes()) {
+    // Reuse LoginRequest's verifier: same field names + same dual-mode logic.
+    let login_body = LoginRequest {
+        secret: body.secret,
+        username: body.username,
+        password: body.password,
+    };
+    if !verify_login(&state, &login_body) {
         // Task F2.2: re-auth counts as an auth failure (same threat surface
-        // as login — wrong bootstrap secret submitted to a Console route).
+        // as login — wrong credentials submitted to a Console route).
         metrics::counter!("console_auth_failures_total").increment(1);
         return ApiError::unauthorized().into_response();
     }

@@ -1,15 +1,21 @@
-# Brain MCP — Docker Compose (Phase F1.2)
+# Brain MCP — Docker Compose (Phase F1.2 + Phase G 2026-07-20)
 #
 # Single-service production-style stack. A reverse proxy (nginx / caddy /
 # Traefik) with TLS MUST sit in front of the published 127.0.0.1:8080 port
-# for any non-loopback exposure — the Console API is bootstrap-secret gated,
-# not OAuth-gated, until Phase F2.
+# for any non-loopback exposure — the Console API is bootstrap-credential
+# gated, not OAuth-gated, until Phase F2.
 #
-# Bootstrap secret: provided via a Docker secret (`bootstrap_secret`), read
-# from `/run/secrets/bootstrap_secret` inside the container via
-# `serve.console_dev_bootstrap_secret_file`. The secret is NEVER baked into
-# the image, NEVER placed in `environment:` (env values leak via
-# `docker inspect`), and NEVER written into the tracked config file.
+# Bootstrap credentials (Phase G, 2026-07-20): the Console API is gated by
+# a USERNAME + PASSWORD pair read from env vars at startup. The credential
+# values land in `docker inspect` Config.Env, same as ZAI_API_KEY — this is
+# a deliberate tradeoff:
+#   - Pro: trivial setup (just edit `.env`); operators can rotate without
+#     re-issuing Docker secrets.
+#   - Con: anyone who can `docker inspect brain` can read the credentials.
+#     Restrict via Docker access controls + a TLS fronting proxy.
+# The legacy `console_dev_bootstrap_secret_file` path (Docker-secret bind
+# mount) still works as a fallback if `PASSWORD` is unset, but the new
+# env-var flow is the recommended default.
 #
 # Config layout: the operator's config.toml is bind-mounted at
 # `/data/config.toml` (NOT `/config/`). This matches the F1.1 finding — the
@@ -47,20 +53,21 @@ services:
       # authoritative source (CMD in Dockerfile); LLM_WIKI_CONFIG is the
       # documented env fallback the CLI reads when `--config` is absent.
       - LLM_WIKI_CONFIG=/data/config.toml
+      # Console login credentials (Phase G). Sourced from `.env` via compose
+      # substitution. Both land in `docker inspect` Config.Env — acceptable
+      # for dev-grade auth behind a loopback-only publish + TLS proxy. Keep
+      # the secrets/ directory + bootstrap_secret.txt around if you prefer
+      # the legacy Docker-secret path; config.toml's *_secret_file field
+      # still wins when PASSWORD is unset.
+      - USERNAME=${USERNAME:-}
+      - PASSWORD=${PASSWORD:-}
       # Optional AI provider key for brain_extract/brain_propose ([provider]
-      # section in config.toml). UNLIKE bootstrap_secret above, this DOES land
-      # in `docker inspect` Config.Env — `resolve_api_key` in src/provider.rs
-      # only implements the `env:` scheme today (no secret-file scheme exists
-      # yet for provider keys). Lower stakes than bootstrap_secret (an LLM API
-      # key risks quota/billing abuse on the provider account, not brain
-      # read/write access), but a real tradeoff — do not treat it as
-      # equivalent hygiene. Sourced from a gitignored `.env` file via compose
-      # variable substitution; ZAI_API_KEY is never written to any tracked
-      # file. Omit this line entirely (and leave [provider] disabled) if you
-      # don't want the key in the container's inspectable environment.
+      # section in config.toml). Sourced from a gitignored `.env` file via
+      # compose variable substitution; ZAI_API_KEY is never written to any
+      # tracked file. Omit this line entirely (and leave [provider]
+      # disabled) if you don't want the key in the container's inspectable
+      # environment.
       - ZAI_API_KEY=${ZAI_API_KEY:-}
-    secrets:
-      - bootstrap_secret
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
@@ -68,11 +75,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-
-secrets:
-  bootstrap_secret:
-    # Operator-managed. Create with:
-    #   mkdir -p ./secrets
-    #   (umask 077; printf '%s' "$(openssl rand -hex 32)" > ./secrets/bootstrap_secret.txt)
-    # Mode 0600 + gitignored — see `.gitignore` + `docs/guides/deploy-docker.md`.
-    file: ./secrets/bootstrap_secret.txt
