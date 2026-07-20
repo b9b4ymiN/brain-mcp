@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { loginAsConsole, gotoNav, CONSOLE_SECRET } from './helpers.ts'
+import { loginAsConsole, gotoNav, CONSOLE_PASSWORD } from './helpers.ts'
 
 // Phase E3.4 — Accessibility audit against the REAL Rust server.
 //
@@ -232,7 +232,7 @@ test.describe('a11y (real backend)', () => {
     const page = await context.newPage()
     try {
       await page.goto('/')
-      await page.getByLabel('Bootstrap secret').fill(CONSOLE_SECRET)
+      await page.getByLabel('Password').fill(CONSOLE_PASSWORD)
       await page.getByRole('button', { name: 'Sign in' }).click()
       await expect(page.locator('.flash')).toContainText('Signed in')
 

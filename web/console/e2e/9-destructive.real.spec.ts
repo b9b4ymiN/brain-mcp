@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { loginAsConsole, gotoNav, CONSOLE_SECRET } from './helpers.ts'
+import { loginAsConsole, gotoNav, CONSOLE_PASSWORD } from './helpers.ts'
 
 // Phase E3.3 — Destructive-action guards against the REAL Rust server.
 //
@@ -194,7 +194,7 @@ test.describe('Destructive-action guards (real backend)', () => {
     await expect(yesBtn).toBeDisabled()
 
     // Now satisfy the reauth gate (use the dev bootstrap secret).
-    await dialog.getByLabel('Bootstrap secret').fill(CONSOLE_SECRET)
+    await dialog.getByLabel('Password').fill(CONSOLE_PASSWORD)
     await dialog.getByRole('button', { name: 'Re-authenticate' }).click()
     // The ReauthForm swaps to "Re-authenticated — fresh for Ns." on success.
     await expect(dialog.getByText(/Re-authenticated — fresh for/i)).toBeVisible({

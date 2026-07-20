@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { loginAsConsole, gotoNav, CONSOLE_SECRET } from './helpers.ts'
+import { loginAsConsole, gotoNav, CONSOLE_PASSWORD } from './helpers.ts'
 
 // Phase E1.4 — the 4 observable UI states against the REAL Rust server.
 //
@@ -72,7 +72,7 @@ test.describe('UI states (real backend)', () => {
     // A subsequent navigation attempt that would hit a protected route stays
     // gated: the session cookie is dead server-side, so any API call 401s.
     // Re-login works — proving the gate is recoverable, not a hard wall.
-    await page.getByLabel('Bootstrap secret').fill(CONSOLE_SECRET)
+    await page.getByLabel('Password').fill(CONSOLE_PASSWORD)
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page.getByRole('navigation', { name: 'Primary' })).toBeVisible()
   })
