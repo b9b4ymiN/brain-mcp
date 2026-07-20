@@ -466,6 +466,17 @@
     box-shadow: var(--glow-cyan);
   }
 
+  /* P1-5 (2026-07-20): when DataTable sits inside a HoloPanel (Operations,
+   * Entity), drop its own border + glow — the HoloPanel already provides
+   * both. Without this, the two layers of --border-holo + --glow-cyan
+   * stack into a fuzzy double-border. The :where() keeps specificity at
+   * zero so it never overrides a direct class. */
+  :global(.holo-panel) .table-scroll {
+    border: none;
+    box-shadow: none;
+    border-radius: 0;
+  }
+
   .data-table {
     width: 100%;
     border-collapse: collapse;

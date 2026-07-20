@@ -21,7 +21,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::Router;
 use axum::extract::{FromRequestParts, Path, Query, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header, request::Parts};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -1516,9 +1516,37 @@ async fn events(
 pub fn static_router(dir: PathBuf) -> Router {
     Router::new()
         .fallback_service(ServeDir::new(dir))
+        // CSP — stamped on every response (success + error).
         .layer(SetResponseHeaderLayer::overriding(
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static(CONSOLE_CSP),
+        ))
+        // Defense-in-depth security headers (P1-1, 2026-07-20).
+        // These complement the CSP; each closes a different vector.
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("permissions-policy"),
+            // Deny everything we don't use. The SPA uses: none of the
+            // device APIs. Keep the list explicit so adding one is a
+            // deliberate act.
+            HeaderValue::from_static(
+                "camera=(), microphone=(), geolocation=(), payment=(), \
+                 usb=(), magnetometer=(), gyroscope=(), accelerometer=()",
+            ),
+        ))
+        // HSTS — only meaningful over TLS, but harmless on loopback HTTP
+        // dev (browsers ignore it on http://localhost). Set unconditionally
+        // so prod deployments behind a TLS proxy benefit immediately.
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("strict-transport-security"),
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
         ))
 }
 

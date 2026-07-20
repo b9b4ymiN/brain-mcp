@@ -72,11 +72,25 @@ export function navigate(page: ConsolePage): void {
  * Subscribe to route changes. The callback fires immediately with the
  * current page (so callers don't need a separate initial read), then once
  * per `hashchange`. Returns an unsubscribe function.
+ *
+ * P1-2 (2026-07-20): on each route change, focus is moved to the
+ * `<main id="main-content" tabindex="-1">` element so screen-reader +
+ * keyboard users hear the new page content announced. Without this, focus
+ * stays on the clicked nav link and the new page is silent.
  */
 export function onRouteChange(cb: (page: ConsolePage) => void): () => void {
-  const handler = (): void => cb(parseHash())
+  const handler = (): void => {
+    cb(parseHash())
+    // Move focus to the main content region so the new page is announced.
+    // setTimeout(0) lets Svelte render the new page before focus moves.
+    setTimeout(() => {
+      const main = document.getElementById('main-content')
+      if (main) main.focus()
+    }, 0)
+  }
   // Initial fire so the caller renders the current route without waiting
-  // for the first hashchange event.
+  // for the first hashchange event. No focus move on initial load — the
+  // browser already focuses the document.
   cb(parseHash())
   window.addEventListener('hashchange', handler)
   return () => window.removeEventListener('hashchange', handler)

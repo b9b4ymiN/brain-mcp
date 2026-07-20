@@ -210,6 +210,7 @@
           name="username"
           type="text"
           autocomplete="username"
+          maxlength="64"
           bind:value={username}
           disabled={submitting}
           placeholder="username"
@@ -220,6 +221,7 @@
           name="password"
           type="password"
           autocomplete="current-password"
+          maxlength="256"
           bind:value={password}
           disabled={submitting}
           placeholder="password"

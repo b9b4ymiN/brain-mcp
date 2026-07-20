@@ -613,6 +613,20 @@
       return String(av).localeCompare(String(bv)) * dir
     })
   })
+
+  // P1-6 (2026-07-20): pagination. Without this, 188 pending proposals
+  // render as an unbounded list. The "show more" pattern matches DataTable's
+  // pager — increments of PAGE_SIZE, no traditional 1/2/3 nav.
+  const PAGE_SIZE = 15
+  let visibleCount = $state(PAGE_SIZE)
+  // Reset pager when filter/sort changes.
+  $effect(() => {
+    // Touch the dependencies so this re-fires when they change.
+    inboxFilter; inboxSortKey; inboxSortDir
+    visibleCount = PAGE_SIZE
+  })
+  let pagedProposals = $derived(visibleProposals.slice(0, visibleCount))
+  let hasMore = $derived(visibleCount < visibleProposals.length)
 </script>
 
 <section class="page page-inbox" inert={dialog !== null}>
@@ -668,7 +682,7 @@
         </p>
       {/snippet}
       <ul class="proposal-list" aria-label="Pending proposals">
-        {#each visibleProposals as p (p.proposal_id)}
+        {#each pagedProposals as p (p.proposal_id)}
           <li class="proposal-card">
             <div
               class="proposal-head"
@@ -755,6 +769,18 @@
           </li>
         {/each}
       </ul>
+      {#if hasMore}
+        <div class="pager">
+          <button
+            type="button"
+            class="pager-more"
+            onclick={() => { visibleCount += PAGE_SIZE }}
+          >
+            Show {Math.min(PAGE_SIZE, visibleProposals.length - visibleCount)} more
+            of {visibleProposals.length - visibleCount}
+          </button>
+        </div>
+      {/if}
     </StateBox>
   {/if}
 </section>
@@ -1392,5 +1418,31 @@
   .inbox-empty-hint code {
     font-family: var(--font-mono);
     color: var(--holo-cyan);
+  }
+
+  /* P1-6 (2026-07-20): "show more" pager for large pending queues. */
+  .pager {
+    display: flex;
+    justify-content: center;
+    padding: var(--space-md) 0;
+  }
+
+  .pager-more {
+    min-height: 44px;
+    padding: var(--space-sm) var(--space-lg);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    background: var(--surface-active-nav);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    cursor: pointer;
+    transition: border-color var(--duration-fast) var(--ease-out-quart),
+      color var(--duration-fast) var(--ease-out-quart);
+  }
+
+  .pager-more:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
   }
 </style>
