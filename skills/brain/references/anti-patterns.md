@@ -42,6 +42,11 @@ and re-plan. Surface the risk to the user when in doubt.
 | 14 | Skipping session bootstrap (profile/rules not loaded) | Medium | Discipline |
 | 15 | Writing to a wiki without first reading the current state | Medium | Discipline |
 | 16 | Writing literal `[[double-bracket]]` text (e.g. TOML array-of-tables syntax) into a page body | Low | Content authoring |
+| 17 | Free-form `domain`/`kind` strings during extraction (taxonomy drift) | High | Extraction |
+| 18 | Packing two facts into one claim value | Medium | Extraction |
+| 19 | Re-stating the same fact under a second predicate (duplicate claims) | Medium | Extraction |
+| 20 | `current X` predicates + confidence 1.0 on extracted values | Medium | Extraction |
+| 21 | Managing MCP-confirmed claims from the Console (client-scope trap) | High | Claim flow |
 
 ---
 
@@ -742,3 +747,153 @@ If you encounter a situation not covered here:
 
 The cost of asking is bounded. The cost of a silent irreversible write
 is unbounded.
+
+---
+
+## 17. Free-form `domain`/`kind` strings during extraction (taxonomy drift)
+
+### Wrong
+
+Letting the extraction prompt invent taxonomy per run: one chunk emits
+`domain: financial`, another `domain: Finance`; kinds drift across
+`financial` / `financial_metric` / `metric` for the same category of fact.
+
+### Right
+
+Pin a closed vocabulary in the extraction prompt/config and reuse the
+EXACT strings already in the store (check with `brain_get`/`brain_search`
+first). Current canon: domains lowercase (`business`, `financial`,
+`project`, `personal`); kinds from one list (`financial_metric`,
+`valuation_metric`, `valuation_ratio`, `market_share`, `operational`,
+`location`, `ranking`).
+
+### Why
+
+The entity model is **(domain, canonical_subject)** — a domain typo mints a
+brand-new entity for the same subject, and `entity/merge` **refuses
+cross-domain merges by design** (`cannot merge across domains`). A stray
+`Finance` entity cannot be merged back into `financial`; the only cleanup
+is retract + re-capture. Seen live 2026-07-19: CATL split across 3
+entities from one ingest run.
+
+### Recovery
+
+Supersede/retract the claims under the stray domain from the same client
+that confirmed them, re-capture under the canonical domain, then leave the
+empty stray entity (harmless) or purge per policy.
+
+---
+
+## 18. Packing two facts into one claim value
+
+### Wrong
+
+`predicate: "battery cost", value: "$60 vs $69/kWh"` — CATL's cost AND the
+industry average fused into one string.
+
+### Right
+
+One atomic fact per claim: `battery cost = "$60/kWh"` for subject CATL;
+the comparator is a separate claim on its own subject (or stays as prose
+in the entity page).
+
+### Why
+
+Packed values can't be queried, compared, or superseded independently —
+when one half changes, the whole claim goes stale and the ledger diff is
+meaningless.
+
+### Recovery
+
+`brain_capture` the atomic fact with the SAME (domain, subject, predicate)
+scope, then `brain_supersede` the packed claim. Note supersede is
+**scope-locked** — it cannot rename a predicate, so reuse the existing
+predicate string.
+
+---
+
+## 19. Re-stating the same fact under a second predicate (duplicate claims)
+
+### Wrong
+
+Chunked extraction confirms `"ROIC vs WACC spread" = "11pp"` (chunk 0) and
+`"ROIC - WACC" = "+11.1 pp"` (chunk 1) — same fact, two predicates, two
+values, even two domains.
+
+### Right
+
+Before confirming a batch, `brain_search` the subject and dedupe against
+existing predicates. One fact → one predicate, canonical spelling.
+
+### Why
+
+Duplicates diverge (11pp vs +11.1pp), double-count in the galaxy/graph,
+and CANNOT be collapsed later in one step: supersede is scope-locked to a
+single (domain, subject, predicate), so cross-predicate dupes need a
+per-scope supersede plus a retract of the loser.
+
+### Recovery
+
+Supersede the claim whose scope matches the canonical predicate with the
+precise value; retract the other from the client that confirmed it.
+
+---
+
+## 20. `current X` predicates + confidence 1.0 on extracted values
+
+### Wrong
+
+`predicate: "current stock price", value: "CNY 361", confidence: 1.0`
+extracted from a report the source page itself grades 0.75.
+
+### Right
+
+Time-bound facts either carry the as-of in the claim (predicate or value,
+e.g. `stock price (as of 2026-07-08)`) or accept a standing duty to
+`brain_supersede` on every refresh. Extracted-claim confidence must be
+**≤ the source's own confidence** — 1.0 is reserved for facts the operator
+asserted directly.
+
+### Why
+
+"current" rots silently; a stale claim with confidence 1.0 is
+indistinguishable from a fresh one to every downstream consumer —
+accuracy-first breaks exactly where it matters.
+
+### Recovery
+
+Supersede with a dated value and honest confidence; keep the old claim as
+history (that is what the bitemporal ledger is for).
+
+---
+
+## 21. Managing MCP-confirmed claims from the Console (client-scope trap)
+
+### Wrong
+
+Extraction confirms claims via the MCP client (`__bootstrap__`), then the
+operator tries `POST /api/v1/claim/{confirm-op}/retract` from the Console
+session and gets `not_found`, concluding the claim is gone or the API is
+broken.
+
+### Right
+
+Operation ids resolve scoped to **(owner_id, client_id)** — manage a claim
+from the SAME client that confirmed it: MCP-confirmed → retract/supersede
+via MCP tools; Console-confirmed → Console routes. Find a claim's confirm
+operation id via `/entity/timeline` (proposal side) or the ledger.
+
+### Why
+
+`stored_outcome` filters `WHERE owner_id AND client_id AND operation_id`;
+a cross-client lookup is a scope miss, not a missing claim. As of
+2026-07-19 there is **no MCP retract tool** — supersede is the only
+MCP-side lever, and it is scope-locked (see #18/#19). Cross-client retract
+of an extraction claim currently has no path; treat that as a known
+product gap, not operator error.
+
+### Recovery
+
+Re-issue the operation from the correct client. If no tool exists on that
+client (MCP retract), supersede within scope or surface the gap to the
+user instead of improvising ledger edits.
