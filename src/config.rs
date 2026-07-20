@@ -351,7 +351,7 @@ pub struct ServeConfig {
     ///   1. this env var (if set at startup)
     ///   2. `console_dev_bootstrap_secret_file` (legacy Docker-secret path)
     ///   3. `console_dev_bootstrap_secret` (legacy direct-string fallback)
-    /// See [`Self::resolve_bootstrap_credentials`].
+    ///      See [`Self::resolve_bootstrap_credentials`].
     #[serde(default = "default_console_password_env")]
     pub console_dev_bootstrap_password_env: String,
     /// Directory of built Console static assets, served at `/` as a fallback

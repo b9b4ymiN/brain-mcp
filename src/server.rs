@@ -163,28 +163,35 @@ async fn serve_http(
     // keeps the Console API router unmounted (matches the pre-G contract).
     let resolved_creds = serve_cfg.resolve_bootstrap_credentials()?;
     if resolved_creds.is_some() {
-        let username_source = if resolved_creds.as_ref().and_then(|c| c.username.as_ref()).is_some() {
+        let username_source = if resolved_creds
+            .as_ref()
+            .and_then(|c| c.username.as_ref())
+            .is_some()
+        {
             "env"
         } else {
             "unset"
         };
-        tracing::info!(
-            username_source,
-            "console bootstrap credentials resolved"
-        );
+        tracing::info!(username_source, "console bootstrap credentials resolved");
     }
     let console_api = match (resolved_creds, server.semantic_store.clone()) {
         (Some(creds), Some(store)) => {
             tracing::info!(
-                mode = if creds.username.is_some() { "username+password" } else { "legacy-secret" },
+                mode = if creds.username.is_some() {
+                    "username+password"
+                } else {
+                    "legacy-secret"
+                },
                 "Console HTTP API mounted at /api/v1 (dev bootstrap auth)"
             );
-            Some(crate::api::router(crate::api::ConsoleApiState::with_credentials(
-                store,
-                creds.username,
-                creds.password,
-                serve_cfg.http_bind_all_interfaces,
-            )))
+            Some(crate::api::router(
+                crate::api::ConsoleApiState::with_credentials(
+                    store,
+                    creds.username,
+                    creds.password,
+                    serve_cfg.http_bind_all_interfaces,
+                ),
+            ))
         }
         _ => None,
     };

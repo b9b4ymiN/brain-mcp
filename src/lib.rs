@@ -69,6 +69,10 @@ pub mod projection;
 /// coverage (Task 4.1). Provider-agnostic: no Z.ai-specific field in the
 /// domain core. Real HTTP termination is a deployment adapter.
 pub mod provider;
+/// Quality checker for Inbox proposals (AI Pre-Review feature) —
+/// deterministic + AI rules that tag proposals for faster human review.
+/// Read-only: produces tags only, never mutates the ledger.
+pub mod quality;
 /// Backup, restore, upgrade, rollback contract (Task 6.3) — encrypted backup
 /// report, clean-host restore drill, schema-upgrade plan, RPO/RTO.
 pub mod recovery;

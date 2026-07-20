@@ -216,8 +216,13 @@ impl ConsoleApiState {
         session_ttl: Duration,
         reauth_freshness: Duration,
     ) -> Self {
-        let mut state =
-            Self::with_credentials_and_ttl(store, None, bootstrap_secret, secure_cookie, session_ttl);
+        let mut state = Self::with_credentials_and_ttl(
+            store,
+            None,
+            bootstrap_secret,
+            secure_cookie,
+            session_ttl,
+        );
         state.reauth_freshness = reauth_freshness;
         state
     }
@@ -234,13 +239,8 @@ impl ConsoleApiState {
         session_ttl: Duration,
         reauth_freshness: Duration,
     ) -> Self {
-        let mut state = Self::with_credentials_and_ttl(
-            store,
-            username,
-            password,
-            secure_cookie,
-            session_ttl,
-        );
+        let mut state =
+            Self::with_credentials_and_ttl(store, username, password, secure_cookie, session_ttl);
         state.reauth_freshness = reauth_freshness;
         state
     }
@@ -575,15 +575,12 @@ struct LoginRequest {
 fn verify_login(state: &ConsoleApiState, body: &LoginRequest) -> bool {
     if let Some(configured_username) = state.bootstrap_username.as_ref() {
         // Username+password mode.
-        match (body.username.as_deref(), body.password.as_deref()) {
+        matches!(
+            (body.username.as_deref(), body.password.as_deref()),
             (Some(u), Some(p))
                 if constant_time_eq(u.as_bytes(), configured_username.as_bytes())
-                    && constant_time_eq(p.as_bytes(), state.bootstrap_secret.as_bytes()) =>
-            {
-                true
-            }
-            _ => false,
-        }
+                    && constant_time_eq(p.as_bytes(), state.bootstrap_secret.as_bytes())
+        )
     } else {
         // Legacy single-credential mode.
         match body.secret.as_deref() {

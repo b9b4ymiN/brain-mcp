@@ -278,7 +278,10 @@ async fn login_legacy_mode_still_accepts_secret_body() {
     let base = spawn(ConsoleApiState::new(store, SECRET.to_owned(), false)).await;
     let client = reqwest::Client::new();
     let result = login(&client, &base, SECRET).await;
-    assert!(result.is_some(), "legacy single-credential mode still works");
+    assert!(
+        result.is_some(),
+        "legacy single-credential mode still works"
+    );
 }
 
 #[tokio::test]
