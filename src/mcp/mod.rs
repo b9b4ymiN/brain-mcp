@@ -238,6 +238,13 @@ impl McpServer {
         self
     }
 
+    /// Borrow the configured AI provider, if any. Used by `serve()` to clone
+    /// the Arc into the Console API state so MCP and Console share ONE
+    /// adapter instance (single construction, single compliance log).
+    pub fn ai_provider(&self) -> Option<&Arc<dyn crate::provider::AiProvider>> {
+        self.ai_provider.as_ref()
+    }
+
     /// Attach ingest size + rate limits (Task F2.3). `max_source_bytes` is the
     /// per-source byte cap; `rate_limiter` is the per-client sliding-window
     /// limiter (already constructed with the configured per-minute cap). When

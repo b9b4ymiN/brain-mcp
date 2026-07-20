@@ -139,6 +139,11 @@ pub struct ConsoleApiState {
     /// `/events` stream. Held as the `Sender` half so any future in-process
     /// publisher can `subscribe()`/`send()`; the initial `Receiver` is dropped.
     events: Arc<broadcast::Sender<String>>,
+    /// Optional AI provider for the Phase 3 AI semantic rules in `ai_review`.
+    /// When `None`, AI rules are silently skipped (deterministic-only).
+    /// Shared with MCP via `Arc` (single adapter instance — see
+    /// `server::serve`).
+    ai_provider: Option<Arc<dyn crate::provider::AiProvider>>,
 }
 
 impl ConsoleApiState {
@@ -188,7 +193,16 @@ impl ConsoleApiState {
             reauth_freshness: PURGE_REAUTH_FRESHNESS,
             secure_cookie,
             events: Arc::new(events),
+            ai_provider: None, // Phase 3 — set via with_ai_provider builder
         }
+    }
+
+    /// Attach an AI provider for the Phase 3 AI semantic rules in `ai_review`.
+    /// Mirrors `McpServer::with_ai_provider`. The same `Arc` should be shared
+    /// between MCP and Console (single adapter, single compliance log).
+    pub fn with_ai_provider(mut self, provider: Arc<dyn crate::provider::AiProvider>) -> Self {
+        self.ai_provider = Some(provider);
+        self
     }
 
     /// Legacy alias for [`Self::with_credentials_and_ttl`] (single-credential
@@ -815,16 +829,20 @@ async fn evidence(
     Ok(Json(evidence).into_response())
 }
 
-/// `GET /inbox/{proposal_id}/ai-review` — deterministic quality tags for one
-/// proposal (AI Pre-Review Phase 2).
+/// `GET /inbox/{proposal_id}/ai-review` — quality tags for one proposal
+/// (AI Pre-Review Phase 2 + Phase 3).
 ///
 /// Session required (no CSRF — read-only, mirrors `evidence`). Loads the
 /// proposal + evidence + current claims from public `SemanticStore` reads,
-/// runs `QualityChecker::check_deterministic`, returns the tags.
+/// runs `QualityChecker::check_deterministic`, then — when an AI provider is
+/// attached to the state — runs `AiQualityChecker::check` and merges its
+/// tags in. `ai_used` is `true` only when the AI actually ran to completion
+/// (provider attached + egress allowed + parseable response); denial,
+/// provider error, and unparseable response all degrade silently to
+/// deterministic-only (`ai_used=false`).
 ///
 /// **Never mutates the ledger/event store** (ADR-0001 §Decision 1: human
-/// stays the approver; AI only tags). `ai_used` is always `false` in Phase 2
-/// — the optional AI semantic rules arrive in Phase 3.
+/// stays the approver; AI only tags).
 async fn ai_review(
     State(state): State<ConsoleApiState>,
     _session: AuthSession,
@@ -872,14 +890,28 @@ async fn ai_review(
         evidence: &evidence,
         existing_claims: &existing,
     };
-    let tags = crate::quality::QualityChecker::new().check_deterministic(&input);
+
+    // Deterministic rules — always run.
+    let mut tags = crate::quality::QualityChecker::new().check_deterministic(&input);
+
+    // Phase 3: AI semantic rules — only when a provider is attached. On
+    // egress denial / provider error / unparseable response, `check` returns
+    // `(empty, false)` — graceful degradation to deterministic-only, no
+    // error surfaced to the client (matches brain_extract posture).
+    let mut ai_used = false;
+    if let Some(provider) = state.ai_provider.clone() {
+        let ai_checker = crate::quality::AiQualityChecker::new(provider);
+        let (ai_tags, ran) = ai_checker.check(&input).await;
+        tags.extend(ai_tags);
+        ai_used = ran;
+    }
 
     Ok(Json(crate::quality::AiReviewResponse {
         proposal_id,
         tags,
         checked_at: Utc::now(),
         checker_version: crate::quality::QUALITY_CHECKER_VERSION.to_owned(),
-        ai_used: false,
+        ai_used,
     }))
 }
 

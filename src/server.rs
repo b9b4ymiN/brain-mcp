@@ -100,6 +100,7 @@ async fn serve_http(
     serve_cfg: &config::ServeConfig,
     cancel: CancellationToken,
     engine: Arc<WikiEngine>,
+    console_provider: Option<Arc<dyn crate::provider::AiProvider>>,
 ) -> Result<()> {
     // Security (S1 finding, Task B1): default bind is loopback (127.0.0.1).
     // Binding all interfaces requires explicit opt-in and emits a warning.
@@ -184,14 +185,18 @@ async fn serve_http(
                 },
                 "Console HTTP API mounted at /api/v1 (dev bootstrap auth)"
             );
-            Some(crate::api::router(
-                crate::api::ConsoleApiState::with_credentials(
+            Some({
+                let mut state = crate::api::ConsoleApiState::with_credentials(
                     store,
                     creds.username,
                     creds.password,
                     serve_cfg.http_bind_all_interfaces,
-                ),
-            ))
+                );
+                if let Some(p) = &console_provider {
+                    state = state.with_ai_provider(p.clone());
+                }
+                crate::api::router(state)
+            })
         }
         _ => None,
     };
@@ -590,7 +595,8 @@ pub async fn serve(
                 provider_timeout,
             ) {
                 Ok(adapter) => {
-                    mcp_server = mcp_server.with_ai_provider(Arc::new(adapter));
+                    let provider: Arc<dyn crate::provider::AiProvider> = Arc::new(adapter);
+                    mcp_server = mcp_server.with_ai_provider(provider.clone());
                     tracing::info!(
                         timeout_secs = provider_cfg.timeout_secs,
                         "AI provider wired: brain_extract/brain_propose enabled"
@@ -723,6 +729,11 @@ pub async fn serve(
     };
 
     // 7. Start transports
+    // Phase 3.1: capture the AI provider handle BEFORE mcp_server is moved
+    // into serve_http (which takes it by value). The single Arc instance is
+    // shared between MCP and Console so there's one adapter construction,
+    // one compliance log, one kill switch.
+    let console_provider = mcp_server.ai_provider().cloned();
     if acp {
         let acp_manager = manager.clone();
         let cancel_acp = cancel.clone();
@@ -749,6 +760,7 @@ pub async fn serve(
                 &serve_cfg,
                 cancel,
                 manager.clone(),
+                console_provider,
             )
             .await?;
         } else {
@@ -764,6 +776,7 @@ pub async fn serve(
             &serve_cfg,
             cancel,
             manager.clone(),
+            console_provider,
         )
         .await?;
     } else {
