@@ -609,8 +609,8 @@
       >
         <DataTable
           tableId="ops-clients"
-          rows={sortedClients as Record<string, unknown>[]}
-          rowKey={(r) => (r as ClientActivity).client_id}
+          rows={sortedClients}
+          rowKey={(r) => r.client_id}
           columns={[
             { key: 'label', label: 'Label' },
             { key: 'client_id', label: 'Client ID', render: (r) => r.client_id },

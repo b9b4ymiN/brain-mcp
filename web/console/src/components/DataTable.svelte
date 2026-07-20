@@ -1,4 +1,4 @@
-<script lang="ts" generics="Row extends Record<string, unknown>">
+<script lang="ts" generics="Row extends object">
   /**
    * DataTable — the reusable data-UX primitive for the cosmic console.
    *

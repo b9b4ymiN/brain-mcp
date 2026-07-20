@@ -51,10 +51,12 @@
     reject as apiReject,
     supersede as apiSupersede,
     timeline as apiTimeline,
+    aiReview as apiAiReview,
     ApiError,
     type ProposalSummary,
     type EvidenceSummary,
     type ClaimView,
+    type QualityTag,
     type Uuid,
   } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
@@ -107,6 +109,20 @@
 
   let openId = $state<Uuid | null>(null)
   let details = $state<Record<Uuid, DetailState>>({})
+
+  // ── Per-proposal AI Review state (Phase 2.4) ───────────────────────────
+  // Same discriminated-union shape as DetailState. The endpoint is
+  // deterministic in Phase 2 (no LLM call); the result is cached on the
+  // client for AI_REVIEW_TTL_MS so re-expanding a row doesn't refetch.
+  type AiReviewState =
+    | { kind: 'idle' }
+    | { kind: 'loading' }
+    | { kind: 'error'; message: string }
+    | { kind: 'ready'; tags: QualityTag[]; fetchedAt: number }
+
+  let aiReviews = $state<Record<Uuid, AiReviewState>>({})
+  let aiReviewSeq = 0
+  const AI_REVIEW_TTL_MS = 5 * 60 * 1000 // 5 minutes — frontend cache
 
   // Monotonic request-id guard for the inbox refetch + the detail-panel
   // fetch. The inbox one prevents a stale list refresh from clobbering a
@@ -280,6 +296,56 @@
       // 'ready'/'error' — see the toggle/reopen path).
       details = { ...details, [proposal.proposal_id]: { kind: 'error', message } }
       if (seq !== detailSeq) return
+    }
+  }
+
+  // ── AI Review (Phase 2.4) ──────────────────────────────────────────────
+  /**
+   * Fetch deterministic quality tags for a proposal. The result is cached on
+   * the client for AI_REVIEW_TTL_MS (5 min) — re-clicking inside that window
+   * is a no-op, which is the common case since the panel stays open while
+   * the reviewer is reading.
+   *
+   * Single-user Console → no per-proposal seq guard: a re-click on the same
+   * proposal always wins, mirroring how the rest of the file mutates global
+   * state without per-id guards. The endpoint is read-only and idempotent,
+   * so a duplicate in-flight request is harmless.
+   */
+  async function runAiReview(p: ProposalSummary): Promise<void> {
+    const cached = aiReviews[p.proposal_id]
+    if (
+      cached?.kind === 'ready' &&
+      Date.now() - cached.fetchedAt < AI_REVIEW_TTL_MS
+    ) {
+      return
+    }
+    aiReviews = {
+      ...aiReviews,
+      [p.proposal_id]: { kind: 'loading' },
+    }
+    const seq = ++aiReviewSeq
+    try {
+      const result = await apiAiReview(p.proposal_id)
+      if (seq !== aiReviewSeq) return
+      aiReviews = {
+        ...aiReviews,
+        [p.proposal_id]: {
+          kind: 'ready',
+          tags: result.tags,
+          fetchedAt: Date.now(),
+        },
+      }
+    } catch (cause) {
+      if (seq !== aiReviewSeq) return
+      const message =
+        cause instanceof ApiError
+          ? `AI review failed (${cause.status}).`
+          : 'AI review unavailable.'
+      aiReviews = {
+        ...aiReviews,
+        [p.proposal_id]: { kind: 'error', message },
+      }
+      toasts.push('warning', 'AI review unavailable', 'Showing basic checks only.')
     }
   }
 
@@ -723,6 +789,50 @@
                       <blockquote class="excerpt">{d.evidence.excerpt}</blockquote>
                     {:else}
                       <p class="excerpt excerpt-none">No text excerpt for this provenance kind.</p>
+                    {/if}
+                  </section>
+
+                  {@const ar = aiReviews[p.proposal_id] ?? { kind: 'idle' }}
+                  <section class="ai-review" aria-label="AI review">
+                    <div class="ai-review-header">
+                      <button
+                        type="button"
+                        class="ai-review-btn"
+                        disabled={ar.kind === 'loading'}
+                        onclick={() => runAiReview(p)}
+                      >
+                        {ar.kind === 'loading' ? 'Reviewing…' : 'AI Review'}
+                      </button>
+                      {#if ar.kind === 'ready'}
+                        <span class="ai-review-meta">
+                          {ar.tags.length === 0
+                            ? 'No flags'
+                            : `${ar.tags.length} flag${ar.tags.length === 1 ? '' : 's'}`}
+                          · deterministic
+                        </span>
+                      {/if}
+                    </div>
+
+                    {#if ar.kind === 'loading'}
+                      <p class="state state-loading" role="status">
+                        Running quality checks…
+                      </p>
+                    {:else if ar.kind === 'error'}
+                      <p class="state state-error" role="alert">{ar.message}</p>
+                    {:else if ar.kind === 'ready' && ar.tags.length > 0}
+                      <ul class="ai-tags" role="list">
+                        {#each ar.tags as tag, i (tag.kind + '-' + i)}
+                          <li
+                            class="ai-tag ai-tag--{tag.severity}"
+                            title={tag.evidence ? `Evidence: ${tag.evidence}` : tag.message}
+                          >
+                            <span class="ai-tag-kind">{tag.kind.replaceAll('_', ' ')}</span>
+                            <span class="ai-tag-msg">{tag.message}</span>
+                          </li>
+                        {/each}
+                      </ul>
+                    {:else if ar.kind === 'ready' && ar.tags.length === 0}
+                      <p class="ai-clean">No quality flags — claim shape looks clean.</p>
                     {/if}
                   </section>
 
@@ -1444,5 +1554,109 @@
   .pager-more:hover {
     border-color: var(--color-accent);
     color: var(--color-accent);
+  }
+
+  /* AI Review section (Phase 2.4) */
+  .ai-review {
+    margin-top: var(--space-sm);
+    padding: var(--space-sm);
+    border: var(--border-hairline);
+    border-radius: var(--radius-md);
+    background: var(--surface-active-nav);
+  }
+
+  .ai-review-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-xs);
+  }
+
+  .ai-review-btn {
+    display: inline-flex;
+    align-items: center;
+    min-height: 32px;
+    padding: 0 var(--space-sm);
+    border-radius: var(--radius-md);
+    border: var(--border-hairline);
+    background: var(--surface-info-soft);
+    color: var(--color-info);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    cursor: pointer;
+  }
+
+  .ai-review-btn:hover:not(:disabled) {
+    background: var(--overlay-info-soft);
+  }
+
+  .ai-review-btn:disabled {
+    opacity: 0.5;
+    cursor: progress;
+  }
+
+  .ai-review-meta {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--text-secondary);
+  }
+
+  .ai-tags {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
+  .ai-tag {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--space-xs) var(--space-sm);
+    border-radius: var(--radius-md);
+    border: 1px solid transparent;
+    cursor: help; /* indicates tooltip on hover */
+  }
+
+  .ai-tag-kind {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .ai-tag-msg {
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+  }
+
+  .ai-tag--critical {
+    background: var(--surface-danger-soft);
+    border-color: var(--color-danger);
+    color: var(--color-danger);
+  }
+
+  .ai-tag--warning {
+    background: var(--surface-accent-soft);
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  .ai-tag--info {
+    background: var(--surface-info-soft);
+    border-color: var(--color-info);
+    color: var(--color-info);
+  }
+
+  .ai-clean {
+    margin: 0;
+    padding: var(--space-xs) var(--space-sm);
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    font-style: italic;
   }
 </style>

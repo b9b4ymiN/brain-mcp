@@ -257,8 +257,8 @@
       >
         <DataTable
           tableId="search-results"
-          rows={filteredResults as Record<string, unknown>[]}
-          rowKey={(r) => (r as SearchHit).claim_id}
+          rows={filteredResults}
+          rowKey={(r) => r.claim_id}
           columns={[
             { key: 'subject', label: 'Subject' },
             { key: 'predicate', label: 'Predicate', render: (r) => r.predicate },
@@ -272,7 +272,7 @@
           filterable={true}
           compactable={true}
           pageable={true}
-          onRowClick={(r) => openEntity((r as SearchHit).subject)}
+          onRowClick={(r) => openEntity(r.subject)}
           emptyText={resultFilter ? `No results match "${resultFilter}".` : 'No claims matched this query.'}
           ariaLabel="Search results"
         />

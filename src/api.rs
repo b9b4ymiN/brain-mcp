@@ -264,6 +264,7 @@ pub fn router(state: ConsoleApiState) -> Router {
         .route("/entity/timeline", get(timeline))
         .route("/inbox", get(inbox))
         .route("/inbox/{proposal_id}/evidence", get(evidence))
+        .route("/inbox/{proposal_id}/ai-review", get(ai_review))
         .route("/inbox/{proposal_id}/approve", post(approve))
         .route("/inbox/{proposal_id}/reject", post(reject))
         .route("/inbox/{proposal_id}/supersede", post(supersede))
@@ -301,6 +302,15 @@ impl ApiError {
 
     fn unauthorized() -> Self {
         Self::new(StatusCode::UNAUTHORIZED, "unauthorized")
+    }
+
+    /// 404 `not_found` — used by read-only Inbox routes (e.g.
+    /// `ai-review`) when the requested id is not among the pending proposals.
+    /// Deliberately indistinguishable from "never existed" so the route does
+    /// not leak proposal existence (same posture as `map_semantic_error`'s
+    /// `MissingDependency` / `ObjectUnavailable` arm).
+    fn not_found() -> Self {
+        Self::new(StatusCode::NOT_FOUND, "not_found")
     }
 
     fn forbidden_csrf() -> Self {
@@ -803,6 +813,74 @@ async fn evidence(
         .evidence_for(proposal_id)
         .map_err(|e| map_semantic_error(&e))?;
     Ok(Json(evidence).into_response())
+}
+
+/// `GET /inbox/{proposal_id}/ai-review` — deterministic quality tags for one
+/// proposal (AI Pre-Review Phase 2).
+///
+/// Session required (no CSRF — read-only, mirrors `evidence`). Loads the
+/// proposal + evidence + current claims from public `SemanticStore` reads,
+/// runs `QualityChecker::check_deterministic`, returns the tags.
+///
+/// **Never mutates the ledger/event store** (ADR-0001 §Decision 1: human
+/// stays the approver; AI only tags). `ai_used` is always `false` in Phase 2
+/// — the optional AI semantic rules arrive in Phase 3.
+async fn ai_review(
+    State(state): State<ConsoleApiState>,
+    _session: AuthSession,
+    Path(proposal_id): Path<Uuid>,
+) -> Result<Json<crate::quality::AiReviewResponse>, ApiError> {
+    use chrono::Utc;
+
+    // Find the pending proposal by id. 404 if not pending (either already
+    // reviewed or never existed — both look the same to the caller, by
+    // design, to avoid leaking proposal existence).
+    let pending = state
+        .store
+        .list_pending_proposals()
+        .map_err(|e| map_semantic_error(&e))?;
+    let proposal = pending
+        .iter()
+        .find(|p| p.proposal_id == proposal_id)
+        .ok_or_else(ApiError::not_found)?;
+
+    // Read evidence + current claims (all public read-only methods).
+    let evidence = state
+        .store
+        .evidence_for(proposal_id)
+        .map_err(|e| map_semantic_error(&e))?;
+    let head = state
+        .store
+        .ledger_head()
+        .map_err(|e| map_semantic_error(&e))?;
+    let current = state
+        .store
+        .all_claims_current(head, Utc::now())
+        .map_err(|e| map_semantic_error(&e))?;
+
+    // Flatten active + future + past into the existing-claims slice. Past
+    // (superseded/retracted) claims are still relevant context for
+    // DuplicatePredicate — they show the historical scope.
+    let mut existing: Vec<crate::semantic::ClaimView> =
+        Vec::with_capacity(current.active.len() + current.future.len() + current.past.len());
+    existing.extend(current.active.iter().cloned());
+    existing.extend(current.future.iter().cloned());
+    existing.extend(current.past.iter().cloned());
+
+    let input = crate::quality::QualityCheckerInput {
+        proposal,
+        evidence: &evidence,
+        existing_claims: &existing,
+    };
+    let tags = crate::quality::QualityChecker::new().check_deterministic(&input);
+
+    Ok(Json(crate::quality::AiReviewResponse {
+        proposal_id,
+        tags,
+        checked_at: Utc::now(),
+        checker_version: crate::quality::QUALITY_CHECKER_VERSION.to_owned(),
+        ai_used: false,
+    }))
 }
 
 // ── galaxy (Task E2.1) ──────────────────────────────────────────────────────

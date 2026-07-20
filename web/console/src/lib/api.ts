@@ -288,6 +288,39 @@ export interface EvidenceSummary {
   quote_hash: string | null
 }
 
+/** Quality tag produced by `QualityChecker` (Rust `src/quality.rs`). */
+export type QualityTagKind =
+  | 'duplicate_predicate'
+  | 'packed_facts'
+  | 'vague_predicate'
+  | 'taxonomy_drift'
+  | 'confidence_too_high'
+  | 'double_bracket'
+  | 'kind_mismatch'
+  | 'source_claim_mismatch' // Phase 3 (AI only)
+  | 'semantic_duplicate' // Phase 3 (AI only)
+  | 'provenance_loss' // Phase 3 (AI only)
+
+export type QualitySeverity = 'info' | 'warning' | 'critical'
+
+/** One tag on a proposal. `evidence` is an optional offending-text snippet. */
+export interface QualityTag {
+  kind: QualityTagKind
+  severity: QualitySeverity
+  message: string
+  evidence?: string
+}
+
+/** `GET /inbox/{proposal_id}/ai-review` body. */
+export interface AiReviewResponse {
+  proposal_id: Uuid
+  tags: QualityTag[]
+  checked_at: IsoTimestamp
+  checker_version: string
+  /** `true` only when Phase 3's AiQualityChecker ran. Phase 2 always `false`. */
+  ai_used: boolean
+}
+
 /** `POST /auth/login` body. */
 export interface LoginResponse {
   csrf_token: string
@@ -614,6 +647,14 @@ export async function evidence(proposalId: Uuid): Promise<EvidenceSummary> {
   return request<EvidenceSummary>({
     method: 'GET',
     path: `/inbox/${encodeURIComponent(proposalId)}/evidence`,
+  })
+}
+
+/** `GET /inbox/{proposal_id}/ai-review` — deterministic quality tags. */
+export async function aiReview(proposalId: Uuid): Promise<AiReviewResponse> {
+  return request<AiReviewResponse>({
+    method: 'GET',
+    path: `/inbox/${encodeURIComponent(proposalId)}/ai-review`,
   })
 }
 
