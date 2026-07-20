@@ -23,7 +23,13 @@
    * results already on screen).
    */
   import { onMount } from 'svelte'
-  import { search, ApiError, type SearchHit } from '../lib/api'
+  import {
+    search,
+    galaxy,
+    ApiError,
+    type SearchHit,
+    type GalaxyPayload,
+  } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
   import type { ToastStore } from '../lib/toast.svelte'
   import { navigate } from '../lib/router'
@@ -73,7 +79,25 @@
   // after every `await`, and discarded instead of overwriting newer state.
   let searchSeq = 0
 
+  // ── Example chips (dynamic) ────────────────────────────────────────────
+  // The empty-state chips used to be hardcoded `CATL` / `battery` / `revenue`
+  // — placeholders left over from CATL-first development that made the page
+  // look like a single-company tool regardless of what the brain actually
+  // holds. They now mirror Home's `topSubjects`: the most-connected confirmed
+  // subjects in the galaxy subgraph (degree in the bounded graph). If the
+  // galaxy is empty (no claims confirmed yet) the chips are hidden entirely
+  // rather than advertising subjects that don't exist.
+  //
+  // Keyed by node `id` (entity UUID), NOT `label` — multiple entities can
+  // share a label (e.g. three different "CATL" rows across domains in the
+  // far-zoom supernode view), and a duplicate each-key trips Svelte's
+  // `each_key_duplicate` guard at runtime.
+  let topSubjects = $state<{ id: string; label: string; degree: number }[]>([])
+  let suggestionsSeq = 0
+  let destroyed = false
+
   onMount(() => {
+    void loadSuggestions()
     // Pull a quick-search handoff from Home, if any. Consume-once: a refresh
     // of this page must NOT re-run the staged query.
     const pending = consumePendingQuery()
@@ -82,6 +106,29 @@
       void runSearch()
     }
   })
+
+  async function loadSuggestions(): Promise<void> {
+    const seq = ++suggestionsSeq
+    try {
+      const result = await galaxy({ zoom: 'far' })
+      if (destroyed || seq !== suggestionsSeq) return
+      const degree = new Map<string, number>()
+      for (const edge of result.edges) {
+        degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1)
+        degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1)
+      }
+      topSubjects = result.nodes
+        .map((n) => ({ id: n.id, label: n.label, degree: degree.get(n.id) ?? 0 }))
+        .filter((n) => n.degree > 0)
+        .sort((a, b) => b.degree - a.degree)
+        .slice(0, 6)
+    } catch {
+      // Suggestions are an optional affordance on the empty state — any
+      // failure (backend down, 401, etc.) just leaves the chips hidden.
+      // Search itself still works; the user can type their own query.
+      topSubjects = []
+    }
+  }
 
   async function runSearch(): Promise<void> {
     const trimmed = query.trim()
@@ -191,17 +238,15 @@
       <div class="state state-empty">
         <p class="state-empty-headline">Run a search to see matching claims.</p>
         <p class="state-empty-hint">Try a subject, predicate, or value fragment.</p>
-        <div class="example-chips" role="group" aria-label="Example queries">
-          <button type="button" class="example-chip" onclick={() => { query = 'CATL'; }}>
-            <span aria-hidden="true">⌖</span> CATL
-          </button>
-          <button type="button" class="example-chip" onclick={() => { query = 'battery'; }}>
-            <span aria-hidden="true">⌖</span> battery
-          </button>
-          <button type="button" class="example-chip" onclick={() => { query = 'revenue'; }}>
-            <span aria-hidden="true">⌖</span> revenue
-          </button>
-        </div>
+        {#if topSubjects.length > 0}
+          <div class="example-chips" role="group" aria-label="Suggested subjects from the graph">
+            {#each topSubjects as s (s.id)}
+              <button type="button" class="example-chip" onclick={() => { query = s.label; void runSearch(); }}>
+                <span aria-hidden="true">⌖</span> {s.label}
+              </button>
+            {/each}
+          </div>
+        {/if}
       </div>
     {:else}
       <StateBox
