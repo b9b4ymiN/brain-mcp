@@ -301,10 +301,12 @@ fn legacy_secret_path_works_without_env_vars() {
 }
 
 #[test]
-fn default_env_names_are_username_and_password() {
+fn default_env_names_are_brain_namespaced() {
     // Defaults must match `.env.example` so a vanilla deployment works
-    // without any TOML config. This guards against accidental drift.
+    // without any TOML config. This guards against accidental drift AND
+    // against re-introducing the bare USERNAME/PASSWORD collision with the
+    // Windows built-in env var (found live 2026-07-20).
     let cfg = ServeConfig::default();
-    assert_eq!(cfg.console_dev_bootstrap_username_env, "USERNAME");
-    assert_eq!(cfg.console_dev_bootstrap_password_env, "PASSWORD");
+    assert_eq!(cfg.console_dev_bootstrap_username_env, "BRAIN_USERNAME");
+    assert_eq!(cfg.console_dev_bootstrap_password_env, "BRAIN_PASSWORD");
 }

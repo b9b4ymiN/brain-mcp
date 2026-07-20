@@ -95,11 +95,15 @@ echo "[smoke] setting up scratch tree ..."
 rm -rf "$SCRATCH"
 mkdir -p "$SCRATCH/config" "$SCRATCH/data" "$SCRATCH/backups"
 
-# Phase G (2026-07-20): the bootstrap credential is now a USERNAME+PASSWORD
-# pair sourced from env vars. The smoke script seeds the values directly into
-# the compose file's `environment:` block (they're dev-grade + loopback-only
-# + torn down with the scratch tree, so the Config.Env leak vector is moot
-# for this test). The legacy `secrets/` mount is no longer required.
+# Phase G (2026-07-20): the bootstrap credential is now a BRAIN_USERNAME +
+# BRAIN_PASSWORD pair sourced from env vars. Namespaced as BRAIN_* (not bare
+# USERNAME/PASSWORD) because bare USERNAME collides with the Windows built-in
+# env var (always set to the host user's login name) and silently overrides
+# `.env`. Found live 2026-07-20.
+# The smoke script seeds the values directly into the compose file's
+# `environment:` block (they're dev-grade + loopback-only + torn down with
+# the scratch tree, so the Config.Env leak vector is moot for this test).
+# The legacy `secrets/` mount is no longer required.
 SMOKE_USERNAME="${SMOKE_USERNAME:-smoke-admin}"
 SMOKE_PASSWORD="${SMOKE_PASSWORD:-$SECRET}"
 
@@ -137,8 +141,8 @@ services:
     environment:
       - RUST_LOG=llm_wiki=info,warn
       - LLM_WIKI_CONFIG=/data/config.toml
-      - USERNAME=${SMOKE_USERNAME}
-      - PASSWORD=${SMOKE_PASSWORD}
+      - BRAIN_USERNAME=${SMOKE_USERNAME}
+      - BRAIN_PASSWORD=${SMOKE_PASSWORD}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
       interval: 5s
@@ -287,7 +291,7 @@ LOGIN_BODY=$(curl -s -w "\n%{http_code}" \
 CODE=$(echo "$LOGIN_BODY" | tail -n1)
 BODY=$(echo "$LOGIN_BODY" | sed '$d')
 echo "[smoke]   -> HTTP $CODE body=$BODY"
-[[ "$CODE" = "200" ]] || { echo "[smoke] FAIL: expected 200 got $CODE (USERNAME/PASSWORD env may not have been read)"; exit 1; }
+[[ "$CODE" = "200" ]] || { echo "[smoke] FAIL: expected 200 got $CODE (BRAIN_USERNAME/BRAIN_PASSWORD env may not have been read)"; exit 1; }
 echo "$BODY" | grep -q '"csrf_token"' || { echo "[smoke] FAIL: login response missing csrf_token"; exit 1; }
 
 # ── 8. Console static index served at / ──────────────────────────────────────
@@ -297,21 +301,21 @@ echo "$INDEX_BODY" | grep -q '<title>Brain Console</title>' \
     || { echo "[smoke] FAIL: console index missing <title>Brain Console</title>"; exit 1; }
 echo "[smoke]   console index OK"
 
-# ── 9. SECURITY GATE A: USERNAME/PASSWORD env vars ARE present in Config.Env ─
+# ── 9. SECURITY GATE A: BRAIN_USERNAME/BRAIN_PASSWORD env vars ARE present ─
 # Phase G (2026-07-20): the credentials are intentionally sourced from env
 # vars, so they MUST appear in `docker inspect Config.Env`. The gate flips:
 # we now assert the credential keys are present (sanity — env block wired)
 # and document the explicit tradeoff (dev-grade auth behind loopback publish
 # + TLS fronting proxy; for higher-stakes deployments, restore the legacy
 # `console_dev_bootstrap_secret_file` Docker-secret path and unset
-# PASSWORD — the server falls back to the file).
-echo "[smoke] SECURITY GATE: USERNAME + PASSWORD must appear in docker inspect Config.Env ..."
+# BRAIN_PASSWORD — the server falls back to the file).
+echo "[smoke] SECURITY GATE: BRAIN_USERNAME + BRAIN_PASSWORD must appear in docker inspect Config.Env ..."
 INSPECT_ENV="$(docker inspect brain_compose_smoke --format '{{.Config.Env}}' 2>/dev/null || true)"
-echo "$INSPECT_ENV" | grep -q 'USERNAME=' \
-    || { echo "[smoke] FAIL: USERNAME missing from Config.Env (env block not wired)"; exit 1; }
-echo "$INSPECT_ENV" | grep -q 'PASSWORD=' \
-    || { echo "[smoke] FAIL: PASSWORD missing from Config.Env (env block not wired)"; exit 1; }
-echo "[smoke]   USERNAME + PASSWORD present in Config.Env (Phase G env-var flow)"
+echo "$INSPECT_ENV" | grep -q 'BRAIN_USERNAME=' \
+    || { echo "[smoke] FAIL: BRAIN_USERNAME missing from Config.Env (env block not wired)"; exit 1; }
+echo "$INSPECT_ENV" | grep -q 'BRAIN_PASSWORD=' \
+    || { echo "[smoke] FAIL: BRAIN_PASSWORD missing from Config.Env (env block not wired)"; exit 1; }
+echo "[smoke]   BRAIN_USERNAME + BRAIN_PASSWORD present in Config.Env (Phase G env-var flow)"
 
 # Also assert the standard control vars are still present.
 echo "$INSPECT_ENV" | grep -q 'RUST_LOG=' \

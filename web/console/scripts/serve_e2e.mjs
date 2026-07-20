@@ -54,9 +54,11 @@ const WORKSPACE_DIR = resolve(CONSOLE_DIR, '..', '..')
 const DIST_DIR = join(CONSOLE_DIR, 'dist')
 
 const E2E_PORT = process.env.E2E_PORT ?? '8080'
-// Phase G (2026-07-20): login now uses USERNAME + PASSWORD env vars. The
-// defaults here mirror e2e/helpers.ts (CONSOLE_USERNAME / CONSOLE_PASSWORD)
-// so both sides stay in sync.
+// Phase G (2026-07-20): login uses username+password env vars. The env-var
+// NAMES are pinned via the temp TOML below (E2E_USERNAME/E2E_PASSWORD) so
+// they don't collide with the Windows built-in `USERNAME`. The VALUES
+// mirror e2e/helpers.ts (CONSOLE_USERNAME / CONSOLE_PASSWORD) so both sides
+// stay in sync.
 const E2E_USERNAME = process.env.E2E_USERNAME ?? 'e2e-admin'
 const E2E_PASSWORD = process.env.E2E_PASSWORD ?? 'e2e-bootstrap-secret'
 
@@ -79,8 +81,9 @@ const configPath = join(tmpRoot, 'config.toml')
 // fine inside double quotes. Absolute path so the server resolves it
 // regardless of its own cwd.
 const distAbs = DIST_DIR.replace(/\\/g, '\\\\')
-// Phase G: the env-var names default to "USERNAME"/"PASSWORD", so a vanilla
-// config is enough. We pin them here for clarity + so the file is hermetic.
+// Phase G: env-var names default to "BRAIN_USERNAME"/"BRAIN_PASSWORD"
+// (namespaced to avoid colliding with the Windows built-in `USERNAME` env
+// var). We pin them to E2E_* here for clarity + so the file is hermetic.
 const configToml = [
   '[serve]',
   'console_dev_bootstrap_username_env = "E2E_USERNAME"',

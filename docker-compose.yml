@@ -54,13 +54,17 @@ services:
       # documented env fallback the CLI reads when `--config` is absent.
       - LLM_WIKI_CONFIG=/data/config.toml
       # Console login credentials (Phase G). Sourced from `.env` via compose
-      # substitution. Both land in `docker inspect` Config.Env — acceptable
-      # for dev-grade auth behind a loopback-only publish + TLS proxy. Keep
-      # the secrets/ directory + bootstrap_secret.txt around if you prefer
-      # the legacy Docker-secret path; config.toml's *_secret_file field
-      # still wins when PASSWORD is unset.
-      - USERNAME=${USERNAME:-}
-      - PASSWORD=${PASSWORD:-}
+      # substitution. Namespaced as BRAIN_* (not bare USERNAME/PASSWORD)
+      # because bare USERNAME collides with the Windows built-in env var
+      # (always set to the host user's login name) and silently overrides
+      # the `.env` value. Found live 2026-07-20.
+      # Both land in `docker inspect` Config.Env — acceptable for dev-grade
+      # auth behind a loopback-only publish + TLS proxy. Keep the secrets/
+      # directory + bootstrap_secret.txt around if you prefer the legacy
+      # Docker-secret path; config.toml's *_secret_file field still wins
+      # when BRAIN_PASSWORD is unset.
+      - BRAIN_USERNAME=${BRAIN_USERNAME:-}
+      - BRAIN_PASSWORD=${BRAIN_PASSWORD:-}
       # Optional AI provider key for brain_extract/brain_propose ([provider]
       # section in config.toml). Sourced from a gitignored `.env` file via
       # compose variable substitution; ZAI_API_KEY is never written to any

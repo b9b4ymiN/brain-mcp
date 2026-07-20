@@ -190,14 +190,21 @@ fn default_acp_max_sessions() -> usize {
 /// username/password migration, 2026-07-20). Operators can override the
 /// name in TOML if they prefer a different env key, but the default
 /// matches `.env.example` so a vanilla deployment "just works".
+///
+/// **Namespaced as `BRAIN_*` (not bare `USERNAME`/`PASSWORD`)** because bare
+/// `USERNAME` collides with the Windows built-in env var (always set to the
+/// host user's login name), which silently overrides the `.env` value via
+/// docker-compose `${USERNAME:-}` substitution. Found live 2026-07-20 when
+/// `docker compose up` rejected every login because the container saw
+/// `USERNAME=Mining_Admin` instead of the operator-configured value.
 fn default_console_username_env() -> String {
-    "USERNAME".to_string()
+    "BRAIN_USERNAME".to_string()
 }
 
 /// Default env var name holding the Console dev PASSWORD. See
 /// [`default_console_username_env`].
 fn default_console_password_env() -> String {
-    "PASSWORD".to_string()
+    "BRAIN_PASSWORD".to_string()
 }
 fn default_acp_session_ttl_secs() -> u64 {
     1800

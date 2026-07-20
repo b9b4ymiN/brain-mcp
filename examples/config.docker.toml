@@ -38,13 +38,13 @@ console_static_dir = "/app/web/console/dist"
 
 # Console dev credentials (Phase G, 2026-07-20).
 #
-# The Console API is gated by a USERNAME + PASSWORD pair read from env vars
-# at startup. Defaults: env vars named `USERNAME` and `PASSWORD`. Override
-# the env-var names here if you prefer different keys (e.g. to avoid
-# colliding with another process that already defines `USERNAME`).
+# The Console API is gated by a BRAIN_USERNAME + BRAIN_PASSWORD pair read
+# from env vars at startup. Defaults: env vars named `BRAIN_USERNAME` and
+# `BRAIN_PASSWORD`. Override the env-var names here if you prefer different
+# keys.
 #
-#   console_dev_bootstrap_username_env = "BRAIN_USERNAME"
-#   console_dev_bootstrap_password_env = "BRAIN_PASSWORD"
+#   console_dev_bootstrap_username_env = "CONSOLE_USER"
+#   console_dev_bootstrap_password_env = "CONSOLE_PW"
 #
 # The credential values themselves are NEVER in this file — only the names
 # of the env vars to read. They land in `docker inspect Config.Env` (same
@@ -53,10 +53,16 @@ console_static_dir = "/app/web/console/dist"
 #
 #   console_dev_bootstrap_secret_file = "/run/secrets/bootstrap_secret"
 #
-# …and unset PASSWORD — the server falls back to the file when the password
-# env var is absent. Priority: password-env > secret-file > direct-string.
-console_dev_bootstrap_username_env = "USERNAME"
-console_dev_bootstrap_password_env = "PASSWORD"
+# …and unset BRAIN_PASSWORD — the server falls back to the file when the
+# password env var is absent. Priority: password-env > secret-file >
+# direct-string.
+#
+# Why BRAIN_* and not bare USERNAME/PASSWORD? Bare USERNAME collides with
+# the Windows built-in env var (always set to the host user's login name),
+# which silently overrides `.env` via docker-compose substitution. Found
+# live 2026-07-20.
+console_dev_bootstrap_username_env = "BRAIN_USERNAME"
+console_dev_bootstrap_password_env = "BRAIN_PASSWORD"
 
 [logging]
 # JSON log lines for container log aggregators (Loki / Datadog / CloudWatch).
@@ -67,6 +73,20 @@ log_format = "json"
 # enable file logging if you have a log shipper picking these up.
 log_rotation = "daily"
 log_max_files = 7
+
+# ── Wiki space registration ────────────────────────────────────────────────
+#
+# `spaces create` via MCP cannot write this file (bind-mounted :ro by design)
+# — register spaces here manually, then `docker restart brain`. Scaffold lives
+# on the writable /data volume.
+[global]
+default_wiki = "brain"
+
+[[wikis]]
+name = "brain"
+path = "/data/wikis/brain"
+
+# ── [provider] (optional) ──────────────────────────────────────────────────
 
 # [provider]
 # Optional AI provider wiring for the `brain_extract`/`brain_propose` MCP
