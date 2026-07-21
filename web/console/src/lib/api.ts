@@ -300,6 +300,15 @@ export type QualityTagKind =
   | 'source_claim_mismatch' // Phase 3 (AI only)
   | 'semantic_duplicate' // Phase 3 (AI only)
   | 'provenance_loss' // Phase 3 (AI only)
+  // Phase 1.5 — Subject Validator:
+  | 'bad_subject_empty'
+  | 'bad_subject_structural'
+  | 'bad_subject_shape'
+  | 'bad_subject_length'
+  | 'bad_subject_mixed_script'
+  | 'bad_subject_adversarial'
+  | 'subject_ambiguous_acronym'
+  | 'subject_needs_context'
 
 export type QualitySeverity = 'info' | 'warning' | 'critical'
 

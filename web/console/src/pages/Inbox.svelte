@@ -804,10 +804,14 @@
                         {ar.kind === 'loading' ? 'Reviewing…' : 'AI Review'}
                       </button>
                       {#if ar.kind === 'ready'}
-                        <span class="ai-review-meta">
+                        {@const criticalCount = ar.tags.filter((t) => t.severity === 'critical').length}
+                        <span class="ai-review-meta{criticalCount > 0 ? ' ai-review-meta--critical' : ''}">
                           {ar.tags.length === 0
                             ? 'No flags'
                             : `${ar.tags.length} flag${ar.tags.length === 1 ? '' : 's'}`}
+                          {#if criticalCount > 0}
+                            ({criticalCount} critical)
+                          {/if}
                           · deterministic
                         </span>
                       {/if}
@@ -1650,6 +1654,11 @@
     background: var(--surface-info-soft);
     border-color: var(--color-info);
     color: var(--color-info);
+  }
+
+  .ai-review-meta--critical {
+    color: var(--color-danger);
+    font-weight: 600;
   }
 
   .ai-clean {
