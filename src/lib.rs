@@ -85,6 +85,7 @@ pub mod server;
 /// Slug validation, resolution, and URI parsing.
 pub mod slug;
 pub mod snippet;
+pub mod inbox_conflicts;
 /// SSRF-guarded source fetch + chunking for `brain_ingest_source` (Task D3).
 pub mod source_ingest;
 /// Builds SpaceTypeRegistry and IndexSchema from schema files.
