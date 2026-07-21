@@ -786,7 +786,27 @@
                       <div><dt>Quote hash</dt><dd>{d.evidence.quote_hash ?? '—'}</dd></div>
                     </dl>
                     {#if d.evidence.excerpt}
-                      <blockquote class="excerpt">{d.evidence.excerpt}</blockquote>
+                      {@const ev = d.evidence}
+                      {@const excerptText = ev.excerpt as string}
+                      {@const off = ev.value_offset}
+                      {@const len = ev.value_len}
+                      {@const hasHighlight = ev.value_located && off !== null && len !== null}
+                      {@const before = hasHighlight && off !== null ? excerptText.slice(0, off) : ''}
+                      {@const middle = hasHighlight && off !== null && len !== null ? excerptText.slice(off, off + len) : ''}
+                      {@const after = hasHighlight && off !== null && len !== null ? excerptText.slice(off + len) : ''}
+                      <blockquote class="excerpt">
+                        {#if !ev.value_located}
+                          <span class="excerpt-note">Value not found in source — showing first 300 chars:</span>
+                        {/if}
+                        {#if hasHighlight}
+                          {before}<mark class="excerpt-mark">{middle}</mark>{after}
+                        {:else}
+                          {excerptText}
+                        {/if}
+                        {#if ev.additional_sources.length > 0}
+                          <span class="excerpt-more"> · {ev.additional_sources.length} more source{ev.additional_sources.length === 1 ? '' : 's'}</span>
+                        {/if}
+                      </blockquote>
                     {:else}
                       <p class="excerpt excerpt-none">No text excerpt for this provenance kind.</p>
                     {/if}
@@ -1268,6 +1288,26 @@
     font-size: var(--text-body);
     line-height: var(--text-body-leading);
     position: relative;
+  }
+
+  .excerpt-mark {
+    background: var(--surface-accent-soft);
+    color: var(--color-accent);
+    padding: 0 2px;
+    border-radius: 2px;
+    font-weight: 600;
+  }
+  .excerpt-note {
+    display: block;
+    font-style: italic;
+    color: var(--text-secondary);
+    margin-bottom: var(--space-xs);
+    font-size: var(--text-sm);
+  }
+  .excerpt-more {
+    display: inline;
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
   }
 
   .excerpt-none {

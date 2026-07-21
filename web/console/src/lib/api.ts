@@ -286,6 +286,12 @@ export interface EvidenceSummary {
   excerpt: string | null
   source_id: Uuid | null
   quote_hash: string | null
+  // Phase 1.6:
+  value_located: boolean
+  value_offset: number | null
+  value_len: number | null
+  excerpt_truncated: boolean
+  additional_sources: string[]
 }
 
 /** Quality tag produced by `QualityChecker` (Rust `src/quality.rs`). */
