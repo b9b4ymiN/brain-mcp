@@ -49,15 +49,50 @@ pub fn build_value_snippet(
     value: Option<&serde_json::Value>,
     additional_rendition_ids: &[String],
 ) -> SnippetResult {
-    // Implementation in Task 4.
-    let _ = (span_text, value, additional_rendition_ids);
-    SnippetResult {
-        excerpt: String::new(),
-        value_located: false,
-        value_offset: None,
-        value_len: None,
-        excerpt_truncated: false,
-        additional_sources: Vec::new(),
+    let candidates = value.map(normalize_value_candidates).unwrap_or_default();
+
+    if let Some(value_byte_off) = locate_value(span_text, &candidates) {
+        // Find the matched candidate's length.
+        let matched_cand = candidates
+            .iter()
+            .find(|c| span_text[value_byte_off..].starts_with(c.as_str()))
+            .cloned()
+            .unwrap_or_default();
+        let matched_byte_len = matched_cand.len();
+        let (window, start_byte, _end_byte, truncated) =
+            window_around(span_text, value_byte_off, matched_byte_len, 200);
+
+        let ellipsis_prefix_len = if start_byte > 0 { "…".len() } else { 0 };
+        let value_offset_in_window =
+            value_byte_off.saturating_sub(start_byte) + ellipsis_prefix_len;
+
+        let value_char_offset = window[..value_offset_in_window].chars().count();
+        let value_char_len = matched_cand.chars().count();
+
+        SnippetResult {
+            excerpt: window,
+            value_located: true,
+            value_offset: Some(value_char_offset),
+            value_len: Some(value_char_len),
+            excerpt_truncated: truncated,
+            additional_sources: additional_rendition_ids.to_vec(),
+        }
+    } else {
+        let fallback: String = span_text.chars().take(300).collect();
+        let truncated = span_text.chars().count() > 300;
+        let excerpt = if truncated {
+            format!("{fallback}…")
+        } else {
+            fallback
+        };
+        SnippetResult {
+            excerpt,
+            value_located: false,
+            value_offset: None,
+            value_len: None,
+            excerpt_truncated: truncated,
+            additional_sources: additional_rendition_ids.to_vec(),
+        }
     }
 }
 
@@ -104,7 +139,10 @@ pub(crate) fn normalize_value_candidates(value: &serde_json::Value) -> Vec<Strin
         cands.push(combined);
     }
 
-    cands.sort_by(|a, b| b.len().cmp(&a.len()));
+    // Deviation from spec: spec wrote `cands.sort_by(|a, b| b.len().cmp(&a.len()))`
+    // but clippy::unnecessary_sort_by is enforced as -D warnings (build-breaking).
+    // Equivalent: descending-by-length via `sort_by_key` + `Reverse`.
+    cands.sort_by_key(|b| std::cmp::Reverse(b.len()));
     cands.dedup();
     cands
 }
@@ -187,9 +225,7 @@ mod tests_normalize {
 /// `None` if no candidate matches. Candidates are tried in priority order
 /// (caller passes longest-first via [`normalize_value_candidates`]).
 pub(crate) fn locate_value(text: &str, candidates: &[String]) -> Option<usize> {
-    candidates
-        .iter()
-        .find_map(|c| text.find(c.as_str()))
+    candidates.iter().find_map(|c| text.find(c.as_str()))
 }
 
 /// Extract a window of approximately `half_window_chars` characters on each
@@ -212,7 +248,9 @@ pub(crate) fn window_around(
 
     let value_char_offset = text[..value_byte_offset].chars().count();
     let value_char_end = value_char_offset
-        + text[value_byte_offset..value_byte_offset + value_len_bytes].chars().count();
+        + text[value_byte_offset..value_byte_offset + value_len_bytes]
+            .chars()
+            .count();
 
     let mut start_char = value_char_offset.saturating_sub(half_window_chars);
     let mut end_char = (value_char_end + half_window_chars).min(total_chars);
@@ -365,5 +403,64 @@ mod tests_window {
                 "expected whitespace just before cut, got {prev_char:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_facade {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn locates_value_and_windows() {
+        // Adapted: spec data summed to 505 chars, below the 600-char HARD_CAP,
+        // so `excerpt_truncated` was always false. Bumped to >600 chars.
+        let prefix = "x".repeat(300);
+        let suffix = "y".repeat(300);
+        let text = format!("{prefix}1.75%{suffix}");
+        let result = build_value_snippet(&text, Some(&json!("1.75%")), &[]);
+        assert!(result.value_located);
+        assert!(result.excerpt_truncated);
+        assert!(result.excerpt.contains("1.75%"));
+        let off = result.value_offset.unwrap();
+        let len = result.value_len.unwrap();
+        let got: String = result.excerpt.chars().skip(off).take(len).collect();
+        assert_eq!(got, "1.75%");
+    }
+
+    #[test]
+    fn value_not_found_falls_back_to_300_chars() {
+        let text = "a".repeat(1000);
+        let result = build_value_snippet(&text, Some(&json!("zzz")), &[]);
+        assert!(!result.value_located);
+        assert!(result.excerpt_truncated);
+        assert!(result.excerpt.chars().count() <= 301);
+    }
+
+    #[test]
+    fn short_text_returns_full_untruncated() {
+        let text = "Risk-free rate 1.75% (10Y CGB)";
+        let result = build_value_snippet(text, Some(&json!("1.75%")), &[]);
+        assert!(result.value_located);
+        assert!(!result.excerpt_truncated);
+        assert_eq!(result.excerpt, text);
+    }
+
+    #[test]
+    fn additional_sources_passed_through() {
+        let result = build_value_snippet(
+            "short",
+            Some(&json!("short")),
+            &["rend2".to_string(), "rend3".to_string()],
+        );
+        assert_eq!(result.additional_sources, vec!["rend2", "rend3"]);
+    }
+
+    #[test]
+    fn none_value_returns_fallback() {
+        let text = "some text here";
+        let result = build_value_snippet(text, None, &[]);
+        assert!(!result.value_located);
+        assert_eq!(result.excerpt, text);
     }
 }
