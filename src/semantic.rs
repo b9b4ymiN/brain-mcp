@@ -4166,7 +4166,16 @@ impl SemanticStore {
         let (proposal, _event_seq, _submitted_at) =
             resolve_proposal_by_id(connection, &self.root, self.marker.owner_id, proposal_id)?;
         let provenance_kind = proposal.provenance.kind().to_owned();
-        let (excerpt, source_id, quote_hash) = match &proposal.provenance {
+        let (
+            excerpt,
+            source_id,
+            quote_hash,
+            value_located,
+            value_offset,
+            value_len,
+            excerpt_truncated,
+            additional_sources,
+        ) = match &proposal.provenance {
             Provenance::Evidence {
                 source_id,
                 object_id,
@@ -4177,7 +4186,16 @@ impl SemanticStore {
             } => {
                 let text =
                     decrypt_text_span(connection, &self.root, object_id, *byte_start, *byte_end)?;
-                (Some(text), Some(*source_id), Some(quote_hash.clone()))
+                (
+                    Some(text),
+                    Some(*source_id),
+                    Some(quote_hash.clone()),
+                    false,
+                    None,
+                    None,
+                    false,
+                    Vec::new(),
+                )
             }
             Provenance::UserAssertion {
                 utterance_object_id,
@@ -4192,37 +4210,85 @@ impl SemanticStore {
                     *utterance_byte_start,
                     *utterance_byte_end,
                 )?;
-                (Some(text), None, None)
+                (
+                    Some(text),
+                    None,
+                    None,
+                    false,
+                    None,
+                    None,
+                    false,
+                    Vec::new(),
+                )
             }
             Provenance::Inference { evidence, .. } => {
-                let mut excerpts = Vec::with_capacity(evidence.len());
-                for span in evidence {
-                    excerpts.push(decrypt_text_span(
-                        connection,
-                        &self.root,
-                        &span.object_id,
-                        span.byte_start,
-                        span.byte_end,
-                    )?);
-                }
-                if excerpts.is_empty() {
-                    (None, None, None)
+                if evidence.is_empty() {
+                    (None, None, None, false, None, None, false, Vec::new())
                 } else {
-                    (Some(excerpts.join("\n---\n")), None, None)
+                    // Decrypt every span, tracking rendition_id.
+                    // Deviation from plan pseudocode: `InferenceEvidenceSpan.rendition_id`
+                    // is `Uuid`, not `String`, so we stringify here.
+                    let mut decrypted: Vec<(String, String)> = Vec::with_capacity(evidence.len());
+                    for span in evidence {
+                        let text = decrypt_text_span(
+                            connection,
+                            &self.root,
+                            &span.object_id,
+                            span.byte_start,
+                            span.byte_end,
+                        )?;
+                        decrypted.push((span.rendition_id.to_string(), text));
+                    }
+                    // Pick primary span: first one containing the value; if none, first span.
+                    // Deviation from plan pseudocode: the proposal value lives at
+                    // `proposal.draft.value` (a `serde_json::Value`, not wrapped in `Option`),
+                    // so we pass `Some(&value)` directly rather than `value.as_ref()`.
+                    let value = &proposal.draft.value;
+                    let candidates = crate::snippet::normalize_value_candidates(value);
+                    let primary_idx = decrypted
+                        .iter()
+                        .position(|(_, text)| {
+                            candidates.iter().any(|c| text.find(c.as_str()).is_some())
+                        })
+                        .unwrap_or(0);
+                    let (_primary_rendition, primary_text) = &decrypted[primary_idx];
+                    let additional_rendition_ids: Vec<String> = decrypted
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != primary_idx)
+                        .map(|(_, (rid, _))| rid.clone())
+                        .collect();
+                    let snippet = crate::snippet::build_value_snippet(
+                        primary_text,
+                        Some(value),
+                        &additional_rendition_ids,
+                    );
+                    (
+                        Some(snippet.excerpt),
+                        None,
+                        None,
+                        snippet.value_located,
+                        snippet.value_offset,
+                        snippet.value_len,
+                        snippet.excerpt_truncated,
+                        snippet.additional_sources,
+                    )
                 }
             }
-            Provenance::Mechanical { output_hash, .. } => (None, None, Some(output_hash.clone())),
+            Provenance::Mechanical { output_hash, .. } => {
+                (None, None, Some(output_hash.clone()), false, None, None, false, Vec::new())
+            }
         };
         Ok(EvidenceSummary {
             provenance_kind,
             excerpt,
             source_id,
             quote_hash,
-            value_located: false,
-            value_offset: None,
-            value_len: None,
-            excerpt_truncated: false,
-            additional_sources: Vec::new(),
+            value_located,
+            value_offset,
+            value_len,
+            excerpt_truncated,
+            additional_sources,
         })
     }
 
