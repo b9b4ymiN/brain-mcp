@@ -21,6 +21,9 @@ path = "src/lib.rs"
 [features]
 default = []
 semantic-test-failpoints = []
+# Live regression test against a real SemanticStore at BRAIN_STORE_PATH.
+# Off by default; opt in with `cargo test --features live_regression`.
+live_regression = []
 
 [[bin]]
 name = "llm-wiki"

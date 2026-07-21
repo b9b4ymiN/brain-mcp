@@ -469,6 +469,12 @@ Output: top-50 หลัง fuse
 
 Drafts เก็บใน `~/wikis/brain/.drafts/` — ไม่ commit ลง git จนกว่าจะ promote
 
+- **Subject Validator (Phase 1.5, 2026-07-21):** deterministic 6-layer
+  validator screens every proposal's `subject` field before it enters the
+  review queue. Engine vs. data separation (Wikidata pattern): code is
+  stable 5+ years, TOML rules reviewed annually. See
+  `docs/plans/subject-validator-v1-spec.md`.
+
 ### 6.3 Commit Tier (apply draft)
 
 | Tool | Args | Returns |
