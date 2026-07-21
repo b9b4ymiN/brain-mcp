@@ -26,3 +26,26 @@ symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "META", "AMZN"]
 
 [tickers.SET]
 symbols = ["PTT", "SCB", "AOT", "CPALL", "ADVANC", "TRUE"]
+
+# Corporate suffix tokens — when the subject's last token matches one of
+# these (case-insensitive), the metric-head check is BYPASSED. This protects
+# "Tesla Inc", "BYD Group", "PTT PCL" from being false-positive rejected
+# just because "Inc" looks lowercase and could match a metric pattern.
+[corporate_suffixes]
+"Inc" = "auto"
+"Inc." = "auto"
+"Corp" = "auto"
+"Corp." = "auto"
+"Corporation" = "auto"
+"Group" = "auto"
+"Ltd" = "auto"
+"Ltd." = "auto"
+"Co" = "auto"
+"Co." = "auto"
+"PLC" = "auto"
+"SA" = "auto"
+"GmbH" = "auto"
+"AG" = "auto"
+"BV" = "auto"
+"KK" = "auto"
+"PCL" = "auto"

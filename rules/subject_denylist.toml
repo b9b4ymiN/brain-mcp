@@ -51,3 +51,59 @@ version = "subject-denylist-v1"
 "CAT" = "auto"
 "SAP" = "auto"
 "API" = "auto"
+
+# Metric head-nouns — checked against the LAST whitespace token of the
+# subject (after stripping parentheticals). If the lowercased last token
+# is in this set, the subject is a metric phrase, not an entity.
+# Examples caught: "Risk-free rate" -> last token "rate", "Equity Value"
+# -> last token "value", "Shares outstanding" -> last token "outstanding"
+# is NOT in set (limitation, see note below).
+# Reviewed every 5 years (CFA curriculum cycle).
+[metric_heads]
+"rate" = "auto"
+"ratio" = "auto"
+"growth" = "auto"
+"value" = "auto"
+"yield" = "auto"
+"price" = "auto"
+"margin" = "auto"
+"multiple" = "auto"
+"return" = "auto"
+"premium" = "auto"
+"discount" = "auto"
+"cost" = "auto"
+"capex" = "auto"
+"ebitda" = "auto"
+"ebit" = "auto"
+"revenue" = "auto"
+"eps" = "auto"
+"cagr" = "auto"
+"cash" = "auto"
+"equity" = "auto"
+"shares" = "auto"
+"income" = "auto"
+"beta" = "auto"
+"alpha" = "auto"
+
+# Single-token metric terms (full subject is just this one word).
+# SubjectShape::Acronym/Ticker short-circuit earlier, so BRK/CATL never
+# reach this check. These are single-word metrics with no head to key on.
+# Reviewed on every LLM model upgrade.
+[metric_single_words]
+"beta" = "auto"
+"alpha" = "auto"
+"delta" = "auto"
+"gamma" = "auto"
+"sigma" = "auto"
+"wacc" = "auto"
+"npv" = "auto"
+"irr" = "auto"
+"roe" = "auto"
+"roa" = "auto"
+"roi" = "auto"
+"opex" = "auto"
+"capex" = "auto"
+"ebitda" = "auto"
+"ebit" = "auto"
+"eps" = "auto"
+"cagr" = "auto"

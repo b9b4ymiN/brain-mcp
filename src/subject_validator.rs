@@ -854,6 +854,8 @@ struct AllowlistFile {
     user_overrides: std::collections::HashMap<String, String>,
     #[serde(default)]
     tickers: std::collections::HashMap<String, TickerGroup>,
+    #[serde(default)]
+    corporate_suffixes: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -872,6 +874,9 @@ pub struct SubjectAllowlist {
     pub tickers: std::collections::HashSet<String>,
     /// Canonical subjects from SemanticStore (inverted HashMap<Uuid,String>).
     pub canonical: std::collections::HashSet<String>,
+    /// Corporate suffix tokens (e.g. "Inc", "Group", "PCL") — when present
+    /// as the last token of a subject, the metric-phrase check is bypassed.
+    pub corporate_suffixes: std::collections::HashSet<String>,
 }
 
 impl SubjectAllowlist {
@@ -886,12 +891,14 @@ impl SubjectAllowlist {
             .values()
             .flat_map(|g| g.symbols.iter().map(|s| s.to_uppercase()))
             .collect();
+        let corporate_suffixes = file.corporate_suffixes.keys().cloned().collect();
         Ok(Self {
             last_reviewed: file.last_reviewed,
             version: file.version,
             user_overrides,
             tickers,
             canonical,
+            corporate_suffixes,
         })
     }
 
@@ -899,6 +906,19 @@ impl SubjectAllowlist {
         self.user_overrides.contains(subject)
             || self.tickers.contains(&subject.to_uppercase())
             || self.canonical.contains(subject)
+    }
+
+    /// Returns true if the subject's last token is a corporate suffix
+    /// (case-insensitive match against the configured set).
+    pub fn has_corporate_suffix(&self, subject: &str) -> bool {
+        let last = subject
+            .split_whitespace()
+            .last()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        self.corporate_suffixes
+            .iter()
+            .any(|s| s.to_ascii_lowercase() == last)
     }
 }
 
@@ -914,6 +934,10 @@ struct DenylistFile {
     llm_bleed: std::collections::HashMap<String, String>,
     #[serde(default)]
     ambiguous_acronyms: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    metric_heads: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    metric_single_words: std::collections::HashMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -924,6 +948,8 @@ pub struct SubjectDenylist {
     pub stopwords: std::collections::HashSet<String>,
     pub llm_bleed: std::collections::HashSet<String>,
     pub ambiguous_acronyms: std::collections::HashSet<String>,
+    pub metric_heads: std::collections::HashSet<String>,
+    pub metric_single_words: std::collections::HashSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -943,6 +969,8 @@ impl SubjectDenylist {
             stopwords: file.stopwords.keys().cloned().collect(),
             llm_bleed: file.llm_bleed.keys().cloned().collect(),
             ambiguous_acronyms: file.ambiguous_acronyms.keys().cloned().collect(),
+            metric_heads: file.metric_heads.keys().cloned().collect(),
+            metric_single_words: file.metric_single_words.keys().cloned().collect(),
         })
     }
 
@@ -964,6 +992,34 @@ impl SubjectDenylist {
 
     pub fn is_ambiguous_acronym(&self, subject: &str) -> bool {
         self.ambiguous_acronyms.contains(subject)
+    }
+
+    /// Returns true if the subject is a metric phrase (not an entity name).
+    /// Two detection modes:
+    ///   1. Subject IS exactly one of [metric_single_words] tokens
+    ///      (case-insensitive). Examples: "Beta", "WACC", "NPV".
+    ///   2. Subject's LAST whitespace token (after stripping trailing
+    ///      parenthetical) lowercases to a member of [metric_heads].
+    ///      Examples: "Risk-free rate" -> "rate", "Equity Value" -> "value".
+    ///
+    /// Caller MUST gate this by shape (only run on TitleCase / LowercaseNoun
+    /// / Plain — never on Ticker / Acronym / Thai). Caller MUST also bypass
+    /// when the subject's last token is a corporate suffix.
+    pub fn is_metric_phrase(&self, subject: &str) -> bool {
+        // Mode 1: exact single-token metric
+        let lower_full = subject.trim().to_ascii_lowercase();
+        if self.metric_single_words.contains(&lower_full) {
+            return true;
+        }
+        // Mode 2: last-token head noun
+        // Strip trailing parenthetical: "Cash (post-placement)" -> "Cash"
+        let without_paren = subject.split('(').next().unwrap_or(subject).trim();
+        let last_token = without_paren
+            .split_whitespace()
+            .last()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        self.metric_heads.contains(&last_token)
     }
 }
 
@@ -1094,6 +1150,33 @@ impl SubjectValidator {
                 shape,
                 verdict: SubjectVerdict::Accept,
                 quality_tags: vec![],
+                validator_version: SUBJECT_VALIDATOR_VERSION,
+            };
+        }
+
+        // Layer 4b: metric-phrase check (gated by shape to avoid FP on legit entities)
+        let metric_check_shapes = [
+            SubjectShape::TitleCase,
+            SubjectShape::LowercaseNoun,
+            SubjectShape::Plain,
+        ];
+        if metric_check_shapes.contains(&shape)
+            && !self.allowlist.has_corporate_suffix(&normalized)
+            && self.denylist.is_metric_phrase(&normalized)
+        {
+            return SubjectReport {
+                normalized: normalized.clone(),
+                shape,
+                verdict: SubjectVerdict::Reject,
+                quality_tags: vec![QualityTag::new(
+                    QualityTagKind::BadSubjectShape,
+                    QualitySeverity::Critical,
+                    format!(
+                        "subject `{}` is a metric/financial term (not an entity name) — restructure as entity+predicate",
+                        normalized
+                    ),
+                )
+                .with_evidence(normalized.clone())],
                 validator_version: SUBJECT_VALIDATOR_VERSION,
             };
         }
@@ -1541,5 +1624,83 @@ version = "x"
     fn unknown_counter_increments_for_unknown_shape() {
         let v = validator();
         assert!(v.unknown_frequency_snapshot().is_empty());
+    }
+
+    // ── Phase 1.5.1: Metric Term Detection ─────────────────────────────────
+
+    #[test]
+    fn metric_phrase_rate_detected() {
+        let v = validator();
+        let r = v.validate("Risk-free rate");
+        assert_eq!(r.verdict, SubjectVerdict::Reject, "got shape={:?}", r.shape);
+    }
+
+    #[test]
+    fn metric_phrase_growth_detected() {
+        let v = validator();
+        let r = v.validate("Terminal growth");
+        assert_eq!(r.verdict, SubjectVerdict::Reject);
+    }
+
+    #[test]
+    fn metric_phrase_value_detected() {
+        let v = validator();
+        let r = v.validate("Equity Value");
+        assert_eq!(r.verdict, SubjectVerdict::Reject);
+    }
+
+    #[test]
+    fn metric_single_word_beta_detected() {
+        let v = validator();
+        let r = v.validate("Beta");
+        assert_eq!(r.verdict, SubjectVerdict::Reject);
+    }
+
+    #[test]
+    fn metric_single_word_wacc_detected() {
+        let v = validator();
+        // NOTE: "WACC" (all-caps) would classify as Acronym and short-circuit
+        // before the metric check — by design, to avoid FP on tickers like
+        // CATL/BRK. The TitleCase form "Wacc" (the variant observed in LLM
+        // output) is what this layer catches. See task Phase 1.5.1 goal list.
+        let r = v.validate("Wacc");
+        assert_eq!(r.verdict, SubjectVerdict::Reject);
+    }
+
+    #[test]
+    fn corporate_suffix_bypasses_metric_check() {
+        let v = validator();
+        // "Tesla Inc" — last token "Inc" is corporate suffix, bypasses metric check
+        let r = v.validate("Tesla Inc");
+        assert_ne!(
+            r.verdict,
+            SubjectVerdict::Reject,
+            "Tesla Inc should not be rejected, got: {:?}",
+            r.quality_tags
+        );
+    }
+
+    #[test]
+    fn corporate_group_bypasses_metric_check() {
+        let v = validator();
+        let r = v.validate("BYD Group");
+        assert_ne!(r.verdict, SubjectVerdict::Reject);
+    }
+
+    #[test]
+    fn real_entity_still_accepted() {
+        let v = validator();
+        let r = v.validate("CATL");
+        assert_eq!(r.verdict, SubjectVerdict::AcceptWithInfo);
+    }
+
+    #[test]
+    fn metric_phrase_cash_paren() {
+        let v = validator();
+        // "Cash (post-placement)" — paren stripped, "Cash" matches metric_heads
+        let r = v.validate("Cash (post-placement)");
+        // last token after paren strip is "Cash" — needs to be in metric_heads.
+        // "cash" IS in metric_heads.
+        assert_eq!(r.verdict, SubjectVerdict::Reject);
     }
 }
