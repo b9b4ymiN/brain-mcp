@@ -46,8 +46,8 @@
     "value": "12-18%",
     "domain": "business",
     "submitted_at": "2026-07-19T07:49:26.619548439Z",
-    "action": "APPROVE",
-    "rationale": "capitalized subject + meaningful predicate"
+    "action": "REJECT",
+    "rationale": "sub-segment/event under parent entity (should be re-extracted under CATL)"
   },
   {
     "proposal_id": "019f7959-f619-72f0-97e8-78ec557832ec",
@@ -56,8 +56,8 @@
     "value": ">35%",
     "domain": "business",
     "submitted_at": "2026-07-19T07:49:26.696162797Z",
-    "action": "APPROVE",
-    "rationale": "capitalized subject + meaningful predicate"
+    "action": "REJECT",
+    "rationale": "sub-segment/event under parent entity (should be re-extracted under CATL)"
   },
   {
     "proposal_id": "019f7959-f9f6-7622-83d5-ed5eea4a6720",
@@ -236,8 +236,8 @@
     "value": "~20%",
     "domain": "industry",
     "submitted_at": "2026-07-19T07:54:58.171010876Z",
-    "action": "APPROVE",
-    "rationale": "capitalized subject + meaningful predicate"
+    "action": "REJECT",
+    "rationale": "geo/region or MultiEntity (not a single entity)"
   },
   {
     "proposal_id": "019f795f-053d-7fb3-a240-f618aea7b55a",
@@ -246,8 +246,8 @@
     "value": "40-50%",
     "domain": "industry",
     "submitted_at": "2026-07-19T07:54:58.251674503Z",
-    "action": "APPROVE",
-    "rationale": "capitalized subject + meaningful predicate"
+    "action": "REJECT",
+    "rationale": "geo/region or MultiEntity (not a single entity)"
   },
   {
     "proposal_id": "019f795f-058f-7981-a8fb-7504e4d164df",
@@ -266,8 +266,8 @@
     "value": "100%+",
     "domain": "economics",
     "submitted_at": "2026-07-19T07:54:58.415336837Z",
-    "action": "APPROVE",
-    "rationale": "clean entity acronym/ticker"
+    "action": "REJECT",
+    "rationale": "geo/region or MultiEntity (not a single entity)"
   },
   {
     "proposal_id": "019f795f-0632-7c52-a5f3-de7fc1d7f378",
@@ -276,8 +276,8 @@
     "value": "~3,000+ GWh",
     "domain": "industry",
     "submitted_at": "2026-07-19T07:54:58.496703016Z",
-    "action": "APPROVE",
-    "rationale": "capitalized subject + meaningful predicate"
+    "action": "REJECT",
+    "rationale": "generic product/segment term 'EV Battery' (not a specific entity)"
   },
   {
     "proposal_id": "019f795f-0681-78a1-bbb0-81297d8fffc3",
@@ -286,8 +286,8 @@
     "value": "~1,000+ GWh",
     "domain": "industry",
     "submitted_at": "2026-07-19T07:54:58.575929687Z",
-    "action": "APPROVE",
-    "rationale": "clean entity acronym/ticker"
+    "action": "REJECT",
+    "rationale": "generic product/segment term 'ESS' (not a specific entity)"
   },
   {
     "proposal_id": "019f7963-f40c-7141-9f76-781357e2380b",
@@ -296,8 +296,8 @@
     "value": ">50%",
     "domain": "Business",
     "submitted_at": "2026-07-19T08:00:21.530139533Z",
-    "action": "APPROVE",
-    "rationale": "clean entity acronym/ticker"
+    "action": "REJECT",
+    "rationale": "generic product/segment term 'ESS' (not a specific entity)"
   },
   {
     "proposal_id": "019f7963-f455-7452-9928-1a9a1311b5dc",
@@ -396,8 +396,8 @@
     "value": "$5B",
     "domain": "Finance",
     "submitted_at": "2026-07-19T08:00:22.640645855Z",
-    "action": "APPROVE",
-    "rationale": "entity+qualifier + good predicate"
+    "action": "REJECT",
+    "rationale": "sub-segment/event under parent entity (should be re-extracted under CATL)"
   },
   {
     "proposal_id": "019f7963-f8af-7981-aa3c-c23bebbcf426",
@@ -406,8 +406,8 @@
     "value": "50%+",
     "domain": "Finance",
     "submitted_at": "2026-07-19T08:00:22.716774275Z",
-    "action": "APPROVE",
-    "rationale": "entity+qualifier + good predicate"
+    "action": "REJECT",
+    "rationale": "sub-segment/event under parent entity (should be re-extracted under CATL)"
   },
   {
     "proposal_id": "019f7963-f8fb-7ba3-aaea-4a861ba75545",
@@ -546,8 +546,8 @@
     "value": "661 GWh",
     "domain": "Market",
     "submitted_at": "2026-07-19T08:00:23.767267624Z",
-    "action": "APPROVE",
-    "rationale": "entity+qualifier + good predicate"
+    "action": "REJECT",
+    "rationale": "sub-segment/event under parent entity (should be re-extracted under CATL)"
   },
   {
     "proposal_id": "019f7963-fd14-7c81-8178-ce2580ea69ac",
@@ -556,8 +556,8 @@
     "value": "~1,400–1,600 GWh",
     "domain": "Market",
     "submitted_at": "2026-07-19T08:00:23.841733211Z",
-    "action": "APPROVE",
-    "rationale": "entity+qualifier + good predicate"
+    "action": "REJECT",
+    "rationale": "sub-segment/event under parent entity (should be re-extracted under CATL)"
   },
   {
     "proposal_id": "019f798d-524b-7333-8aae-674758ce9aa0",
@@ -646,8 +646,8 @@
     "value": "Q1 2026",
     "domain": "manufacturing",
     "submitted_at": "2026-07-19T08:45:33.261502722Z",
-    "action": "APPROVE",
-    "rationale": "capitalized subject + meaningful predicate"
+    "action": "REJECT",
+    "rationale": "metadata subject (not entity claim)"
   },
   {
     "proposal_id": "019f798d-5512-7cf3-a2ea-69354b3a7946",
@@ -926,8 +926,8 @@
     "value": "today",
     "domain": "Business",
     "submitted_at": "2026-07-19T08:49:17.174963820Z",
-    "action": "APPROVE",
-    "rationale": "entity+qualifier + good predicate"
+    "action": "REJECT",
+    "rationale": "geo/region or MultiEntity (not a single entity)"
   },
   {
     "proposal_id": "019f7990-bfc9-70f1-a12e-52d927a2e37f",
@@ -936,8 +936,8 @@
     "value": "future",
     "domain": "Business",
     "submitted_at": "2026-07-19T08:49:17.273665068Z",
-    "action": "APPROVE",
-    "rationale": "entity+qualifier + good predicate"
+    "action": "REJECT",
+    "rationale": "geo/region or MultiEntity (not a single entity)"
   },
   {
     "proposal_id": "019f7996-9366-7c63-bafb-4ff9e7890fc9",
@@ -996,8 +996,8 @@
     "value": "45%",
     "domain": "corporate_performance",
     "submitted_at": "2026-07-19T08:55:39.518375177Z",
-    "action": "APPROVE",
-    "rationale": "capitalized subject + meaningful predicate"
+    "action": "REJECT",
+    "rationale": "single-word metric term 'Profit' (not an entity)"
   },
   {
     "proposal_id": "019f7996-9540-7721-919a-32b498da939c",
@@ -1086,8 +1086,8 @@
     "value": "0.8x",
     "domain": "market_data",
     "submitted_at": "2026-07-19T08:55:40.236537164Z",
-    "action": "APPROVE",
-    "rationale": "capitalized subject + meaningful predicate"
+    "action": "REJECT",
+    "rationale": "single-word metric term 'Volume' (not an entity)"
   },
   {
     "proposal_id": "019f7996-980a-7cd3-9817-2b9096bde2b9",
@@ -1396,8 +1396,8 @@
     "value": "661 GWh",
     "domain": "corporate_performance",
     "submitted_at": "2026-07-19T09:00:31.803152059Z",
-    "action": "APPROVE",
-    "rationale": "entity+qualifier + good predicate"
+    "action": "REJECT",
+    "rationale": "sub-segment/event under parent entity (should be re-extracted under CATL)"
   },
   {
     "proposal_id": "019f799b-0b04-7ad2-b10e-688f349e2b00",
@@ -1406,8 +1406,8 @@
     "value": "≈1,561 GWh",
     "domain": "corporate_performance",
     "submitted_at": "2026-07-19T09:00:31.892178688Z",
-    "action": "APPROVE",
-    "rationale": "capitalized subject + meaningful predicate"
+    "action": "REJECT",
+    "rationale": "sub-segment/event under parent entity (should be re-extracted under CATL)"
   },
   {
     "proposal_id": "019f799b-0b5d-75a2-9c0d-09a6fbc98a94",
@@ -1416,8 +1416,8 @@
     "value": "¥150B",
     "domain": "finance",
     "submitted_at": "2026-07-19T09:00:31.980653155Z",
-    "action": "APPROVE",
-    "rationale": "capitalized subject + meaningful predicate"
+    "action": "REJECT",
+    "rationale": "scenario subject (hypothetical outcome, not entity)"
   },
   {
     "proposal_id": "019f799b-0bb8-7ca1-9d72-aaf34bae2769",
@@ -1426,8 +1426,8 @@
     "value": "~15%",
     "domain": "risk",
     "submitted_at": "2026-07-19T09:00:32.071746463Z",
-    "action": "APPROVE",
-    "rationale": "capitalized subject + meaningful predicate"
+    "action": "REJECT",
+    "rationale": "scenario subject (hypothetical outcome, not entity)"
   },
   {
     "proposal_id": "019f799b-0c1f-7fb2-b0af-61dad4ce49f6",

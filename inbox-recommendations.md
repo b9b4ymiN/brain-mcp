@@ -8,9 +8,9 @@
 
 | Action | Count | % |
 |--------|-------|---|
-| 🟢 APPROVE | 87 | 48.1% |
+| 🟢 APPROVE | 66 | 36.5% |
 | 🟠 REVIEW | 2 | 1.1% |
-| 🔴 REJECT | 92 | 50.8% |
+| 🔴 REJECT | 113 | 62.4% |
 | **TOTAL** | **181** | **100%** |
 
 ## Heuristic layers (priority order)
@@ -25,7 +25,7 @@
 8. **Simple acronym/ticker** — CATL, BYD → APPROVE
 9. **TitleCase + good predicate** — "Hungary overseas plant" + "investment cost" → APPROVE
 
-## 🟢 APPROVE (87)
+## 🟢 APPROVE (66)
 
 ### 'BYD' (6 proposals)
 
@@ -189,111 +189,12 @@
   - `domain`: `Business`
   - `rationale`: clean entity acronym/ticker
 
-### 'CATL (2026 funding)' (1 proposal)
-
-- **`HK placement amount`** = `$5B`
-  - `proposal_id`: `019f7963-f863-7562-9719-7dcb570e6a2b`
-  - `domain`: `Finance`
-  - `rationale`: entity+qualifier + good predicate
-
-### 'CATL (Q1 2026)' (1 proposal)
-
-- **`revenue growth`** = `50%+`
-  - `proposal_id`: `019f7963-f8af-7981-aa3c-c23bebbcf426`
-  - `domain`: `Finance`
-  - `rationale`: entity+qualifier + good predicate
-
-### 'CATL ESS business' (1 proposal)
-
-- **`expected annual growth rate`** = `>35%`
-  - `proposal_id`: `019f7959-f619-72f0-97e8-78ec557832ec`
-  - `domain`: `business`
-  - `rationale`: capitalized subject + meaningful predicate
-
-### 'CATL EV battery business' (1 proposal)
-
-- **`expected annual growth rate`** = `12-18%`
-  - `proposal_id`: `019f7959-f5bb-7b00-bf82-7c26d31cff13`
-  - `domain`: `business`
-  - `rationale`: capitalized subject + meaningful predicate
-
-### 'CATL shipment (2025)' (1 proposal)
-
-- **`volume`** = `661 GWh`
-  - `proposal_id`: `019f7963-fcc9-7603-a85e-a10b34a6431a`
-  - `domain`: `Market`
-  - `rationale`: entity+qualifier + good predicate
-
-### 'CATL shipment (2030)' (1 proposal)
-
-- **`volume`** = `~1,400–1,600 GWh`
-  - `proposal_id`: `019f7963-fd14-7c81-8178-ce2580ea69ac`
-  - `domain`: `Market`
-  - `rationale`: entity+qualifier + good predicate
-
-### 'CATL shipment 2025' (1 proposal)
-
-- **`actual volume is`** = `661 GWh`
-  - `proposal_id`: `019f799b-0aab-70f1-8e17-1da2d36cae9a`
-  - `domain`: `corporate_performance`
-  - `rationale`: entity+qualifier + good predicate
-
-### 'CATL shipment 2030E' (1 proposal)
-
-- **`estimated volume is`** = `≈1,561 GWh`
-  - `proposal_id`: `019f799b-0b04-7ad2-b10e-688f349e2b00`
-  - `domain`: `corporate_performance`
-  - `rationale`: capitalized subject + meaningful predicate
-
-### 'China (CATL+BYD)' (1 proposal)
-
-- **`strategic timeframe`** = `today`
-  - `proposal_id`: `019f7990-bf67-7f73-a45b-a3e1859c0767`
-  - `domain`: `Business`
-  - `rationale`: entity+qualifier + good predicate
-
 ### 'Chinese battery industry' (1 proposal)
 
 - **`overcapacity`** = `~2x demand`
   - `proposal_id`: `019f795f-058f-7981-a8fb-7504e4d164df`
   - `domain`: `industry`
   - `rationale`: industry-level entity + meaningful predicate
-
-### 'Debrecen production start' (1 proposal)
-
-- **`is scheduled for`** = `Q1 2026`
-  - `proposal_id`: `019f798d-54be-7372-a7c3-2575640087e0`
-  - `domain`: `manufacturing`
-  - `rationale`: capitalized subject + meaningful predicate
-
-### 'ESS' (2 proposals)
-
-- **`TAM 2030`** = `~1,000+ GWh`
-  - `proposal_id`: `019f795f-0681-78a1-bbb0-81297d8fffc3`
-  - `domain`: `industry`
-  - `rationale`: clean entity acronym/ticker
-- **`growth rate per year`** = `>50%`
-  - `proposal_id`: `019f7963-f40c-7141-9f76-781357e2380b`
-  - `domain`: `Business`
-  - `rationale`: clean entity acronym/ticker
-
-### 'EV Battery' (1 proposal)
-
-- **`TAM 2030`** = `~3,000+ GWh`
-  - `proposal_id`: `019f795f-0632-7c52-a5f3-de7fc1d7f378`
-  - `domain`: `industry`
-  - `rationale`: capitalized subject + meaningful predicate
-
-### 'Global' (2 proposals)
-
-- **`EV penetration rate`** = `~20%`
-  - `proposal_id`: `019f795f-04ec-7a92-b8d1-cd6353520d27`
-  - `domain`: `industry`
-  - `rationale`: capitalized subject + meaningful predicate
-- **`EV penetration target 2030`** = `40-50%`
-  - `proposal_id`: `019f795f-053d-7fb3-a240-f618aea7b55a`
-  - `domain`: `industry`
-  - `rationale`: capitalized subject + meaningful predicate
 
 ### 'Hungary overseas plant' (2 proposals)
 
@@ -305,13 +206,6 @@
   - `proposal_id`: `019f7963-f4ed-7983-a52e-71f68e76437c`
   - `domain`: `Finance`
   - `rationale`: capitalized subject + meaningful predicate
-
-### 'Korea (LG+Samsung)' (1 proposal)
-
-- **`strategic timeframe`** = `future`
-  - `proposal_id`: `019f7990-bfc9-70f1-a12e-52d927a2e37f`
-  - `domain`: `Business`
-  - `rationale`: entity+qualifier + good predicate
 
 ### 'LG Energy' (4 proposals)
 
@@ -330,13 +224,6 @@
 - **`trajectory Q1'26`** = `−15%`
   - `proposal_id`: `019f7990-bda3-7383-8cce-b65d6e6d4f76`
   - `domain`: `Business`
-  - `rationale`: capitalized subject + meaningful predicate
-
-### 'Profit' (1 proposal)
-
-- **`growth rate`** = `45%`
-  - `proposal_id`: `019f7996-94f0-7b32-be8e-93ea72da47d8`
-  - `domain`: `corporate_performance`
   - `rationale`: capitalized subject + meaningful predicate
 
 ### 'Samsung SDI' (4 proposals)
@@ -368,20 +255,6 @@
   - `proposal_id`: `019f7963-f4a2-7552-9a65-43f0362c8b6a`
   - `domain`: `Production`
   - `rationale`: entity+qualifier + good predicate
-
-### 'Sodium-ion failure' (1 proposal)
-
-- **`growth reduction is`** = `~15%`
-  - `proposal_id`: `019f799b-0bb8-7ca1-9d72-aaf34bae2769`
-  - `domain`: `risk`
-  - `rationale`: capitalized subject + meaningful predicate
-
-### 'Sodium-ion full success' (1 proposal)
-
-- **`new revenue is`** = `¥150B`
-  - `proposal_id`: `019f799b-0b5d-75a2-9c0d-09a6fbc98a94`
-  - `domain`: `finance`
-  - `rationale`: capitalized subject + meaningful predicate
 
 ### 'Spain JV' (2 proposals)
 
@@ -478,20 +351,6 @@
   - `domain`: `Market`
   - `rationale`: entity+qualifier + good predicate
 
-### 'US' (1 proposal)
-
-- **`tax on Chinese batteries`** = `100%+`
-  - `proposal_id`: `019f795f-05e1-7e73-b892-8e83d469a9af`
-  - `domain`: `economics`
-  - `rationale`: clean entity acronym/ticker
-
-### 'Volume' (1 proposal)
-
-- **`relative to average`** = `0.8x`
-  - `proposal_id`: `019f7996-97be-7832-95b9-b83eb2bac46d`
-  - `domain`: `market_data`
-  - `rationale`: capitalized subject + meaningful predicate
-
 ## 🟠 REVIEW (2)
 
 ### 'China challengers (CALB, EVE)' (2 proposals)
@@ -505,7 +364,7 @@
   - `domain`: `Finance`
   - `rationale`: split needed (shape=MultiEntity)
 
-## 🔴 REJECT (92)
+## 🔴 REJECT (113)
 
 ### '50% Fib yearly level' (1 proposal)
 
@@ -550,6 +409,20 @@
   - `domain`: `finance`
   - `rationale`: Phase 1.5 (metric_single)
 
+### 'CATL (2026 funding)' (1 proposal)
+
+- **`HK placement amount`** = `$5B`
+  - `proposal_id`: `019f7963-f863-7562-9719-7dcb570e6a2b`
+  - `domain`: `Finance`
+  - `rationale`: sub-segment/event under parent entity (should be re-extracted under CATL)
+
+### 'CATL (Q1 2026)' (1 proposal)
+
+- **`revenue growth`** = `50%+`
+  - `proposal_id`: `019f7963-f8af-7981-aa3c-c23bebbcf426`
+  - `domain`: `Finance`
+  - `rationale`: sub-segment/event under parent entity (should be re-extracted under CATL)
+
 ### 'CATL 2025 Annual Report' (1 proposal)
 
 - **`date`** = `10 Mar 2026`
@@ -563,6 +436,20 @@
   - `proposal_id`: `019f7963-f800-7fc3-9ce2-fecb37852c9b`
   - `domain`: `Finance`
   - `rationale`: Phase 1.5 (metric_head)
+
+### 'CATL ESS business' (1 proposal)
+
+- **`expected annual growth rate`** = `>35%`
+  - `proposal_id`: `019f7959-f619-72f0-97e8-78ec557832ec`
+  - `domain`: `business`
+  - `rationale`: sub-segment/event under parent entity (should be re-extracted under CATL)
+
+### 'CATL EV battery business' (1 proposal)
+
+- **`expected annual growth rate`** = `12-18%`
+  - `proposal_id`: `019f7959-f5bb-7b00-bf82-7c26d31cff13`
+  - `domain`: `business`
+  - `rationale`: sub-segment/event under parent entity (should be re-extracted under CATL)
 
 ### 'CATL Q1 2026 results' (1 proposal)
 
@@ -589,6 +476,34 @@
   - `domain`: `competition`
   - `rationale`: entity+metric fused subject
 
+### 'CATL shipment (2025)' (1 proposal)
+
+- **`volume`** = `661 GWh`
+  - `proposal_id`: `019f7963-fcc9-7603-a85e-a10b34a6431a`
+  - `domain`: `Market`
+  - `rationale`: sub-segment/event under parent entity (should be re-extracted under CATL)
+
+### 'CATL shipment (2030)' (1 proposal)
+
+- **`volume`** = `~1,400–1,600 GWh`
+  - `proposal_id`: `019f7963-fd14-7c81-8178-ce2580ea69ac`
+  - `domain`: `Market`
+  - `rationale`: sub-segment/event under parent entity (should be re-extracted under CATL)
+
+### 'CATL shipment 2025' (1 proposal)
+
+- **`actual volume is`** = `661 GWh`
+  - `proposal_id`: `019f799b-0aab-70f1-8e17-1da2d36cae9a`
+  - `domain`: `corporate_performance`
+  - `rationale`: sub-segment/event under parent entity (should be re-extracted under CATL)
+
+### 'CATL shipment 2030E' (1 proposal)
+
+- **`estimated volume is`** = `≈1,561 GWh`
+  - `proposal_id`: `019f799b-0b04-7ad2-b10e-688f349e2b00`
+  - `domain`: `corporate_performance`
+  - `rationale`: sub-segment/event under parent entity (should be re-extracted under CATL)
+
 ### 'Cash' (1 proposal)
 
 - **`is`** = `¥451.5B`
@@ -609,6 +524,13 @@
   - `proposal_id`: `019f7996-9646-78a0-aeef-39e4f3776ab9`
   - `domain`: `metadata`
   - `rationale`: predicate 'is' vague
+
+### 'China (CATL+BYD)' (1 proposal)
+
+- **`strategic timeframe`** = `today`
+  - `proposal_id`: `019f7990-bf67-7f73-a45b-a3e1859c0767`
+  - `domain`: `Business`
+  - `rationale`: geo/region or MultiEntity (not a single entity)
 
 ### 'China CAGR' (1 proposal)
 
@@ -666,12 +588,30 @@
   - `domain`: `business`
   - `rationale`: predicate 'is' vague
 
+### 'Debrecen production start' (1 proposal)
+
+- **`is scheduled for`** = `Q1 2026`
+  - `proposal_id`: `019f798d-54be-7372-a7c3-2575640087e0`
+  - `domain`: `manufacturing`
+  - `rationale`: metadata subject (not entity claim)
+
 ### 'Debt' (1 proposal)
 
 - **`is`** = `¥119.7B`
   - `proposal_id`: `019f79a1-fad7-7943-a176-bd5b16bddbf8`
   - `domain`: `finance`
   - `rationale`: predicate 'is' vague
+
+### 'ESS' (2 proposals)
+
+- **`TAM 2030`** = `~1,000+ GWh`
+  - `proposal_id`: `019f795f-0681-78a1-bbb0-81297d8fffc3`
+  - `domain`: `industry`
+  - `rationale`: generic product/segment term 'ESS' (not a specific entity)
+- **`growth rate per year`** = `>50%`
+  - `proposal_id`: `019f7963-f40c-7141-9f76-781357e2380b`
+  - `domain`: `Business`
+  - `rationale`: generic product/segment term 'ESS' (not a specific entity)
 
 ### 'ESS growth contribution' (2 proposals)
 
@@ -697,6 +637,13 @@
   - `proposal_id`: `019f798d-5386-7130-97a0-8a5ae518d05b`
   - `domain`: `business`
   - `rationale`: predicate 'is' vague
+
+### 'EV Battery' (1 proposal)
+
+- **`TAM 2030`** = `~3,000+ GWh`
+  - `proposal_id`: `019f795f-0632-7c52-a5f3-de7fc1d7f378`
+  - `domain`: `industry`
+  - `rationale`: generic product/segment term 'EV Battery' (not a specific entity)
 
 ### 'EV battery growth contribution' (2 proposals)
 
@@ -759,6 +706,17 @@
   - `domain`: `market_data`
   - `rationale`: predicate 'is' vague
 
+### 'Global' (2 proposals)
+
+- **`EV penetration rate`** = `~20%`
+  - `proposal_id`: `019f795f-04ec-7a92-b8d1-cd6353520d27`
+  - `domain`: `industry`
+  - `rationale`: geo/region or MultiEntity (not a single entity)
+- **`EV penetration target 2030`** = `40-50%`
+  - `proposal_id`: `019f795f-053d-7fb3-a240-f618aea7b55a`
+  - `domain`: `industry`
+  - `rationale`: geo/region or MultiEntity (not a single entity)
+
 ### 'Growth source 2026-2028' (1 proposal)
 
 - **`is`** = `EU ramp`
@@ -786,6 +744,13 @@
   - `proposal_id`: `019f7996-9403-7820-b911-5a9216108754`
   - `domain`: `financial_analysis`
   - `rationale`: Phase 1.5 (metric_head)
+
+### 'Korea (LG+Samsung)' (1 proposal)
+
+- **`strategic timeframe`** = `future`
+  - `proposal_id`: `019f7990-bfc9-70f1-a12e-52d927a2e37f`
+  - `domain`: `Business`
+  - `rationale`: geo/region or MultiEntity (not a single entity)
 
 ### 'Median target price' (1 proposal)
 
@@ -853,6 +818,13 @@
   - `proposal_id`: `019f7996-944e-7c30-a898-afc68395d90f`
   - `domain`: `market_data`
   - `rationale`: Phase 1.5 (metric_head)
+
+### 'Profit' (1 proposal)
+
+- **`growth rate`** = `45%`
+  - `proposal_id`: `019f7996-94f0-7b32-be8e-93ea72da47d8`
+  - `domain`: `corporate_performance`
+  - `rationale`: single-word metric term 'Profit' (not an entity)
 
 ### 'Q1 2026 performance' (1 proposal)
 
@@ -927,6 +899,20 @@
   - `proposal_id`: `019f799b-0d9f-7de0-8f69-fbf433f1140e`
   - `domain`: `corporate_performance`
   - `rationale`: Phase 1.5 (metric_head)
+
+### 'Sodium-ion failure' (1 proposal)
+
+- **`growth reduction is`** = `~15%`
+  - `proposal_id`: `019f799b-0bb8-7ca1-9d72-aaf34bae2769`
+  - `domain`: `risk`
+  - `rationale`: scenario subject (hypothetical outcome, not entity)
+
+### 'Sodium-ion full success' (1 proposal)
+
+- **`new revenue is`** = `¥150B`
+  - `proposal_id`: `019f799b-0b5d-75a2-9c0d-09a6fbc98a94`
+  - `domain`: `finance`
+  - `rationale`: scenario subject (hypothetical outcome, not entity)
 
 ### 'Sodium-ion growth contribution' (2 proposals)
 
@@ -1013,6 +999,13 @@
   - `domain`: `market_analysis`
   - `rationale`: Phase 1.5 (metric_head)
 
+### 'US' (1 proposal)
+
+- **`tax on Chinese batteries`** = `100%+`
+  - `proposal_id`: `019f795f-05e1-7e73-b892-8e83d469a9af`
+  - `domain`: `economics`
+  - `rationale`: geo/region or MultiEntity (not a single entity)
+
 ### 'US eligibility for EV credit' (1 proposal)
 
 - **`is`** = `not eligible for $7,500 credit`
@@ -1033,6 +1026,13 @@
   - `proposal_id`: `019f798d-561b-70b2-9f1a-d0608aac2b44`
   - `domain`: `business`
   - `rationale`: Phase 1.5 (metric_head)
+
+### 'Volume' (1 proposal)
+
+- **`relative to average`** = `0.8x`
+  - `proposal_id`: `019f7996-97be-7832-95b9-b83eb2bac46d`
+  - `domain`: `market_data`
+  - `rationale`: single-word metric term 'Volume' (not an entity)
 
 ### 'WACC' (1 proposal)
 

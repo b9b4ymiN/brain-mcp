@@ -85,6 +85,7 @@ METADATA_SUBJECTS = {
     'New H-shares',
     'CATL 2025 Annual Report',
     'CATL Q1 2026 results',
+    'Debrecen production start',
 }
 
 # Industry-level entities (TAM, market, sector) — accepted as "industry entities"
@@ -94,6 +95,58 @@ INDUSTRY_ENTITIES = {
     'TAM Datacenter ESS',
     'Total TAM',
     'Chinese battery industry',
+}
+
+# Single-word metric terms that should never be subjects (Phase 1.5 metric_single
+# missed these — surfaced during 2026-07-21 user review of 87 APPROVE candidates).
+METRIC_SINGLE_EXTRA = {
+    'profit',
+    'volume',
+    'revenue',
+    'debt',
+    'asset',
+    'cash',
+    'margin',
+    'income',
+    'sales',
+    'ebitda',
+    'ebit',
+    'eps',
+}
+
+# Generic product/segment terms (not specific entities) — reject.
+# ESS = Energy Storage System (generic industry term, not a company/product name)
+# EV Battery = generic product category
+PRODUCT_GENERIC_SUBJECTS = {
+    'ESS',
+    'EV Battery',
+}
+
+# Scenario subjects (not entities — they are hypothetical outcomes)
+SCENARIO_SUBJECTS = {
+    'Sodium-ion full success',
+    'Sodium-ion failure',
+}
+
+# Entity+qualifier subjects that are sub-segments/events, not primary entities
+# (kept claim value should be re-extracted under the parent entity: CATL)
+SUB_ENTITY_SUBJECTS = {
+    'CATL (2026 funding)',
+    'CATL (Q1 2026)',
+    'CATL EV battery business',
+    'CATL ESS business',
+    'CATL shipment (2025)',
+    'CATL shipment (2030)',
+    'CATL shipment 2025',
+    'CATL shipment 2030E',
+}
+
+# Geo/region subjects (not entities themselves)
+GEO_SUBJECTS = {
+    'Global',
+    'US',
+    'China (CATL+BYD)',
+    'Korea (LG+Samsung)',
 }
 
 METRIC_COMPOUND_PATTERNS = [
@@ -155,6 +208,21 @@ for p in data:
     elif s in METADATA_SUBJECTS:
         action = 'REJECT'
         rationale.append('metadata subject (not entity claim)')
+    elif s in SCENARIO_SUBJECTS:
+        action = 'REJECT'
+        rationale.append('scenario subject (hypothetical outcome, not entity)')
+    elif s in SUB_ENTITY_SUBJECTS:
+        action = 'REJECT'
+        rationale.append('sub-segment/event under parent entity (should be re-extracted under CATL)')
+    elif s in GEO_SUBJECTS:
+        action = 'REJECT'
+        rationale.append('geo/region or MultiEntity (not a single entity)')
+    elif s.lower() in METRIC_SINGLE_EXTRA:
+        action = 'REJECT'
+        rationale.append(f"single-word metric term '{s}' (not an entity)")
+    elif s in PRODUCT_GENERIC_SUBJECTS:
+        action = 'REJECT'
+        rationale.append(f"generic product/segment term '{s}' (not a specific entity)")
     elif s in INDUSTRY_ENTITIES:
         if len(pred) >= 3:
             action = 'APPROVE'
