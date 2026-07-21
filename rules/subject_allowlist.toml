@@ -1,0 +1,28 @@
+# Subject Validator Layer 4 — allowlist overrides (DATA, not code).
+#
+# Subjects in this file are ALWAYS accepted, regardless of shape verdict.
+# This is the escape hatch for legitimate entities whose shape doesn't fit
+# the classifier (e.g. company names that happen to look like slugs).
+#
+# Canonical subjects from the SemanticStore entities table are merged in
+# at runtime (dynamic, not listed here). This file is for static overrides.
+#
+# Reviewed annually — bump `last_reviewed` if you add or remove entries.
+
+last_reviewed = "2026-07-21"
+version = "subject-allowlist-v1"
+
+# User-curated overrides (add specific entities you want to always accept).
+[user_overrides]
+# (empty by default — SemanticStore canonical subjects cover common cases)
+
+# Ticker allowlist — manual curation from NYSE/NASDAQ/SET (Wikidata P414).
+# Sync annually or when adding new markets.
+[tickers.NYSE]
+symbols = ["BRK", "JPM", "BAC", "WFC", "V", "MA"]
+
+[tickers.NASDAQ]
+symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "META", "AMZN"]
+
+[tickers.SET]
+symbols = ["PTT", "SCB", "AOT", "CPALL", "ADVANC", "TRUE"]

@@ -1,0 +1,53 @@
+# Subject Validator Layer 4 — denylist overrides (DATA, not code).
+#
+# Subjects matching any entry here are ALWAYS rejected, even if shape would
+# accept (e.g. "DCF Assumptions" is TitleCase but is a section heading, not
+# an entity).
+#
+# Reviewed annually — bump `last_reviewed`. RE-VIEW [llm_bleed] ON EVERY
+# LLM MODEL UPGRADE (placeholder patterns are model-specific).
+
+last_reviewed = "2026-07-21"
+version = "subject-denylist-v1"
+
+# Section headings (Family B1) — even TitleCase shape, these are NOT entities
+[headings]
+"DCF Assumptions" = "auto"
+"Risk Factors" = "auto"
+"Executive Summary" = "auto"
+"Financial Highlights" = "auto"
+"Sensitivity Analysis" = "auto"
+"Disclaimer" = "auto"
+
+# Stopwords (Family A9) — never valid as subject
+[stopwords]
+"the" = "auto"
+"a" = "auto"
+"an" = "auto"
+"and" = "auto"
+"or" = "auto"
+"of" = "auto"
+"it" = "auto"
+"this" = "auto"
+"that" = "auto"
+
+# LLM-bleed placeholders (Family G3-G5). Model-specific — re-view on upgrade.
+[llm_bleed]
+"N/A" = "glm-4.6-v3-prompt"
+"TBD" = "glm-4.6-v3-prompt"
+"unknown" = "glm-4.6-v3-prompt"
+"none" = "glm-4.6-v3-prompt"
+"null" = "glm-4.6-v3-prompt"
+"[SUBJECT]" = "glm-4.6-v3-prompt"
+"<entity>" = "glm-4.6-v3-prompt"
+"___" = "glm-4.6-v3-prompt"
+"unspecified" = "glm-4.6-v3-prompt"
+"not specified" = "glm-4.6-v3-prompt"
+"unknown entity" = "glm-4.6-v3-prompt"
+
+# Ambiguous acronyms (Family E3) — flag with info, NOT auto-accept
+[ambiguous_acronyms]
+"BAT" = "auto"
+"CAT" = "auto"
+"SAP" = "auto"
+"API" = "auto"

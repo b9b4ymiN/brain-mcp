@@ -67,7 +67,7 @@ impl SubjectShape {
 // ── Layer 5: SubjectVerdict ──────────────────────────────────────────────
 
 /// Final verdict produced by Layer 5 after combining all signals.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubjectVerdict {
     Accept,
     AcceptWithInfo,
@@ -579,5 +579,416 @@ mod tests_layer2_grammatical {
     fn plain_fallback() {
         // Mixed-case non-title string falls through to Plain
         assert_eq!(classify_shape("iPhone 15"), SubjectShape::Plain);
+    }
+}
+
+// ── Layer 3: Rules (TOML) ────────────────────────────────────────────────
+
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct SubjectRulesFile {
+    pub last_reviewed: String,
+    pub version: String,
+    pub verdicts: std::collections::HashMap<String, String>,
+}
+
+/// Parsed Layer 3 rules — shape name → verdict.
+#[derive(Clone, Debug)]
+pub struct SubjectRules {
+    pub last_reviewed: String,
+    pub version: String,
+    pub verdicts: std::collections::HashMap<SubjectShape, SubjectVerdict>,
+}
+
+impl SubjectRules {
+    /// Load from a TOML string. Validates every shape has a verdict and
+    /// every verdict is one of the 5 known values.
+    pub fn parse(toml_str: &str) -> Result<Self, RulesError> {
+        let file: SubjectRulesFile = toml::from_str(toml_str)
+            .map_err(RulesError::TomlSyntax)?;
+        let mut verdicts = std::collections::HashMap::new();
+        for (shape_name, verdict_str) in &file.verdicts {
+            let shape = parse_shape(shape_name)
+                .ok_or_else(|| RulesError::UnknownShape(shape_name.clone()))?;
+            let verdict = parse_verdict(verdict_str)
+                .ok_or_else(|| RulesError::UnknownVerdict(verdict_str.clone()))?;
+            verdicts.insert(shape, verdict);
+        }
+        // Validate completeness: every shape variant must have a verdict
+        for s in ALL_SHAPES.iter() {
+            if !verdicts.contains_key(s) {
+                return Err(RulesError::MissingShape(s.as_str().to_string()));
+            }
+        }
+        Ok(Self {
+            last_reviewed: file.last_reviewed,
+            version: file.version,
+            verdicts,
+        })
+    }
+
+    pub fn verdict_for(&self, shape: SubjectShape) -> SubjectVerdict {
+        self.verdicts.get(&shape).copied().unwrap_or(SubjectVerdict::DeferToLLM)
+    }
+}
+
+pub(crate) const ALL_SHAPES: &[SubjectShape] = &[
+    SubjectShape::Empty, SubjectShape::Slug, SubjectShape::Filename,
+    SubjectShape::Url, SubjectShape::Date, SubjectShape::TimeExpr,
+    SubjectShape::NumberLed, SubjectShape::CurrencyLed,
+    SubjectShape::Sentence, SubjectShape::Question,
+    SubjectShape::ThaiPure, SubjectShape::ThaiLatinMixed,
+    SubjectShape::Ticker, SubjectShape::Acronym,
+    SubjectShape::TitleCase, SubjectShape::LowercaseNoun,
+    SubjectShape::VerbLed, SubjectShape::Demonstrative,
+    SubjectShape::MultiEntity, SubjectShape::Possessive,
+    SubjectShape::WikiMarkup, SubjectShape::Placeholder,
+    SubjectShape::Plain, SubjectShape::Unknown,
+];
+
+fn parse_shape(name: &str) -> Option<SubjectShape> {
+    // DEV NOTE: accepts BOTH snake_case (from `SubjectShape::as_str()`) AND
+    // PascalCase (the canonical form used in `rules/subject_rules.toml`).
+    // The original spec provided a snake_case-only matcher that did not agree
+    // with the PascalCase keys in the TOML file. Broadening the matcher keeps
+    // the TOML (DATA layer) authoritative and the test fixtures unchanged.
+    Some(match name {
+        "empty" | "Empty" => SubjectShape::Empty,
+        "slug" | "Slug" => SubjectShape::Slug,
+        "filename" | "Filename" => SubjectShape::Filename,
+        "url" | "Url" => SubjectShape::Url,
+        "date" | "Date" => SubjectShape::Date,
+        "time_expr" | "TimeExpr" => SubjectShape::TimeExpr,
+        "number_led" | "NumberLed" => SubjectShape::NumberLed,
+        "currency_led" | "CurrencyLed" => SubjectShape::CurrencyLed,
+        "sentence" | "Sentence" => SubjectShape::Sentence,
+        "question" | "Question" => SubjectShape::Question,
+        "thai_pure" | "ThaiPure" => SubjectShape::ThaiPure,
+        "thai_latin_mixed" | "ThaiLatinMixed" => SubjectShape::ThaiLatinMixed,
+        "ticker" | "Ticker" => SubjectShape::Ticker,
+        "acronym" | "Acronym" => SubjectShape::Acronym,
+        "title_case" | "TitleCase" => SubjectShape::TitleCase,
+        "lowercase_noun" | "LowercaseNoun" => SubjectShape::LowercaseNoun,
+        "verb_led" | "VerbLed" => SubjectShape::VerbLed,
+        "demonstrative" | "Demonstrative" => SubjectShape::Demonstrative,
+        "multi_entity" | "MultiEntity" => SubjectShape::MultiEntity,
+        "possessive" | "Possessive" => SubjectShape::Possessive,
+        "wiki_markup" | "WikiMarkup" => SubjectShape::WikiMarkup,
+        "placeholder" | "Placeholder" => SubjectShape::Placeholder,
+        "plain" | "Plain" => SubjectShape::Plain,
+        "unknown" | "Unknown" => SubjectShape::Unknown,
+        _ => return None,
+    })
+}
+
+fn parse_verdict(s: &str) -> Option<SubjectVerdict> {
+    Some(match s {
+        "accept" => SubjectVerdict::Accept,
+        "accept_info" => SubjectVerdict::AcceptWithInfo,
+        "soft_flag" => SubjectVerdict::SoftFlag,
+        "defer_to_llm" => SubjectVerdict::DeferToLLM,
+        "reject_critical" => SubjectVerdict::Reject,
+        _ => return None,
+    })
+}
+
+#[derive(Debug)]
+pub enum RulesError {
+    TomlSyntax(toml::de::Error),
+    UnknownShape(String),
+    UnknownVerdict(String),
+    MissingShape(String),
+}
+
+impl std::fmt::Display for RulesError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TomlSyntax(e) => write!(f, "TOML syntax error: {e}"),
+            Self::UnknownShape(s) => write!(f, "unknown shape in rules TOML: {s}"),
+            Self::UnknownVerdict(s) => write!(f, "unknown verdict in rules TOML: {s}"),
+            Self::MissingShape(s) => write!(f, "rules TOML is missing verdict for shape: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for RulesError {}
+
+// ── Layer 4: Allowlist / Denylist (TOML) ─────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct AllowlistFile {
+    last_reviewed: String,
+    version: String,
+    #[serde(default)]
+    user_overrides: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    tickers: std::collections::HashMap<String, TickerGroup>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TickerGroup {
+    #[serde(default)]
+    symbols: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SubjectAllowlist {
+    pub last_reviewed: String,
+    pub version: String,
+    /// Subject strings that are always accepted (case-sensitive exact match).
+    pub user_overrides: std::collections::HashSet<String>,
+    /// Ticker symbols (uppercase) — always accepted as Ticker shape.
+    pub tickers: std::collections::HashSet<String>,
+    /// Canonical subjects from SemanticStore (inverted HashMap<Uuid,String>).
+    pub canonical: std::collections::HashSet<String>,
+}
+
+impl SubjectAllowlist {
+    pub fn parse(toml_str: &str, canonical: std::collections::HashSet<String>) -> Result<Self, RulesError> {
+        let file: AllowlistFile = toml::from_str(toml_str).map_err(RulesError::TomlSyntax)?;
+        let user_overrides = file.user_overrides.keys().cloned().collect();
+        let tickers = file.tickers.values()
+            .flat_map(|g| g.symbols.iter().cloned().map(|s| s.to_uppercase()))
+            .collect();
+        Ok(Self {
+            last_reviewed: file.last_reviewed,
+            version: file.version,
+            user_overrides,
+            tickers,
+            canonical,
+        })
+    }
+
+    pub fn contains(&self, subject: &str) -> bool {
+        self.user_overrides.contains(subject)
+            || self.tickers.contains(&subject.to_uppercase())
+            || self.canonical.contains(subject)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct DenylistFile {
+    last_reviewed: String,
+    version: String,
+    #[serde(default)]
+    headings: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    stopwords: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    llm_bleed: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    ambiguous_acronyms: std::collections::HashMap<String, String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SubjectDenylist {
+    pub last_reviewed: String,
+    pub version: String,
+    pub headings: std::collections::HashSet<String>,
+    pub stopwords: std::collections::HashSet<String>,
+    pub llm_bleed: std::collections::HashSet<String>,
+    pub ambiguous_acronyms: std::collections::HashSet<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DenylistCategory {
+    Heading,
+    Stopword,
+    LlmBleed,
+}
+
+impl SubjectDenylist {
+    pub fn parse(toml_str: &str) -> Result<Self, RulesError> {
+        let file: DenylistFile = toml::from_str(toml_str).map_err(RulesError::TomlSyntax)?;
+        Ok(Self {
+            last_reviewed: file.last_reviewed,
+            version: file.version,
+            headings: file.headings.keys().cloned().collect(),
+            stopwords: file.stopwords.keys().cloned().collect(),
+            llm_bleed: file.llm_bleed.keys().cloned().collect(),
+            ambiguous_acronyms: file.ambiguous_acronyms.keys().cloned().collect(),
+        })
+    }
+
+    /// Returns Some(category) if the subject (exact match, case-sensitive
+    /// for headings, case-insensitive for stopwords/llm_bleed) is denied.
+    pub fn matches(&self, subject: &str) -> Option<DenylistCategory> {
+        if self.headings.contains(subject) {
+            return Some(DenylistCategory::Heading);
+        }
+        let lower = subject.to_ascii_lowercase();
+        if self.stopwords.contains(&lower) {
+            return Some(DenylistCategory::Stopword);
+        }
+        if self.llm_bleed.contains(subject) || self.llm_bleed.contains(&lower) {
+            return Some(DenylistCategory::LlmBleed);
+        }
+        None
+    }
+
+    pub fn is_ambiguous_acronym(&self, subject: &str) -> bool {
+        self.ambiguous_acronyms.contains(subject)
+    }
+}
+
+#[cfg(test)]
+mod tests_layer3 {
+    use super::*;
+
+    const TEST_RULES: &str = r#"
+last_reviewed = "2026-07-21"
+version = "test-v1"
+
+[verdicts]
+Empty = "reject_critical"
+Slug = "reject_critical"
+Filename = "reject_critical"
+Url = "reject_critical"
+Date = "reject_critical"
+TimeExpr = "reject_critical"
+NumberLed = "reject_critical"
+CurrencyLed = "reject_critical"
+Question = "reject_critical"
+Sentence = "reject_critical"
+VerbLed = "reject_critical"
+Demonstrative = "reject_critical"
+LowercaseNoun = "reject_critical"
+WikiMarkup = "reject_critical"
+Placeholder = "reject_critical"
+Possessive = "soft_flag"
+MultiEntity = "soft_flag"
+ThaiPure = "accept_info"
+ThaiLatinMixed = "accept_info"
+Ticker = "accept"
+Acronym = "accept_info"
+TitleCase = "accept_info"
+Plain = "accept_info"
+Unknown = "accept_info"
+"#;
+
+    #[test]
+    fn parses_all_shapes() {
+        let rules = SubjectRules::parse(TEST_RULES).expect("parse");
+        assert_eq!(rules.verdict_for(SubjectShape::Slug), SubjectVerdict::Reject);
+        assert_eq!(rules.verdict_for(SubjectShape::Ticker), SubjectVerdict::Accept);
+        assert_eq!(rules.verdict_for(SubjectShape::ThaiPure), SubjectVerdict::AcceptWithInfo);
+    }
+
+    #[test]
+    fn missing_shape_fails() {
+        let bad = TEST_RULES.replace("Unknown = \"accept_info\"\n", "");
+        let err = SubjectRules::parse(&bad).unwrap_err();
+        assert!(matches!(err, RulesError::MissingShape(_)));
+    }
+
+    #[test]
+    fn unknown_verdict_fails() {
+        let bad = TEST_RULES.replace("Plain = \"accept_info\"", "Plain = \"maybe\"");
+        let err = SubjectRules::parse(&bad).unwrap_err();
+        assert!(matches!(err, RulesError::UnknownVerdict(_)));
+    }
+
+    #[test]
+    fn production_rules_toml_parses() {
+        let toml_str = include_str!("../rules/subject_rules.toml");
+        let rules = SubjectRules::parse(toml_str).expect("production rules must parse");
+        assert!(!rules.last_reviewed.is_empty());
+        assert!(!rules.version.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tests_layer4 {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn empty_canonical() -> HashSet<String> { HashSet::new() }
+
+    #[test]
+    fn allowlist_user_override_matches() {
+        let toml_str = r#"
+last_reviewed = "2026-07-21"
+version = "v1"
+[user_overrides]
+"CATL" = "auto"
+[tickers.NYSE]
+symbols = ["BRK"]
+"#;
+        let al = SubjectAllowlist::parse(toml_str, empty_canonical()).unwrap();
+        assert!(al.contains("CATL"));
+        assert!(al.contains("BRK"));
+        assert!(!al.contains("BYD"));
+    }
+
+    #[test]
+    fn allowlist_canonical_subjects_merged() {
+        let mut canon = HashSet::new();
+        canon.insert("BYD".to_string());
+        let toml_str = "last_reviewed=\"x\"\nversion=\"x\"\n";
+        let al = SubjectAllowlist::parse(toml_str, canon).unwrap();
+        assert!(al.contains("BYD"));
+    }
+
+    #[test]
+    fn denylist_heading_match() {
+        let toml_str = r#"
+last_reviewed = "2026-07-21"
+version = "v1"
+[headings]
+"DCF Assumptions" = "auto"
+"#;
+        let dl = SubjectDenylist::parse(toml_str).unwrap();
+        assert_eq!(dl.matches("DCF Assumptions"), Some(DenylistCategory::Heading));
+        assert_eq!(dl.matches("CATL"), None);
+    }
+
+    #[test]
+    fn denylist_stopword_case_insensitive() {
+        let toml_str = r#"
+last_reviewed = "x"
+version = "x"
+[stopwords]
+"the" = "auto"
+"#;
+        let dl = SubjectDenylist::parse(toml_str).unwrap();
+        assert_eq!(dl.matches("THE"), Some(DenylistCategory::Stopword));
+    }
+
+    #[test]
+    fn denylist_llm_bleed_placeholder() {
+        let toml_str = r#"
+last_reviewed = "x"
+version = "x"
+[llm_bleed]
+"<entity>" = "glm-4.6-v3"
+"#;
+        let dl = SubjectDenylist::parse(toml_str).unwrap();
+        assert_eq!(dl.matches("<entity>"), Some(DenylistCategory::LlmBleed));
+    }
+
+    #[test]
+    fn denylist_ambiguous_acronym() {
+        let toml_str = r#"
+last_reviewed = "x"
+version = "x"
+[ambiguous_acronyms]
+"BAT" = "auto"
+"#;
+        let dl = SubjectDenylist::parse(toml_str).unwrap();
+        assert!(dl.is_ambiguous_acronym("BAT"));
+        assert!(!dl.is_ambiguous_acronym("CATL"));
+    }
+
+    #[test]
+    fn production_allowlist_parses() {
+        let s = include_str!("../rules/subject_allowlist.toml");
+        SubjectAllowlist::parse(s, empty_canonical()).expect("prod allowlist");
+    }
+
+    #[test]
+    fn production_denylist_parses() {
+        let s = include_str!("../rules/subject_denylist.toml");
+        SubjectDenylist::parse(s).expect("prod denylist");
     }
 }

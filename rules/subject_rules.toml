@@ -1,0 +1,50 @@
+# Subject Validator Layer 3 — shape → verdict mapping (DATA, not code).
+#
+# Edit this file to change verdict logic WITHOUT recompiling. Reviewed
+# annually — see `last_reviewed` below.
+#
+# Rule review ritual (when to bump last_reviewed):
+#   - Whenever the extraction LLM model version changes (Family G may shift)
+#   - Whenever a new subject shape is added to SubjectShape enum
+#   - At minimum annually even if no changes (defense against drift)
+#
+# Verdict values (must be one of):
+#   accept          — strong positive shape, no defect
+#   accept_info     — accept but tag info (Thai structural, ambiguous acronym)
+#   soft_flag       — warning, suggest split (Possessive, MultiEntity)
+#   defer_to_llm    — Phase 3 only; in Phase 1.5 use accept_info
+#   reject_critical — hard reject
+
+last_reviewed = "2026-07-21"
+version = "subject-rules-v1"
+
+[verdicts]
+Empty          = "reject_critical"
+Slug           = "reject_critical"
+Filename       = "reject_critical"
+Url            = "reject_critical"
+Date           = "reject_critical"
+TimeExpr       = "reject_critical"
+NumberLed      = "reject_critical"
+CurrencyLed    = "reject_critical"
+Question       = "reject_critical"
+Sentence       = "reject_critical"
+VerbLed        = "reject_critical"
+Demonstrative  = "reject_critical"
+LowercaseNoun  = "reject_critical"
+WikiMarkup     = "reject_critical"
+Placeholder    = "reject_critical"
+
+Possessive     = "soft_flag"
+MultiEntity    = "soft_flag"
+
+ThaiPure       = "accept_info"
+ThaiLatinMixed = "accept_info"
+Ticker         = "accept"
+Acronym        = "accept_info"
+TitleCase      = "accept_info"
+
+# Phase 1.5 decision: Plain/Unknown → accept_info (no Phase 3 LLM yet).
+# Phase 3 will change to "defer_to_llm" when LLM-as-judge is wired.
+Plain          = "accept_info"
+Unknown        = "accept_info"
