@@ -1,0 +1,1812 @@
+[
+  {
+    "proposal_id": "019f7959-f3a1-76b0-80f8-01b1e2d397dc",
+    "subject": "CATL",
+    "predicate": "profit growth rate",
+    "value": "40%+",
+    "domain": "financial",
+    "submitted_at": "2026-07-19T07:49:26.063335131Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7959-f3ed-7f70-839d-0107102c14d3",
+    "subject": "CATL",
+    "predicate": "all-time high stock price",
+    "value": "CNY 469",
+    "domain": "financial",
+    "submitted_at": "2026-07-19T07:49:26.140074283Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7959-f435-79f3-b302-d606dcb40b19",
+    "subject": "CATL",
+    "predicate": "current price percentage below all-time high",
+    "value": "23%",
+    "domain": "financial",
+    "submitted_at": "2026-07-19T07:49:26.211556640Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7959-f56c-7cf3-bff7-5d20843c4fdd",
+    "subject": "CATL",
+    "predicate": "completed placement amount in April 2026",
+    "value": "$5B",
+    "domain": "financial",
+    "submitted_at": "2026-07-19T07:49:26.522595971Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7959-f5bb-7b00-bf82-7c26d31cff13",
+    "subject": "CATL EV battery business",
+    "predicate": "expected annual growth rate",
+    "value": "12-18%",
+    "domain": "business",
+    "submitted_at": "2026-07-19T07:49:26.619548439Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7959-f619-72f0-97e8-78ec557832ec",
+    "subject": "CATL ESS business",
+    "predicate": "expected annual growth rate",
+    "value": ">35%",
+    "domain": "business",
+    "submitted_at": "2026-07-19T07:49:26.696162797Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7959-f9f6-7622-83d5-ed5eea4a6720",
+    "subject": "CATL",
+    "predicate": "base case price target",
+    "value": "CNY 412",
+    "domain": "financial",
+    "submitted_at": "2026-07-19T07:49:27.684383269Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7959-fa45-7ca3-9f09-65d4fa6e8451",
+    "subject": "CATL",
+    "predicate": "bull case price target",
+    "value": "CNY 839",
+    "domain": "financial",
+    "submitted_at": "2026-07-19T07:49:27.765948256Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7959-fa98-7723-9c6f-5a08fb4d5dfb",
+    "subject": "CATL",
+    "predicate": "expected margin",
+    "value": "19-20%",
+    "domain": "financial",
+    "submitted_at": "2026-07-19T07:49:29.205202202Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795a-0036-7602-aa66-10ab9341c0a3",
+    "subject": "CATL",
+    "predicate": "implied battery business price per share",
+    "value": "CNY 287",
+    "domain": "financial",
+    "submitted_at": "2026-07-19T07:49:29.285205964Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795e-fe74-73b3-82c1-7f5ef47ab485",
+    "subject": "CATL",
+    "predicate": "products",
+    "value": "lithium-ion battery cells for EVs and ESS",
+    "domain": "business",
+    "submitted_at": "2026-07-19T07:54:56.516558828Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795e-fee7-79c2-861e-2bf79c14802f",
+    "subject": "CATL",
+    "predicate": "customers",
+    "value": "[\"Tesla\", \"BMW\", \"Mercedes\", \"VW\", \"Toyota\", \"power plants\", \"renewables developers\"]",
+    "domain": "business",
+    "submitted_at": "2026-07-19T07:54:56.629017992Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795e-ff35-7421-b22a-bafdb76e9e22",
+    "subject": "CATL",
+    "predicate": "business model",
+    "value": "mass volume at gigafactory scale",
+    "domain": "business",
+    "submitted_at": "2026-07-19T07:54:56.707235697Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795e-ff84-72c3-ba2b-487b784bd9b6",
+    "subject": "CATL",
+    "predicate": "cost position",
+    "value": "lowest cost per unit in the industry",
+    "domain": "business",
+    "submitted_at": "2026-07-19T07:54:56.786598530Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795f-0024-7a71-ba73-099a3c8e8482",
+    "subject": "CATL",
+    "predicate": "EV Battery gross margin",
+    "value": "~24%",
+    "domain": "business",
+    "submitted_at": "2026-07-19T07:54:56.946612168Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795f-0070-7110-a782-ea07fbc726bb",
+    "subject": "CATL",
+    "predicate": "EV Battery shipment 2025",
+    "value": "541 GWh",
+    "domain": "business",
+    "submitted_at": "2026-07-19T07:54:57.022379296Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795f-0111-7a83-9bd7-c63d971490a0",
+    "subject": "CATL",
+    "predicate": "ESS gross margin",
+    "value": "~30%",
+    "domain": "business",
+    "submitted_at": "2026-07-19T07:54:57.183527363Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795f-01b8-78d0-89ad-bf60b946202a",
+    "subject": "CATL",
+    "predicate": "Other gross margin",
+    "value": "~10%",
+    "domain": "business",
+    "submitted_at": "2026-07-19T07:54:57.350573137Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795f-034b-7e10-aa19-bfc19ec15726",
+    "subject": "CATL",
+    "predicate": "shipment scale",
+    "value": "661 GWh",
+    "domain": "business",
+    "submitted_at": "2026-07-19T07:54:57.769495700Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795f-03a4-7433-ba4d-e5cf1dd3e8b4",
+    "subject": "CATL",
+    "predicate": "shipment size vs competitors",
+    "value": "2-3x",
+    "domain": "business",
+    "submitted_at": "2026-07-19T07:54:57.853821714Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795f-03f9-7e71-900c-752c20c1d1a3",
+    "subject": "CATL",
+    "predicate": "produced chemistries",
+    "value": "[\"LFP\", \"ternary\", \"condensed\", \"sodium-ion\"]",
+    "domain": "technology",
+    "submitted_at": "2026-07-19T07:54:57.927671054Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795f-0448-7720-bbb1-4c0f00f4c8b1",
+    "subject": "CATL",
+    "predicate": "battery qualification period",
+    "value": "2-3 years",
+    "domain": "business",
+    "submitted_at": "2026-07-19T07:54:58.007750661Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795f-0499-7940-a497-1b203334ee41",
+    "subject": "CATL",
+    "predicate": "biggest threat",
+    "value": "Geopolitical fragmentation",
+    "domain": "business",
+    "submitted_at": "2026-07-19T07:54:58.088951833Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795f-04ec-7a92-b8d1-cd6353520d27",
+    "subject": "Global",
+    "predicate": "EV penetration rate",
+    "value": "~20%",
+    "domain": "industry",
+    "submitted_at": "2026-07-19T07:54:58.171010876Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f795f-053d-7fb3-a240-f618aea7b55a",
+    "subject": "Global",
+    "predicate": "EV penetration target 2030",
+    "value": "40-50%",
+    "domain": "industry",
+    "submitted_at": "2026-07-19T07:54:58.251674503Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f795f-058f-7981-a8fb-7504e4d164df",
+    "subject": "Chinese battery industry",
+    "predicate": "overcapacity",
+    "value": "~2x demand",
+    "domain": "industry",
+    "submitted_at": "2026-07-19T07:54:58.333436695Z",
+    "action": "APPROVE",
+    "rationale": "industry-level entity + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f795f-05e1-7e73-b892-8e83d469a9af",
+    "subject": "US",
+    "predicate": "tax on Chinese batteries",
+    "value": "100%+",
+    "domain": "economics",
+    "submitted_at": "2026-07-19T07:54:58.415336837Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f795f-0632-7c52-a5f3-de7fc1d7f378",
+    "subject": "EV Battery",
+    "predicate": "TAM 2030",
+    "value": "~3,000+ GWh",
+    "domain": "industry",
+    "submitted_at": "2026-07-19T07:54:58.496703016Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f795f-0681-78a1-bbb0-81297d8fffc3",
+    "subject": "ESS",
+    "predicate": "TAM 2030",
+    "value": "~1,000+ GWh",
+    "domain": "industry",
+    "submitted_at": "2026-07-19T07:54:58.575929687Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7963-f40c-7141-9f76-781357e2380b",
+    "subject": "ESS",
+    "predicate": "growth rate per year",
+    "value": ">50%",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:00:21.530139533Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7963-f455-7452-9928-1a9a1311b5dc",
+    "subject": "Sodium-ion (Naxtra)",
+    "predicate": "cost comparison to Li",
+    "value": "cost ครึ่ง Li",
+    "domain": "Technology",
+    "submitted_at": "2026-07-19T08:00:21.603729502Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f7963-f4a2-7552-9a65-43f0362c8b6a",
+    "subject": "Sodium-ion (Naxtra)",
+    "predicate": "full production start year",
+    "value": "2026",
+    "domain": "Production",
+    "submitted_at": "2026-07-19T08:00:21.680043197Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f7963-f4ed-7983-a52e-71f68e76437c",
+    "subject": "Hungary overseas plant",
+    "predicate": "investment cost",
+    "value": "€7.3B",
+    "domain": "Finance",
+    "submitted_at": "2026-07-19T08:00:21.755131469Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7963-f539-7071-9a86-5b541095a860",
+    "subject": "Hungary overseas plant",
+    "predicate": "capacity",
+    "value": "100 GWh",
+    "domain": "Production",
+    "submitted_at": "2026-07-19T08:00:21.831121637Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7963-f582-75c3-a4cf-ea52465da20c",
+    "subject": "Spain JV",
+    "predicate": "investment cost",
+    "value": "€4.1B",
+    "domain": "Finance",
+    "submitted_at": "2026-07-19T08:00:21.903839597Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7963-f5cf-79b3-a29a-71f83db4cc32",
+    "subject": "Spain JV",
+    "predicate": "partner company",
+    "value": "Stellantis",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:00:21.992326773Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7963-f763-7282-a68a-29d10d2d5d56",
+    "subject": "CATL",
+    "predicate": "WACC",
+    "value": "~7.2%",
+    "domain": "Finance",
+    "submitted_at": "2026-07-19T08:00:22.384910338Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7963-f7b1-7e31-9dfd-47520b4a619a",
+    "subject": "CATL",
+    "predicate": "ROIC-WACC spread",
+    "value": "+11pp",
+    "domain": "Finance",
+    "submitted_at": "2026-07-19T08:00:22.464151730Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7963-f800-7fc3-9ce2-fecb37852c9b",
+    "subject": "CATL CapEx (2026)",
+    "predicate": "projection",
+    "value": "¥50–65B",
+    "domain": "Finance",
+    "submitted_at": "2026-07-19T08:00:22.561485094Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f7963-f863-7562-9719-7dcb570e6a2b",
+    "subject": "CATL (2026 funding)",
+    "predicate": "HK placement amount",
+    "value": "$5B",
+    "domain": "Finance",
+    "submitted_at": "2026-07-19T08:00:22.640645855Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f7963-f8af-7981-aa3c-c23bebbcf426",
+    "subject": "CATL (Q1 2026)",
+    "predicate": "revenue growth",
+    "value": "50%+",
+    "domain": "Finance",
+    "submitted_at": "2026-07-19T08:00:22.716774275Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f7963-f8fb-7ba3-aaea-4a861ba75545",
+    "subject": "CATL cost",
+    "predicate": "reduction rate per year",
+    "value": "15%",
+    "domain": "Finance",
+    "submitted_at": "2026-07-19T08:00:22.792586706Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f7963-f948-75b0-be6b-52584efd0676",
+    "subject": "TAM EV battery (2025)",
+    "predicate": "volume",
+    "value": "~1,200 GWh",
+    "domain": "Market",
+    "submitted_at": "2026-07-19T08:00:22.871023716Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f7963-f995-7410-a224-193e4e8bdd2d",
+    "subject": "TAM EV battery (2030)",
+    "predicate": "volume",
+    "value": "~3,000 GWh",
+    "domain": "Market",
+    "submitted_at": "2026-07-19T08:00:22.947149567Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f7963-f9db-78c1-ac40-482789a4497f",
+    "subject": "TAM EV battery",
+    "predicate": "CAGR",
+    "value": "~20%",
+    "domain": "Market",
+    "submitted_at": "2026-07-19T08:00:23.016735732Z",
+    "action": "APPROVE",
+    "rationale": "industry-level entity + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7963-fa2a-71e3-9c95-8e753bbf4f2b",
+    "subject": "TAM ESS (2025)",
+    "predicate": "volume",
+    "value": "~550 GWh",
+    "domain": "Market",
+    "submitted_at": "2026-07-19T08:00:23.096505695Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f7963-fa74-7970-bf3d-321fda8cada6",
+    "subject": "TAM ESS (2030)",
+    "predicate": "volume",
+    "value": "~1,000–1,500 GWh",
+    "domain": "Market",
+    "submitted_at": "2026-07-19T08:00:23.169700287Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f7963-fac2-7873-bdd7-a7767924d84a",
+    "subject": "TAM ESS",
+    "predicate": "CAGR",
+    "value": "~25–30%",
+    "domain": "Market",
+    "submitted_at": "2026-07-19T08:00:23.247156423Z",
+    "action": "APPROVE",
+    "rationale": "industry-level entity + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7963-fb0f-7922-beb6-075346633689",
+    "subject": "TAM Datacenter ESS (2025)",
+    "predicate": "volume",
+    "value": "~10 GWh",
+    "domain": "Market",
+    "submitted_at": "2026-07-19T08:00:23.324736404Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f7963-fb57-7f01-822b-eb749a6b4163",
+    "subject": "TAM Datacenter ESS (2030)",
+    "predicate": "volume",
+    "value": "~300 GWh",
+    "domain": "Market",
+    "submitted_at": "2026-07-19T08:00:23.397498395Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f7963-fba0-7ee3-8bc5-83802c79ce9d",
+    "subject": "TAM Datacenter ESS",
+    "predicate": "CAGR",
+    "value": "~80%+",
+    "domain": "Market",
+    "submitted_at": "2026-07-19T08:00:23.469404126Z",
+    "action": "APPROVE",
+    "rationale": "industry-level entity + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7963-fbf1-7d20-bcbd-4a5b760fd816",
+    "subject": "Total TAM (2025)",
+    "predicate": "volume",
+    "value": "~1,750 GWh",
+    "domain": "Market",
+    "submitted_at": "2026-07-19T08:00:23.550148879Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f7963-fc38-7953-b14a-9053859df355",
+    "subject": "Total TAM (2030)",
+    "predicate": "volume",
+    "value": "~4,000–4,500 GWh",
+    "domain": "Market",
+    "submitted_at": "2026-07-19T08:00:23.621861209Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f7963-fc81-7593-bb30-15ca5e0e9634",
+    "subject": "Total TAM",
+    "predicate": "CAGR",
+    "value": "~22%",
+    "domain": "Market",
+    "submitted_at": "2026-07-19T08:00:23.695049492Z",
+    "action": "APPROVE",
+    "rationale": "industry-level entity + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7963-fcc9-7603-a85e-a10b34a6431a",
+    "subject": "CATL shipment (2025)",
+    "predicate": "volume",
+    "value": "661 GWh",
+    "domain": "Market",
+    "submitted_at": "2026-07-19T08:00:23.767267624Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f7963-fd14-7c81-8178-ce2580ea69ac",
+    "subject": "CATL shipment (2030)",
+    "predicate": "volume",
+    "value": "~1,400–1,600 GWh",
+    "domain": "Market",
+    "submitted_at": "2026-07-19T08:00:23.841733211Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f798d-524b-7333-8aae-674758ce9aa0",
+    "subject": "Growth source 2026-2028",
+    "predicate": "is",
+    "value": "EU ramp",
+    "domain": "business",
+    "submitted_at": "2026-07-19T08:45:32.633215771Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f798d-5299-7312-962c-2a7348ef4cd2",
+    "subject": "Growth source 2028+",
+    "predicate": "is",
+    "value": "emerging markets",
+    "domain": "business",
+    "submitted_at": "2026-07-19T08:45:32.713477847Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f798d-52e6-7173-8cc9-b294bf8d3aea",
+    "subject": "China revenue share",
+    "predicate": "is approximately",
+    "value": "~50%",
+    "domain": "business",
+    "submitted_at": "2026-07-19T08:45:32.788161404Z",
+    "action": "REJECT",
+    "rationale": "entity+metric fused subject"
+  },
+  {
+    "proposal_id": "019f798d-5333-7033-bb96-692b6965a765",
+    "subject": "China CAGR",
+    "predicate": "is approximately",
+    "value": "~10%",
+    "domain": "business",
+    "submitted_at": "2026-07-19T08:45:32.865719805Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f798d-5386-7130-97a0-8a5ae518d05b",
+    "subject": "EU revenue share projection",
+    "predicate": "is",
+    "value": "~20% → 30%",
+    "domain": "business",
+    "submitted_at": "2026-07-19T08:45:32.948357205Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f798d-53d1-7893-b114-0653142fc735",
+    "subject": "EU CAGR",
+    "predicate": "is",
+    "value": "~30%+",
+    "domain": "business",
+    "submitted_at": "2026-07-19T08:45:33.024138009Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f798d-541b-7563-a0d4-3bfd16f1a900",
+    "subject": "Debrecen factory investment",
+    "predicate": "is",
+    "value": "€7.3B",
+    "domain": "business",
+    "submitted_at": "2026-07-19T08:45:33.097620866Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f798d-5467-7a01-bd30-c81ab0a993e6",
+    "subject": "Debrecen factory capacity",
+    "predicate": "is",
+    "value": "100 GWh",
+    "domain": "manufacturing",
+    "submitted_at": "2026-07-19T08:45:33.173999222Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f798d-54be-7372-a7c3-2575640087e0",
+    "subject": "Debrecen production start",
+    "predicate": "is scheduled for",
+    "value": "Q1 2026",
+    "domain": "manufacturing",
+    "submitted_at": "2026-07-19T08:45:33.261502722Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f798d-5512-7cf3-a2ea-69354b3a7946",
+    "subject": "Spain JV investment",
+    "predicate": "is",
+    "value": "€4.1B",
+    "domain": "business",
+    "submitted_at": "2026-07-19T08:45:33.344633472Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f798d-5567-7c52-9b85-f18d1a5989fa",
+    "subject": "Spain JV partner",
+    "predicate": "is",
+    "value": "Stellantis",
+    "domain": "business",
+    "submitted_at": "2026-07-19T08:45:33.429724917Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f798d-55c1-7a33-9eb0-65fb3103e72f",
+    "subject": "US revenue share projection",
+    "predicate": "is",
+    "value": "~5% → low negative/closed",
+    "domain": "business",
+    "submitted_at": "2026-07-19T08:45:33.521367170Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f798d-561b-70b2-9f1a-d0608aac2b44",
+    "subject": "US tariff rate",
+    "predicate": "is",
+    "value": "100%+",
+    "domain": "business",
+    "submitted_at": "2026-07-19T08:45:33.611221565Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f798d-566a-7852-9b11-3a422cbf6194",
+    "subject": "US eligibility for EV credit",
+    "predicate": "is",
+    "value": "not eligible for $7,500 credit",
+    "domain": "business",
+    "submitted_at": "2026-07-19T08:45:33.689210932Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f798d-56b7-71d2-b1ff-d21f22e27670",
+    "subject": "ASEAN/Latin/MEA revenue share projection",
+    "predicate": "is",
+    "value": "~10% → 20%",
+    "domain": "business",
+    "submitted_at": "2026-07-19T08:45:33.765318346Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f7990-b80b-7ee1-b941-88f78ffcbf4f",
+    "subject": "CATL",
+    "predicate": "strategy",
+    "value": "cost leader + multi-chemistry",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:15.288068393Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7990-b857-78e0-9577-a3fa9413a8c1",
+    "subject": "CATL",
+    "predicate": "direction 2026–28",
+    "value": "dominating multiple chemistries → expanding ESS + sodium-ion",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:15.365519358Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7990-b8a1-7dc1-93d6-0fbc48a6940a",
+    "subject": "CATL",
+    "predicate": "trajectory",
+    "value": "39→45%",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:15.438313137Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7990-b8ed-7f53-8203-cf7d80f9e89a",
+    "subject": "CATL",
+    "predicate": "main bet",
+    "value": "ESS + sodium-ion = new market",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:15.514568243Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7990-b93d-7303-b804-74291b13e9b3",
+    "subject": "CATL",
+    "predicate": "customers",
+    "value": "multiple OEMs (Tesla, BMW, MB...)",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:15.595211519Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7990-b98d-7351-baa6-c53d75566512",
+    "subject": "CATL",
+    "predicate": "revenue source",
+    "value": "battery 100%",
+    "domain": "Finance",
+    "submitted_at": "2026-07-19T08:49:15.675810017Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7990-ba20-7351-87cc-8e002acde0eb",
+    "subject": "CATL",
+    "predicate": "net cash",
+    "value": "¥332B",
+    "domain": "Finance",
+    "submitted_at": "2026-07-19T08:49:15.823193591Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7990-ba74-76e2-acd7-54d996cb910d",
+    "subject": "BYD",
+    "predicate": "strategy",
+    "value": "closed ecosystem",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:15.906582638Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7990-bacb-7ca3-bf9f-af7d5c56619b",
+    "subject": "BYD",
+    "predicate": "business model",
+    "value": "vertically integrated (car+batt+charge)",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:15.994903127Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7990-bb2a-7580-b725-efbaccc97e5f",
+    "subject": "BYD",
+    "predicate": "direction 2026–28",
+    "value": "exporting ecosystem to Europe/Turkey",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:16.091520876Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7990-bb80-7fe3-9fb6-0658a064437b",
+    "subject": "BYD",
+    "predicate": "trajectory",
+    "value": "shrinking battery share, but growing car share",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:16.176985895Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7990-bbd3-7010-adaf-b1d91444ca97",
+    "subject": "BYD",
+    "predicate": "main bet",
+    "value": "EV using existing battery = main revenue",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:16.259182307Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7990-bc2d-7471-be0e-a0b7d95c8140",
+    "subject": "BYD",
+    "predicate": "revenue split",
+    "value": "cars ~75% + battery/parts ~25%",
+    "domain": "Finance",
+    "submitted_at": "2026-07-19T08:49:16.349707916Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f7990-bc8a-7cb1-9811-f113a25fe218",
+    "subject": "LG Energy",
+    "predicate": "strategy",
+    "value": "long-term technology bet",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:16.459569639Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7990-bcef-7221-8a31-69e841fa79e0",
+    "subject": "LG Energy",
+    "predicate": "direction 2026–28",
+    "value": "NCM legacy → turning to LFP",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:16.561268402Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7990-bd53-74e1-8424-7b11b4159802",
+    "subject": "LG Energy",
+    "predicate": "capex cut",
+    "value": "20–30%",
+    "domain": "Finance",
+    "submitted_at": "2026-07-19T08:49:16.641832658Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7990-bda3-7383-8cce-b65d6e6d4f76",
+    "subject": "LG Energy",
+    "predicate": "trajectory Q1'26",
+    "value": "−15%",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:16.722328301Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7990-bdf7-7681-923e-11770416b538",
+    "subject": "Samsung SDI",
+    "predicate": "strategy",
+    "value": "long-term technology bet",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:16.819777794Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7990-be5f-72d1-a1eb-6c9d8e143c17",
+    "subject": "Samsung SDI",
+    "predicate": "business model",
+    "value": "Prismatic + tech differentiated",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:16.911083685Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7990-beba-7a70-8802-99d8577d0107",
+    "subject": "Samsung SDI",
+    "predicate": "direction 2026–28",
+    "value": "betting all-solid-state 2027",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:17.000097131Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7990-bf0f-73f2-8b5f-ec93db54b72f",
+    "subject": "Samsung SDI",
+    "predicate": "trajectory",
+    "value": "heavily receding (loss, ranking drop)",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:17.085847470Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7990-bf67-7f73-a45b-a3e1859c0767",
+    "subject": "China (CATL+BYD)",
+    "predicate": "strategic timeframe",
+    "value": "today",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:17.174963820Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f7990-bfc9-70f1-a12e-52d927a2e37f",
+    "subject": "Korea (LG+Samsung)",
+    "predicate": "strategic timeframe",
+    "value": "future",
+    "domain": "Business",
+    "submitted_at": "2026-07-19T08:49:17.273665068Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f7996-9366-7c63-bafb-4ff9e7890fc9",
+    "subject": "Analyst recommendations",
+    "predicate": "distribution",
+    "value": "27 buy/strong-buy, 0 hold, 1 strong-sell",
+    "domain": "financial_analysis",
+    "submitted_at": "2026-07-19T08:55:39.124826284Z",
+    "action": "REJECT",
+    "rationale": "metadata subject (not entity claim)"
+  },
+  {
+    "proposal_id": "019f7996-93ba-7113-b264-b83bc41d8cd8",
+    "subject": "Median target price",
+    "predicate": "is approximately",
+    "value": "¥560",
+    "domain": "financial_analysis",
+    "submitted_at": "2026-07-19T08:55:39.208275667Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f7996-9403-7820-b911-5a9216108754",
+    "subject": "HK target price",
+    "predicate": "is approximately",
+    "value": "HK$664",
+    "domain": "financial_analysis",
+    "submitted_at": "2026-07-19T08:55:39.281379619Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f7996-944e-7c30-a898-afc68395d90f",
+    "subject": "Price",
+    "predicate": "decrease from ATH",
+    "value": "23%",
+    "domain": "market_data",
+    "submitted_at": "2026-07-19T08:55:39.355333929Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f7996-94a0-79a2-bfcb-9aab0cc90d32",
+    "subject": "Q1 2026 performance",
+    "predicate": "beat estimate by",
+    "value": "33%",
+    "domain": "corporate_performance",
+    "submitted_at": "2026-07-19T08:55:39.437600849Z",
+    "action": "REJECT",
+    "rationale": "metadata subject (not entity claim)"
+  },
+  {
+    "proposal_id": "019f7996-94f0-7b32-be8e-93ea72da47d8",
+    "subject": "Profit",
+    "predicate": "growth rate",
+    "value": "45%",
+    "domain": "corporate_performance",
+    "submitted_at": "2026-07-19T08:55:39.518375177Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7996-9540-7721-919a-32b498da939c",
+    "subject": "Q2 2026 earnings report",
+    "predicate": "scheduled date",
+    "value": "25 Jul 2026",
+    "domain": "corporate_events",
+    "submitted_at": "2026-07-19T08:55:39.598517083Z",
+    "action": "REJECT",
+    "rationale": "metadata subject (not entity claim)"
+  },
+  {
+    "proposal_id": "019f7996-958b-7801-9c6a-a4ad0bb909e1",
+    "subject": "Stock ticker",
+    "predicate": "is",
+    "value": "300750",
+    "domain": "market_data",
+    "submitted_at": "2026-07-19T08:55:39.674446588Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f7996-95fc-7df0-948a-32171b9a5291",
+    "subject": "Exchange",
+    "predicate": "is",
+    "value": "SZSE",
+    "domain": "market_data",
+    "submitted_at": "2026-07-19T08:55:39.786803129Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f7996-9646-78a0-aeef-39e4f3776ab9",
+    "subject": "Chart capture date",
+    "predicate": "is",
+    "value": "8 Jul 2026",
+    "domain": "metadata",
+    "submitted_at": "2026-07-19T08:55:39.860184991Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f7996-968f-77e3-a058-3a5fe58fc0bf",
+    "subject": "Weekly SMA100",
+    "predicate": "is",
+    "value": "¥304",
+    "domain": "technical_analysis",
+    "submitted_at": "2026-07-19T08:55:39.933453331Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f7996-96da-7482-8e7e-ac1fdf69b8c7",
+    "subject": "50% Fib yearly level",
+    "predicate": "is",
+    "value": "¥351.5",
+    "domain": "technical_analysis",
+    "submitted_at": "2026-07-19T08:55:40.008409137Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (shape=NumberLed)"
+  },
+  {
+    "proposal_id": "019f7996-9727-78f2-83a7-eaab27e334cc",
+    "subject": "Recent low",
+    "predicate": "is",
+    "value": "¥361",
+    "domain": "market_data",
+    "submitted_at": "2026-07-19T08:55:40.086265717Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f7996-9774-7cf3-b4e5-57b1ad57ad7b",
+    "subject": "RSI",
+    "predicate": "is",
+    "value": "33.6",
+    "domain": "technical_analysis",
+    "submitted_at": "2026-07-19T08:55:40.162468162Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f7996-97be-7832-95b9-b83eb2bac46d",
+    "subject": "Volume",
+    "predicate": "relative to average",
+    "value": "0.8x",
+    "domain": "market_data",
+    "submitted_at": "2026-07-19T08:55:40.236537164Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f7996-980a-7cd3-9817-2b9096bde2b9",
+    "subject": "Entry zone",
+    "predicate": "is",
+    "value": "¥340–360",
+    "domain": "trading_strategy",
+    "submitted_at": "2026-07-19T08:55:40.311469508Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f7996-9858-7bf2-875e-6cda6a2881eb",
+    "subject": "Stop loss",
+    "predicate": "is",
+    "value": "¥325",
+    "domain": "trading_strategy",
+    "submitted_at": "2026-07-19T08:55:40.391282094Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f7996-98ac-7631-9efb-0b95c6b2768f",
+    "subject": "Target 1",
+    "predicate": "is",
+    "value": "¥400",
+    "domain": "trading_strategy",
+    "submitted_at": "2026-07-19T08:55:40.474025142Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f7998-59ba-7860-9a76-63d408cfa391",
+    "subject": "Research report",
+    "predicate": "creation date",
+    "value": "9 Jul 2026",
+    "domain": "financial_research",
+    "submitted_at": "2026-07-19T08:57:35.432882814Z",
+    "action": "REJECT",
+    "rationale": "metadata subject (not entity claim)"
+  },
+  {
+    "proposal_id": "019f7998-5a14-76a0-997b-d1f9b336b144",
+    "subject": "Risk-free rate",
+    "predicate": "assumed value",
+    "value": "1.75%",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:35.522695139Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f7998-5a68-73d2-acad-d9c142dd9ce1",
+    "subject": "Country risk premium",
+    "predicate": "assumed value",
+    "value": "0.6%",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:35.605137880Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f7998-5abb-7fe2-b315-ed3ec7ea809a",
+    "subject": "Equity risk premium",
+    "predicate": "assumed value",
+    "value": "6.10%",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:35.688678908Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f7998-5b15-77d0-b7e2-27e49670b262",
+    "subject": "Beta",
+    "predicate": "assumed value",
+    "value": "0.95",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:35.779892570Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_single)"
+  },
+  {
+    "proposal_id": "019f7998-5b6e-7fb1-bd5e-9cbd9b913779",
+    "subject": "Tax rate",
+    "predicate": "assumed value",
+    "value": "14.2%",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:35.869241291Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f7998-5bc1-7291-b5c2-88c8bb2554e3",
+    "subject": "Terminal growth",
+    "predicate": "assumed value",
+    "value": "3.0%",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:35.951302622Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f7998-5c11-7b11-8d93-979bb8a9044f",
+    "subject": "Peer set",
+    "predicate": "size",
+    "value": "5",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:36.031210270Z",
+    "action": "REJECT",
+    "rationale": "metadata subject (not entity claim)"
+  },
+  {
+    "proposal_id": "019f7998-5c5f-70f3-a715-b45e1eb43a97",
+    "subject": "Cash (post-placement)",
+    "predicate": "value",
+    "value": "¥451.5B",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:36.109909148Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f7998-5cb3-7aa3-86e2-acb94405deff",
+    "subject": "Shares (post-placement)",
+    "predicate": "value",
+    "value": "4.470B",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:36.192906514Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f7998-5d07-7502-839f-7fbeef7a5878",
+    "subject": "Net cash/share",
+    "predicate": "value",
+    "value": "¥74.2",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:36.277588326Z",
+    "action": "REJECT",
+    "rationale": "entity+metric fused subject"
+  },
+  {
+    "proposal_id": "019f7998-5d56-7631-8f10-7b8fa459378f",
+    "subject": "Technical invalidation level",
+    "predicate": "value",
+    "value": "¥325",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:36.355660290Z",
+    "action": "REJECT",
+    "rationale": "entity+metric fused subject"
+  },
+  {
+    "proposal_id": "019f7998-5dae-75d3-abc9-63b70d488389",
+    "subject": "HK listing premium",
+    "predicate": "value",
+    "value": "~85%",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:36.445346535Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f7998-5e03-7f93-b4ea-cef28101fce5",
+    "subject": "Overseas Capex",
+    "predicate": "annual projection",
+    "value": "¥50–65B",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:36.530683933Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f7998-5e58-7101-a998-11e65cb26bba",
+    "subject": "New H-shares",
+    "predicate": "count",
+    "value": "62.385M",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:36.615653123Z",
+    "action": "REJECT",
+    "rationale": "metadata subject (not entity claim)"
+  },
+  {
+    "proposal_id": "019f7998-5ea9-7710-b562-1ba4e4cdbce0",
+    "subject": "New H-shares",
+    "predicate": "date",
+    "value": "28 Apr 2026",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:36.696105972Z",
+    "action": "REJECT",
+    "rationale": "metadata subject (not entity claim)"
+  },
+  {
+    "proposal_id": "019f7998-5efa-71e3-8b91-fe341ec0eff4",
+    "subject": "CATL 2025 Annual Report",
+    "predicate": "date",
+    "value": "10 Mar 2026",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:36.776649173Z",
+    "action": "REJECT",
+    "rationale": "metadata subject (not entity claim)"
+  },
+  {
+    "proposal_id": "019f7998-5f51-7ef1-89f3-15cec360f826",
+    "subject": "CATL Q1 2026 results",
+    "predicate": "date",
+    "value": "15 Apr 2026",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T08:57:36.863728858Z",
+    "action": "REJECT",
+    "rationale": "metadata subject (not entity claim)"
+  },
+  {
+    "proposal_id": "019f799b-0753-74a2-9ec2-eb660edd9ac9",
+    "subject": "ESS growth contribution",
+    "predicate": "volume is",
+    "value": "300–400 GWh",
+    "domain": "energy_storage",
+    "submitted_at": "2026-07-19T09:00:30.946586955Z",
+    "action": "REJECT",
+    "rationale": "entity+metric fused subject"
+  },
+  {
+    "proposal_id": "019f799b-07a9-7641-8a42-ffb5ae98eb70",
+    "subject": "ESS growth contribution",
+    "predicate": "percentage share is",
+    "value": "35–40%",
+    "domain": "energy_storage",
+    "submitted_at": "2026-07-19T09:00:31.031964323Z",
+    "action": "REJECT",
+    "rationale": "entity+metric fused subject"
+  },
+  {
+    "proposal_id": "019f799b-080c-7641-968e-5fe81f7c4192",
+    "subject": "EV battery growth contribution",
+    "predicate": "volume is",
+    "value": "300–400 GWh",
+    "domain": "ev_battery",
+    "submitted_at": "2026-07-19T09:00:31.132570250Z",
+    "action": "REJECT",
+    "rationale": "entity+metric fused subject"
+  },
+  {
+    "proposal_id": "019f799b-086b-7dd0-93d0-83aa8d8f2783",
+    "subject": "EV battery growth contribution",
+    "predicate": "percentage share is",
+    "value": "35–40%",
+    "domain": "ev_battery",
+    "submitted_at": "2026-07-19T09:00:31.227451593Z",
+    "action": "REJECT",
+    "rationale": "entity+metric fused subject"
+  },
+  {
+    "proposal_id": "019f799b-08c9-7f53-b2e8-a3b4eee88487",
+    "subject": "Sodium-ion growth contribution",
+    "predicate": "volume is",
+    "value": "100–150 GWh",
+    "domain": "battery_tech",
+    "submitted_at": "2026-07-19T09:00:31.321803148Z",
+    "action": "REJECT",
+    "rationale": "entity+metric fused subject"
+  },
+  {
+    "proposal_id": "019f799b-092e-7242-8263-b958e6518c2b",
+    "subject": "Sodium-ion growth contribution",
+    "predicate": "percentage share is",
+    "value": "12–15%",
+    "domain": "battery_tech",
+    "submitted_at": "2026-07-19T09:00:31.434020298Z",
+    "action": "REJECT",
+    "rationale": "entity+metric fused subject"
+  },
+  {
+    "proposal_id": "019f799b-0994-7002-8be8-8b536e8982df",
+    "subject": "Emerging markets growth contribution",
+    "predicate": "volume is",
+    "value": "50–100 GWh",
+    "domain": "market_analysis",
+    "submitted_at": "2026-07-19T09:00:31.523943540Z",
+    "action": "REJECT",
+    "rationale": "entity+metric fused subject"
+  },
+  {
+    "proposal_id": "019f799b-09f4-7d23-8fe4-ad353840c71a",
+    "subject": "Emerging markets growth contribution",
+    "predicate": "percentage share is",
+    "value": "6–10%",
+    "domain": "market_analysis",
+    "submitted_at": "2026-07-19T09:00:31.619408863Z",
+    "action": "REJECT",
+    "rationale": "entity+metric fused subject"
+  },
+  {
+    "proposal_id": "019f799b-0a55-7382-a952-2b9cda5879f7",
+    "subject": "Total growth",
+    "predicate": "volume is",
+    "value": "~750–1,000 GWh",
+    "domain": "market_analysis",
+    "submitted_at": "2026-07-19T09:00:31.716588032Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f799b-0aab-70f1-8e17-1da2d36cae9a",
+    "subject": "CATL shipment 2025",
+    "predicate": "actual volume is",
+    "value": "661 GWh",
+    "domain": "corporate_performance",
+    "submitted_at": "2026-07-19T09:00:31.803152059Z",
+    "action": "APPROVE",
+    "rationale": "entity+qualifier + good predicate"
+  },
+  {
+    "proposal_id": "019f799b-0b04-7ad2-b10e-688f349e2b00",
+    "subject": "CATL shipment 2030E",
+    "predicate": "estimated volume is",
+    "value": "≈1,561 GWh",
+    "domain": "corporate_performance",
+    "submitted_at": "2026-07-19T09:00:31.892178688Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f799b-0b5d-75a2-9c0d-09a6fbc98a94",
+    "subject": "Sodium-ion full success",
+    "predicate": "new revenue is",
+    "value": "¥150B",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:00:31.980653155Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f799b-0bb8-7ca1-9d72-aaf34bae2769",
+    "subject": "Sodium-ion failure",
+    "predicate": "growth reduction is",
+    "value": "~15%",
+    "domain": "risk",
+    "submitted_at": "2026-07-19T09:00:32.071746463Z",
+    "action": "APPROVE",
+    "rationale": "capitalized subject + meaningful predicate"
+  },
+  {
+    "proposal_id": "019f799b-0c1f-7fb2-b0af-61dad4ce49f6",
+    "subject": "CATL market share",
+    "predicate": "rank is",
+    "value": "#1",
+    "domain": "competition",
+    "submitted_at": "2026-07-19T09:00:32.174045302Z",
+    "action": "REJECT",
+    "rationale": "entity+metric fused subject"
+  },
+  {
+    "proposal_id": "019f799b-0c77-7893-97ae-87f05cd75dcd",
+    "subject": "CATL market share",
+    "predicate": "percentage is",
+    "value": "39%",
+    "domain": "competition",
+    "submitted_at": "2026-07-19T09:00:32.263453439Z",
+    "action": "REJECT",
+    "rationale": "entity+metric fused subject"
+  },
+  {
+    "proposal_id": "019f799b-0ccf-7950-b4c8-7e93a15b4049",
+    "subject": "BYD market share",
+    "predicate": "rank is",
+    "value": "#2",
+    "domain": "competition",
+    "submitted_at": "2026-07-19T09:00:32.376658288Z",
+    "action": "REJECT",
+    "rationale": "entity+metric fused subject"
+  },
+  {
+    "proposal_id": "019f799b-0d46-76c0-8372-cf5e03a61793",
+    "subject": "BYD market share",
+    "predicate": "percentage is",
+    "value": "16%",
+    "domain": "competition",
+    "submitted_at": "2026-07-19T09:00:32.469374644Z",
+    "action": "REJECT",
+    "rationale": "entity+metric fused subject"
+  },
+  {
+    "proposal_id": "019f799b-0d9f-7de0-8f69-fbf433f1140e",
+    "subject": "Shipment CAGR",
+    "predicate": "is projected to be",
+    "value": "17–19%",
+    "domain": "corporate_performance",
+    "submitted_at": "2026-07-19T09:00:32.574176176Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f799b-0e08-7b71-9be2-80cadf272949",
+    "subject": "TAM growth",
+    "predicate": "annual rate is",
+    "value": "22%/year",
+    "domain": "market_analysis",
+    "submitted_at": "2026-07-19T09:00:32.663819736Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f799d-0392-7e02-af1a-e68326c6a800",
+    "subject": "China challengers (CALB, EVE)",
+    "predicate": "cannot withstand price cuts for long",
+    "value": true,
+    "domain": "Business Strategy",
+    "submitted_at": "2026-07-19T09:02:41.057120066Z",
+    "action": "REVIEW",
+    "rationale": "split needed (shape=MultiEntity)"
+  },
+  {
+    "proposal_id": "019f799d-03e8-75a1-af2d-f56521e696a5",
+    "subject": "China challengers (CALB, EVE)",
+    "predicate": "have no cash",
+    "value": true,
+    "domain": "Finance",
+    "submitted_at": "2026-07-19T09:02:41.156242867Z",
+    "action": "REVIEW",
+    "rationale": "split needed (shape=MultiEntity)"
+  },
+  {
+    "proposal_id": "019f799d-0448-78f1-84bb-6df145d5d218",
+    "subject": "CATL",
+    "predicate": "market share (Jan 2026)",
+    "value": "45%",
+    "domain": "Finance",
+    "submitted_at": "2026-07-19T09:02:41.238706812Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f799d-049a-7d53-a3dc-76ed80421f35",
+    "subject": "CATL",
+    "predicate": "is in the best position of the strategic map",
+    "value": true,
+    "domain": "Business Strategy",
+    "submitted_at": "2026-07-19T09:02:41.322233862Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f799d-04f4-7f70-8a12-55c5b2575175",
+    "subject": "CATL",
+    "predicate": "is a cost leader",
+    "value": true,
+    "domain": "Business Strategy",
+    "submitted_at": "2026-07-19T09:02:41.411315272Z",
+    "action": "APPROVE",
+    "rationale": "clean entity acronym/ticker"
+  },
+  {
+    "proposal_id": "019f79a1-f614-7600-b917-ded8b5d798d9",
+    "subject": "Risk-free rate",
+    "predicate": "is",
+    "value": "1.75%",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:05.283446998Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f79a1-f670-7353-985e-275295bc7bc5",
+    "subject": "Equity risk premium",
+    "predicate": "is",
+    "value": "6.10%",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:05.375272988Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f79a1-f6ce-73f2-b4ff-cb21667b66ff",
+    "subject": "Beta",
+    "predicate": "is",
+    "value": "0.95",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:05.469705465Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_single)"
+  },
+  {
+    "proposal_id": "019f79a1-f726-7193-8313-89cee476d9bc",
+    "subject": "Cost of equity",
+    "predicate": "is",
+    "value": "7.54%",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:05.559577061Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f79a1-f78b-7bf1-9e2d-cade5418312b",
+    "subject": "WACC",
+    "predicate": "is",
+    "value": "7.17%",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:05.660091425Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f79a1-f7e4-7020-88da-8f27baca3b87",
+    "subject": "Revenue growth path",
+    "predicate": "is",
+    "value": "18%→14%→11%→8%→5.5%",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:05.749789889Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f79a1-f89e-7793-b619-d93127b7ae08",
+    "subject": "Terminal growth",
+    "predicate": "is",
+    "value": "3.0%",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:05.950894865Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f79a1-f907-7df2-971b-8fcdb0abf02d",
+    "subject": "PV(FCFF)",
+    "predicate": "is",
+    "value": "¥211.5B",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:06.039511335Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f79a1-f961-7213-965a-89105a030ef3",
+    "subject": "PV(TV)",
+    "predicate": "is",
+    "value": "¥1,457.5B",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:06.128007838Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f79a1-f9b7-7242-9ac3-6b545d35c6fe",
+    "subject": "Enterprise Value",
+    "predicate": "is",
+    "value": "¥1,669B",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:06.233923134Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f79a1-fa1f-7972-89a4-de8f316f2e75",
+    "subject": "Net Cash",
+    "predicate": "is",
+    "value": "¥331.8B",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:06.318063672Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f79a1-fa7e-7991-8c7c-92a4530c542c",
+    "subject": "Cash",
+    "predicate": "is",
+    "value": "¥451.5B",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:06.414658885Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f79a1-fad7-7943-a176-bd5b16bddbf8",
+    "subject": "Debt",
+    "predicate": "is",
+    "value": "¥119.7B",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:06.503039076Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f79a1-fb37-7082-81c5-8511e7996993",
+    "subject": "Equity Value",
+    "predicate": "is",
+    "value": "¥2,000.8B",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:06.599768845Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f79a1-fb9c-7781-8c60-1e276d4e3267",
+    "subject": "Shares outstanding",
+    "predicate": "is",
+    "value": "4.470B",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:06.700034321Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f79a1-fbfc-7770-855c-6ca2189f618b",
+    "subject": "DCF price per share",
+    "predicate": "is",
+    "value": "¥447.6",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:06.795628232Z",
+    "action": "REJECT",
+    "rationale": "predicate 'is' vague"
+  },
+  {
+    "proposal_id": "019f79a1-fc5d-79d3-8fa7-32ef4cd3e1fd",
+    "subject": "Current case price",
+    "predicate": "is",
+    "value": "¥361",
+    "domain": "finance",
+    "submitted_at": "2026-07-19T09:08:06.893718381Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (metric_head)"
+  },
+  {
+    "proposal_id": "019f7dad-0de4-7f71-870e-973f9091f991",
+    "subject": "thai-shipping-stocks-2026-07-20",
+    "predicate": "has_market_state",
+    "value": "thai_shipping_local_rerating_july_2026",
+    "domain": "shipping",
+    "submitted_at": "2026-07-20T03:58:41.144057219Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (shape=Slug)"
+  },
+  {
+    "proposal_id": "019f7db5-e617-72f0-b2d2-6d55498c8560",
+    "subject": "thai-shipping-catalyst-research-2026-07",
+    "predicate": "requires",
+    "value": "catalyst_theme_ton_mile_focus",
+    "domain": "shipping",
+    "submitted_at": "2026-07-20T04:08:20.777548432Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (shape=Slug)"
+  },
+  {
+    "proposal_id": "019f7dc0-eae9-7801-90ac-b1436d10dd30",
+    "subject": "simandou-first-shipment",
+    "predicate": "has_fact",
+    "value": "first_shipment_jan_2026_china",
+    "domain": "shipping",
+    "submitted_at": "2026-07-20T04:20:22.911677026Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (shape=Slug)"
+  },
+  {
+    "proposal_id": "019f7dc0-eb53-7dd3-af0b-d4bce61cec52",
+    "subject": "thai-shipping-vs-peers-2026-07",
+    "predicate": "has_valuation",
+    "value": "thai_discount_fleet_cycle_evidence",
+    "domain": "shipping",
+    "submitted_at": "2026-07-20T04:20:23.011321334Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (shape=Slug)"
+  },
+  {
+    "proposal_id": "019f7dc6-4859-7ca2-9a14-8c5bfa96edab",
+    "subject": "thai-shipping-catalyst-thesis-2026",
+    "predicate": "has_thesis",
+    "value": "psl_not_just_thai_discount_conditional_thesis",
+    "domain": "shipping",
+    "submitted_at": "2026-07-20T04:26:14.507822028Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (shape=Slug)"
+  },
+  {
+    "proposal_id": "019f7dc9-a1c6-7f11-b424-fe621d5e95a0",
+    "subject": "psl-fair-value-2026-07",
+    "predicate": "has_fair_value",
+    "value": "psl_fv_10_4_to_15_5_THB_conditional",
+    "domain": "shipping",
+    "submitted_at": "2026-07-20T04:29:54.010416755Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (shape=Slug)"
+  },
+  {
+    "proposal_id": "019f7dd7-7c5f-7c83-ad92-a4152e766784",
+    "subject": "thai-shipping-bf-report-2026-07",
+    "predicate": "produced_deliverable",
+    "value": "bf_report_delivered_76KB",
+    "domain": "shipping",
+    "submitted_at": "2026-07-20T04:45:01.938458767Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (shape=Slug)"
+  },
+  {
+    "proposal_id": "019f7ded-d467-7353-811f-1cf3f8d99840",
+    "subject": "psl-rcl-set-factsheet-2026-07",
+    "predicate": "has_primary_data",
+    "value": "primary_set_data_psl_rcl_2026",
+    "domain": "shipping",
+    "submitted_at": "2026-07-20T05:09:26.270783534Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (shape=Slug)"
+  },
+  {
+    "proposal_id": "019f7df1-346e-7113-82be-962cd6a0e067",
+    "subject": "freight-china-soybean-macro-2026-07",
+    "predicate": "has_macro_data",
+    "value": "macro_data_freight_china_2026",
+    "domain": "shipping",
+    "submitted_at": "2026-07-20T05:13:07.457877511Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (shape=Slug)"
+  },
+  {
+    "proposal_id": "019f7df3-d409-7f70-9b70-637adc6af5d9",
+    "subject": "simandou-chokepoints-2026-07",
+    "predicate": "has_geopolitical_data",
+    "value": "simandou_chokepoints_2026",
+    "domain": "shipping",
+    "submitted_at": "2026-07-20T05:15:59.387130773Z",
+    "action": "REJECT",
+    "rationale": "Phase 1.5 (shape=Slug)"
+  }
+]
