@@ -2121,13 +2121,14 @@ impl SemanticStore {
     // so the next genuine DDL break is a one-step addition (a real UpgradeStep
     // action) rather than a new piece of infrastructure.
 
-    /// Plans a schema upgrade from `from` to `to`. The only supported path
-    /// today is `from=2, to=3` (Task F3.3 noop placeholder). Any other
-    /// combination returns `Err(SemanticError::CorruptLedger(...))` with a
-    /// message naming the unsupported pair — `plan_schema_upgrade` is the
-    /// single source of truth for "which paths exist", so the
-    /// schema-version gate in `validate_database_identity` mirrors it via
-    /// `schema_upgrade_path_exists`.
+    /// Plans a schema upgrade from `from` to `to`. Supported paths today are
+    /// `from=2, to=3` (Task F3.3 noop placeholder) and `from=3, to=4`
+    /// (Entity Identity Reform — noop plan body for now; Task 2 swaps in the
+    /// genuine migration step). Any other combination returns
+    /// `Err(SemanticError::CorruptLedger(...))` with a message naming the
+    /// unsupported pair — `plan_schema_upgrade` is the single source of truth
+    /// for "which paths exist", so the schema-version gate in
+    /// `validate_database_identity` mirrors it via `schema_upgrade_path_exists`.
     ///
     /// The plan always carries exactly one reversible step (`"noop placeholder
     /// migration to prove upgrade path"`), so `is_reversible()` is true and
@@ -2139,7 +2140,7 @@ impl SemanticStore {
     ) -> Result<crate::recovery::SchemaUpgradePlan> {
         if !schema_upgrade_path_exists(from, to) {
             return Err(SemanticError::CorruptLedger(format!(
-                "unsupported schema upgrade path: {from} → {to} (only 2 → 3 is implemented)"
+                "unsupported schema upgrade path: {from} → {to} (supported paths: 2→3, 3→4)"
             )));
         }
         // Sanity: the plan's `from` must equal the live marker version, since
@@ -6644,13 +6645,15 @@ enum GateBehavior {
 }
 
 /// True iff `plan_schema_upgrade(from, to)` would produce a plan (i.e. a
-/// known migration path exists for this version pair). Today only `2 → 3`
-/// (the F3.3 noop placeholder). Used by `validate_database_identity` to
+/// known migration path exists for this version pair). Today: `2 → 3`
+/// (the F3.3 noop placeholder) and `3 → 4` (the Entity Identity Reform
+/// path — wired as a noop plan for now; Task 2 swaps the step body for the
+/// genuine migration). Used by `validate_database_identity` to
 /// distinguish "refuse-to-serve-until-upgraded" (known path) from
 /// "genuinely unsupported version" (no path) — both still fail closed, but
 /// the error message differs so an operator sees the actionable next step.
 fn schema_upgrade_path_exists(from: u8, to: u8) -> bool {
-    matches!((from, to), (2, 3))
+    matches!((from, to), (2, 3) | (3, 4))
 }
 
 /// Runs one `UpgradeStep`'s forward action inside an open transaction

@@ -1066,14 +1066,14 @@ fn upgrade_rejects_unsupported_path() {
     let store = SemanticStore::open_for_upgrade(&root, enabled(_parent.path()))
         .expect("open_for_upgrade v2");
 
-    // v1 → v5 is not a known migration path (only 2 → 3 is implemented).
+    // v1 → v5 is not a known migration path (supported paths: 2→3, 3→4).
     let err = store
         .plan_schema_upgrade(1, 5)
         .expect_err("v1→v5 must be rejected");
     let msg = format!("{err}");
     assert!(
-        msg.contains("unsupported schema upgrade path") && msg.contains("only 2 → 3"),
-        "error must name the unsupported path + the only implemented one, got: {msg}"
+        msg.contains("unsupported schema upgrade path") && msg.contains("supported paths"),
+        "error must name the unsupported path + the supported ones, got: {msg}"
     );
 
     // Even on a freshly-created v3 store, plan v2→v4 must fail.

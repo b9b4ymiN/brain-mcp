@@ -10,6 +10,7 @@
 //! store (or a row that lost its entity binding) could be backfilled without
 //! a destructive migration. This file proves that backfill path.
 
+use std::fs;
 use std::path::Path;
 
 use chrono::Utc;
@@ -356,4 +357,81 @@ fn rollback_to_null_bindings_is_lossless_and_recoverable() {
     assert!(recovered.active[0].entity_id.is_some());
     // And the entity_id is stable across rollback/recover (same entity).
     assert_eq!(populated.active[0].entity_id, recovered.active[0].entity_id);
+}
+
+// =============================================================================
+// Phase Reform Task 1 — v3→v4 upgrade-path predicate
+// =============================================================================
+
+/// Reads the schema_version field out of `<root>/store.marker.json`. Mirrors
+/// the helper in `tests/recovery_integration_v1.rs` so this file's v3→v4 tests
+/// can stage a v3 store independently of the fresh-store DDL version (which
+/// bumps to v4 in Task 6). Without staging, a test that calls
+/// `plan_schema_upgrade(3, 4)` against a fresh store would pass today only
+/// because `CURRENT_DISK_SCHEMA_VERSION == 3`, and break the moment Task 6
+/// bumps it — with a confusing from-mismatch error rather than a real failure.
+fn read_marker_schema_version(root: &Path) -> u8 {
+    let bytes = fs::read(root.join("store.marker.json")).expect("read marker");
+    let value: serde_json::Value = serde_json::from_slice(&bytes).expect("marker parses");
+    value
+        .get("schema_version")
+        .and_then(|v| v.as_u64())
+        .expect("marker has schema_version") as u8
+}
+
+/// Rewrites the on-disk marker's `schema_version` to `to`. The in-memory
+/// `SemanticStore` instance is unaffected (its `marker` was read on open);
+/// the next `open_for_upgrade()` picks up the rewritten marker. Used to stage
+/// a v3 store for the v3→v4 upgrade tests — the marker is rewritten AFTER the
+/// store is dropped so the SQLite file is not contended.
+fn rewrite_marker_schema_version(root: &Path, to: u8) {
+    let path = root.join("store.marker.json");
+    let bytes = fs::read(&path).expect("read marker");
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("marker parses");
+    value["schema_version"] = json!(to);
+    let rewritten = serde_json::to_vec(&value).expect("serialize marker");
+    fs::write(&path, rewritten).expect("rewrite marker");
+}
+
+/// Stage a v3 store: `fixture()` creates a fresh store (at whatever
+/// `CURRENT_DISK_SCHEMA_VERSION` is), close it, then rewrite its on-disk
+/// marker to schema_version=3. Returns the parent tempdir + the store root so
+/// the test can `open_for_upgrade()` against the staged v3 state. Pinning the
+/// marker to 3 here (rather than relying on the fresh-store version) keeps the
+/// v3→v4 tests truthful regardless of the constant's value.
+fn fixture_at_v3() -> (TempDir, std::path::PathBuf) {
+    let parent = tempfile::tempdir().expect("fixture parent");
+    let root = parent.path().join("semantic-store");
+    let (_store, _admin) =
+        SemanticStore::create(&root, enabled(parent.path())).expect("create");
+    // `_store` dropped here — closes the connection so the marker file is
+    // not contended when we rewrite it.
+    drop(_store);
+    rewrite_marker_schema_version(&root, 3);
+    assert_eq!(
+        read_marker_schema_version(&root),
+        3,
+        "test setup: marker staged at v3"
+    );
+    (parent, root)
+}
+
+/// Phase Reform Task 1: the v3→v4 upgrade path is recognized as a known
+/// migration route. Pre-Task-1 this returned `unsupported schema upgrade
+/// path` because only `(2, 3)` was in the predicate's match; the `(3, 4)` arm
+/// now makes `plan_schema_upgrade(3, 4)` succeed. The store is staged at v3
+/// via [`fixture_at_v3`] so this test asserts what its name claims and
+/// survives the Task 6 bump of `CURRENT_DISK_SCHEMA_VERSION` to 4.
+#[test]
+fn v3_to_v4_upgrade_path_is_known() {
+    let (_parent, root) = fixture_at_v3();
+    let store =
+        SemanticStore::open_for_upgrade(&root, enabled(_parent.path())).expect("open staged v3");
+    assert_eq!(store.schema_version(), 3, "live marker is at v3 pre-upgrade");
+
+    let plan = store.plan_schema_upgrade(3, 4).expect("plan v3→v4");
+    assert!(plan.is_reversible(), "v3→v4 plan must be reversible");
+    assert_eq!(plan.from_version, 3);
+    assert_eq!(plan.to_version, 4);
+    assert_eq!(plan.steps.len(), 1, "v3→v4 is one step");
 }
