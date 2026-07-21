@@ -197,7 +197,7 @@ impl ConsoleApiState {
             reauth_freshness: PURGE_REAUTH_FRESHNESS,
             secure_cookie,
             events: Arc::new(events),
-            ai_provider: None, // Phase 3 — set via with_ai_provider builder
+            ai_provider: None,       // Phase 3 — set via with_ai_provider builder
             subject_validator: None, // Phase 1.5 — set via with_subject_validator
         }
     }

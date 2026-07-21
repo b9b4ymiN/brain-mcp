@@ -73,7 +73,6 @@ pub mod provider;
 /// deterministic + AI rules that tag proposals for faster human review.
 /// Read-only: produces tags only, never mutates the ledger.
 pub mod quality;
-pub mod subject_validator;
 /// Backup, restore, upgrade, rollback contract (Task 6.3) — encrypted backup
 /// report, clean-host restore drill, schema-upgrade plan, RPO/RTO.
 pub mod recovery;
@@ -91,6 +90,7 @@ pub mod source_ingest;
 pub mod space_builder;
 /// Wiki space creation, registration, and management.
 pub mod spaces;
+pub mod subject_validator;
 /// Trust + operations views contract (Task 5.3) — trust flags, retrieval
 /// trace, provenance answers, job/backup summaries, destructive-action
 /// warnings. §5.3 + §10.
