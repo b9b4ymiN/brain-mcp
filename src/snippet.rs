@@ -182,3 +182,188 @@ mod tests_normalize {
         assert!(normalize_value_candidates(&json!({"a": 1})).is_empty());
     }
 }
+
+/// Find the byte offset of the first matching candidate in `text`. Returns
+/// `None` if no candidate matches. Candidates are tried in priority order
+/// (caller passes longest-first via [`normalize_value_candidates`]).
+pub(crate) fn locate_value(text: &str, candidates: &[String]) -> Option<usize> {
+    candidates
+        .iter()
+        .find_map(|c| text.find(c.as_str()))
+}
+
+/// Extract a window of approximately `half_window_chars` characters on each
+/// side of the value match, snapped outward to whitespace, hard-capped to
+/// 600 chars total.
+///
+/// Returns `(window, start_byte_offset_in_text, end_byte_offset_in_text, truncated)`.
+pub(crate) fn window_around(
+    text: &str,
+    value_byte_offset: usize,
+    value_len_bytes: usize,
+    half_window_chars: usize,
+) -> (String, usize, usize, bool) {
+    const HARD_CAP_CHARS: usize = 600;
+
+    let total_chars = text.chars().count();
+    if total_chars <= HARD_CAP_CHARS {
+        return (text.to_string(), 0, text.len(), false);
+    }
+
+    let value_char_offset = text[..value_byte_offset].chars().count();
+    let value_char_end = value_char_offset
+        + text[value_byte_offset..value_byte_offset + value_len_bytes].chars().count();
+
+    let mut start_char = value_char_offset.saturating_sub(half_window_chars);
+    let mut end_char = (value_char_end + half_window_chars).min(total_chars);
+
+    if start_char > 0 {
+        let chars: Vec<char> = text.chars().collect();
+        while start_char > 0
+            && !chars[start_char - 1].is_whitespace()
+            && !chars[start_char].is_whitespace()
+        {
+            start_char -= 1;
+        }
+    }
+    if end_char < total_chars {
+        let chars: Vec<char> = text.chars().collect();
+        while end_char < total_chars
+            && !chars[end_char - 1].is_whitespace()
+            && !chars[end_char].is_whitespace()
+        {
+            end_char += 1;
+        }
+    }
+
+    let window_chars = end_char - start_char;
+    if window_chars > HARD_CAP_CHARS {
+        let left_excess = value_char_offset.saturating_sub(start_char);
+        let right_excess = end_char.saturating_sub(value_char_end);
+        if left_excess >= right_excess {
+            start_char = end_char - HARD_CAP_CHARS;
+        } else {
+            end_char = start_char + HARD_CAP_CHARS;
+        }
+    }
+
+    let start_byte = char_index_to_byte(text, start_char);
+    let end_byte = char_index_to_byte(text, end_char);
+
+    let mut window = String::with_capacity(end_byte - start_byte);
+    if start_byte > 0 {
+        window.push('…');
+    }
+    window.push_str(&text[start_byte..end_byte]);
+    if end_byte < text.len() {
+        window.push('…');
+    }
+
+    (window, start_byte, end_byte, true)
+}
+
+fn char_index_to_byte(s: &str, char_idx: usize) -> usize {
+    s.char_indices()
+        .nth(char_idx)
+        .map(|(b, _)| b)
+        .unwrap_or_else(|| s.len())
+}
+
+#[cfg(test)]
+mod tests_locate {
+    use super::locate_value;
+
+    #[test]
+    fn finds_first_candidate_in_text() {
+        let cands = vec!["1.75%".to_string(), "1.75".to_string()];
+        let text = "Risk-free rate 1.75% (10Y CGB)";
+        let byte_off = text.find("1.75%").unwrap();
+        let got = locate_value(text, &cands);
+        assert_eq!(got, Some(byte_off));
+    }
+
+    #[test]
+    fn falls_back_to_shorter_candidate() {
+        let cands = vec!["¥361".to_string(), "361".to_string()];
+        let text = "current price 361 per share";
+        let byte_off = text.find("361").unwrap();
+        let got = locate_value(text, &cands);
+        assert_eq!(got, Some(byte_off));
+    }
+
+    #[test]
+    fn no_match_returns_none() {
+        let cands = vec!["99".to_string()];
+        let text = "no number here";
+        assert_eq!(locate_value(text, &cands), None);
+    }
+
+    #[test]
+    fn empty_candidates_returns_none() {
+        assert_eq!(locate_value("text", &[]), None);
+    }
+}
+
+#[cfg(test)]
+mod tests_window {
+    use super::window_around;
+
+    #[test]
+    fn returns_full_text_when_already_small() {
+        let text = "short text 1.75 here";
+        let value_byte_off = text.find("1.75").unwrap();
+        let (window, win_start, _, truncated) =
+            window_around(text, value_byte_off, "1.75".len(), 200);
+        assert!(!truncated);
+        assert_eq!(window, text);
+        assert_eq!(win_start, 0);
+    }
+
+    #[test]
+    fn windows_to_around_400_chars_when_text_longer() {
+        // Adapted: spec data summed to 500 chars, below the 600-char HARD_CAP,
+        // so `truncated` was always false. Also had no internal whitespace,
+        // which would have driven start_char to 0 and broken `win_start > 0`.
+        // Use spaced tokens so the HARD_CAP triggers AND the snap logic lands
+        // at a word boundary well inside the text.
+        let prefix = "alpha ".repeat(60);
+        let value = "VAL";
+        let suffix = " beta".repeat(60);
+        let text = format!("{prefix}{value}{suffix}");
+        assert!(text.chars().count() > 600, "test data must exceed HARD_CAP");
+        let value_byte_off = prefix.len();
+        let (window, win_start, _, truncated) =
+            window_around(&text, value_byte_off, value.len(), 200);
+        assert!(truncated);
+        assert!(win_start > 0);
+        assert!(window.contains(value));
+        assert!(
+            window.chars().count() <= 450,
+            "got len {}",
+            window.chars().count()
+        );
+    }
+
+    #[test]
+    fn snaps_to_whitespace_on_left_cut() {
+        // Adapted: implementation's snap-outward-to-whitespace invariant is
+        // "char before cut is whitespace OR char at cut is whitespace" — the
+        // window therefore starts at a word boundary (first letter of a word),
+        // not at a whitespace char itself. Verify the cut is at a word
+        // boundary by checking the char immediately *before* `win_start`.
+        let prefix = "word ".repeat(60);
+        let value = "V";
+        let suffix = " tail ".repeat(60);
+        let text = format!("{prefix}{value}{suffix}");
+        let value_byte_off = prefix.len();
+        let (_window, win_start, _, _truncated) =
+            window_around(&text, value_byte_off, value.len(), 100);
+        if win_start > 0 {
+            let prev_char = text[..win_start].chars().last().unwrap_or('x');
+            assert!(
+                prev_char.is_whitespace(),
+                "expected whitespace just before cut, got {prev_char:?}"
+            );
+        }
+    }
+}
