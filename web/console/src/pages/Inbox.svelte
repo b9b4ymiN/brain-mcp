@@ -54,6 +54,7 @@
     aiReview as apiAiReview,
     ApiError,
     type ProposalSummary,
+    type InboxProposal,
     type EvidenceSummary,
     type ClaimView,
     type QualityTag,
@@ -80,7 +81,7 @@
   let { session, toasts }: Props = $props()
 
   // ── Inbox list state ───────────────────────────────────────────────────
-  let proposals = $state<ProposalSummary[]>([])
+  let proposals = $state<InboxProposal[]>([])
   let listLoading = $state(false)
   let listError = $state<string | null>(null)
   let sessionExpired = $state(false)
@@ -662,7 +663,7 @@
     }
   }
 
-  let visibleProposals = $derived.by<ProposalSummary[]>(() => {
+  let visibleProposals = $derived.by<InboxProposal[]>(() => {
     let out = pendingProposals
     const q = inboxFilter.trim().toLowerCase()
     if (q.length > 0) {
@@ -759,7 +760,20 @@
               onclick={() => void openDetail(p)}
               onkeydown={(e) => onRowKeydown(e, p)}
             >
-              <span class="subject">{p.subject}</span>
+              <span class="subject">
+                {p.subject}
+                {#if p.conflicts.length > 0}
+                  <span
+                    class="conflict-badge conflict-badge--{p.conflicts[0].kind}"
+                    title={p.conflicts[0].kind === 'hard_value'
+                      ? 'Hard value conflict — peer proposal or claim disagrees on this value'
+                      : 'Duplicate — peer proposal or claim has the same value'}
+                  >
+                    {p.conflicts[0].peers.length}
+                    conflict{p.conflicts[0].peers.length === 1 ? '' : 's'}
+                  </span>
+                {/if}
+              </span>
               <span class="predicate">{p.predicate}</span>
               <span class="value" title={String(p.value)}>{formatValue(p.value)}</span>
               <span class="domain">{p.domain}</span>
@@ -860,16 +874,35 @@
                     {/if}
                   </section>
 
-                  {#if d.currentClaims.length > 0}
-                    <p class="prior-claims">
-                      {d.currentClaims.length === 1
-                        ? '1 current confirmed claim in scope —'
-                        : `${d.currentClaims.length} current confirmed claims in scope —`}
-                      Supersede will replace them.
-                    </p>
+                  {#if p.conflicts.length > 0}
+                    {@const c = p.conflicts[0]}
+                    <section class="conflicts conflicts--{c.kind}" aria-label="Conflicts in scope">
+                      <h4 class="conflicts-title">
+                        In scope — {c.peers.length} peer{c.peers.length === 1 ? '' : 's'}
+                        {#if c.kind === 'hard_value'}<span class="conflicts-kind">hard value conflict</span>{/if}
+                      </h4>
+                      <ul class="conflict-peers" role="list">
+                        {#each c.peers as peer (peer.peer_id)}
+                          <li class="conflict-peer conflict-peer--{c.kind}">
+                            <span class="conflict-peer-value" title={String(peer.value)}>{formatValue(peer.value)}</span>
+                            <span class="conflict-peer-status">{peer.peer_status}</span>
+                            {#if peer.rel_diff_pct !== null}
+                              <span class="conflict-peer-diff">+{peer.rel_diff_pct.toFixed(1)}%</span>
+                            {/if}
+                          </li>
+                        {/each}
+                      </ul>
+                      {#if d.currentClaims.length > 0}
+                        <p class="conflicts-note">
+                          {d.currentClaims.length === 1
+                            ? '1 current confirmed claim — Supersede will replace it.'
+                            : `${d.currentClaims.length} current confirmed claims — Supersede will replace them.`}
+                        </p>
+                      {/if}
+                    </section>
                   {:else}
-                    <p class="prior-claims prior-none">
-                      No prior confirmed claim in scope — Approve will create a new claim.
+                    <p class="no-conflicts">
+                      No peer proposals or claims in scope — Approve will create a new claim.
                     </p>
                   {/if}
 
@@ -1325,6 +1358,114 @@
 
   .prior-none {
     color: var(--text-tertiary);
+    font-style: italic;
+  }
+
+  /* ── Phase 1.6 — conflict badge (inline on each proposal row) ─────────
+   * Sits inside the .subject cell, next to the subject text. Hard-value
+   * conflicts use the accent surface (amber); duplicates use the info
+   * surface (cyan). Both keep ≥4.5:1 contrast because they sit on opaque
+   * --surface-accent-soft / --surface-info-soft panels (the 2026-07-19
+   * a11y audit's rule: never put text on a 14% wash). */
+  .conflict-badge {
+    display: inline-block;
+    margin-left: var(--space-xs);
+    padding: 0 var(--space-xs);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.02em;
+    vertical-align: middle;
+    line-height: 1.5;
+  }
+  .conflict-badge--hard_value {
+    background: var(--surface-accent-soft);
+    color: var(--color-accent);
+  }
+  .conflict-badge--duplicate {
+    background: var(--surface-info-soft);
+    color: var(--color-info);
+  }
+
+  /* ── Phase 1.6 — conflict peers panel (in the expanded detail) ────────
+   * Mirrors the design of the existing .evidence panel: opaque tinted
+   * surface, accent-tinted left border, small heading. Hard-value conflicts
+   * border amber; duplicates border cyan — same dual voice as the badge so
+   * the row and detail read as the same signal. */
+  .conflicts {
+    margin: var(--space-sm) 0;
+    padding: var(--space-sm) var(--space-md);
+    background: var(--surface-flat);
+    border-left: 3px solid var(--color-accent);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  }
+  .conflicts--duplicate {
+    border-left-color: var(--color-info);
+  }
+  .conflicts-title {
+    margin: 0 0 var(--space-xs);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
+    font-weight: var(--weight-semibold);
+    color: var(--text-primary);
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-sm);
+  }
+  .conflicts-kind {
+    font-family: var(--font-mono);
+    font-size: var(--text-label);
+    font-weight: var(--weight-regular);
+    color: var(--color-accent);
+    text-transform: lowercase;
+  }
+  .conflict-peers {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .conflict-peer {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: var(--space-sm);
+    align-items: baseline;
+    padding: var(--space-xs) 0;
+    font-size: var(--text-body);
+  }
+  .conflict-peer:not(:last-child) {
+    border-bottom: 1px solid var(--color-hairline);
+  }
+  .conflict-peer-value {
+    font-family: var(--font-mono);
+    font-weight: var(--weight-semibold);
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .conflict-peer-status {
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: var(--text-label);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .conflict-peer-diff {
+    color: var(--color-accent);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    font-weight: var(--weight-semibold);
+  }
+  .conflicts-note {
+    margin: var(--space-xs) 0 0;
+    color: var(--text-secondary);
+    font-size: var(--text-body);
+  }
+  .no-conflicts {
+    margin: var(--space-sm) 0;
+    color: var(--text-tertiary);
+    font-size: var(--text-body);
     font-style: italic;
   }
 
