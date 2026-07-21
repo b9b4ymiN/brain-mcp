@@ -479,6 +479,12 @@ Drafts เก็บใน `~/wikis/brain/.drafts/` — ไม่ commit ลง g
   tested via live API 100% match. See
   `docs/plans/subject-validator-v1-spec.md` and
   `docs/reports/2026-07-21-subject-validator-v1-phase-1.5-shipped.md`.
+- **Review Clarity Part 2 (Phase 1.6, ✅ SHIPPED 2026-07-21):**
+  value-anchored evidence snippet (±200 chars + `<mark>` highlight, replaces
+  3000-char dump) and same-predicate conflict detection across pending +
+  confirmed claims (C1 HardValue + C2 Duplicate, replaces misleading "N
+  current confirmed claims" text). See
+  `docs/plans/phase-1.6-review-clarity-part-2-spec.md`.
 
 ### 6.3 Commit Tier (apply draft)
 
