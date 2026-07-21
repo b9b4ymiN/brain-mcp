@@ -280,6 +280,46 @@ export interface ProposalSummary {
   event_seq: number
 }
 
+// ── Phase 1.6 — inbox conflict detection ────────────────────────────────────
+// Mirrors `src/inbox_conflicts.rs`. A proposal in `/inbox` may participate in
+// one or more same-scope conflicts (peer proposals + confirmed claims sharing
+// its `(domain, subject, predicate)`). `kind` is the strongest signal found:
+// `hard_value` (>0.1% scalar diff) wins over `duplicate` (same value).
+//
+// NOTE: the Rust endpoint currently emits at most one `ScopeConflict` per
+// proposal (one bucket = one conflict), so the Console reads
+// `proposal.conflicts[0]` defensively. The array shape keeps the wire format
+// forward-compatible if later phases emit multiple kinds per proposal.
+/** Conflict kind — `hard_value` (C1, scalar diff > 0.1%) or `duplicate` (C2). */
+export type ConflictKind = 'hard_value' | 'duplicate'
+
+/** Peer status — `pending` (proposal) or `confirmed` (claim). */
+export type PeerStatus = 'pending' | 'confirmed'
+
+/** One peer (proposal or confirmed claim) that conflicts with the row's proposal. */
+export interface ConflictPeer {
+  peer_id: Uuid
+  peer_status: PeerStatus
+  /** Conflicting scalar/value — same JSON shape as `ProposalSummary.value`. */
+  value: JsonValue
+  submitted_at: IsoTimestamp | null
+  /** Relative diff in percent. Only set for `hard_value`; null for `duplicate`. */
+  rel_diff_pct: number | null
+}
+
+/** One conflict group the row's proposal participates in. */
+export interface ScopeConflict {
+  proposal_id: Uuid
+  kind: ConflictKind
+  peers: ConflictPeer[]
+}
+
+/** Phase 1.6 `/inbox` row: pending proposal + same-scope conflicts. */
+export interface InboxProposal extends ProposalSummary {
+  conflicts: ScopeConflict[]
+}
+
+
 /** `GET /inbox/{id}/evidence` body. Bare JSON object. */
 export interface EvidenceSummary {
   provenance_kind: string
@@ -649,9 +689,9 @@ export async function timeline(params: TimelineParams): Promise<ClaimView[]> {
   })
 }
 
-/** `GET /inbox` — bare JSON array of pending proposals. */
-export async function inbox(): Promise<ProposalSummary[]> {
-  return request<ProposalSummary[]>({
+/** `GET /inbox` — array of pending proposals with Phase 1.6 conflicts. */
+export async function inbox(): Promise<InboxProposal[]> {
+  return request<InboxProposal[]>({
     method: 'GET',
     path: '/inbox',
   })

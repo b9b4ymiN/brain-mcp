@@ -27,7 +27,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::RwLock;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
@@ -97,6 +97,26 @@ pub const CONSOLE_CSP: &str = "default-src 'self'; \
 ///
 /// `issued_at` records when the session was minted (login time) and is
 /// immutable for the session's life. `reauthenticated_at` is bumped by
+/// Phase 1.6 — `/inbox` row: a pending proposal plus the same-scope
+/// conflicts it participates in. Conflicts cover both peer proposals
+/// (`Pending` status) and confirmed claims (`Confirmed` status) for the
+/// same `(domain, subject, predicate)`. `conflicts` is empty when the
+/// proposal has no peers in scope — the Console renders the
+/// "Approve will create a new claim" hint in that case.
+///
+/// Replaces the old "N current confirmed claims in scope" text, which always
+/// showed 0 because the inbox was pending-only and the query was
+/// confirmed-only. See `src/inbox_conflicts.rs` for the detection algorithm.
+#[derive(Serialize)]
+pub struct InboxProposal {
+    #[serde(flatten)]
+    pub proposal: crate::semantic::ProposalSummary,
+    /// Phase 1.6 — conflicts detected for this proposal. Currently limited
+    /// to `HardValue` (>0.1% scalar diff) and `Duplicate` (same value);
+    /// see [`crate::inbox_conflicts::ConflictKind`].
+    pub conflicts: Vec<crate::inbox_conflicts::ScopeConflict>,
+}
+
 /// `/auth/reauth` and is the freshness marker the destructive-action gate
 /// (`/purge/execute`) checks — `None` means "never re-authed since login", so
 /// the very first hard-purge attempt always requires a re-auth even on a
@@ -826,12 +846,43 @@ async fn timeline(
 async fn inbox(
     State(state): State<ConsoleApiState>,
     _session: AuthSession,
-) -> Result<Response, ApiError> {
+) -> Result<Json<Vec<InboxProposal>>, ApiError> {
+    use chrono::Utc;
     let pending = state
         .store
         .list_pending_proposals()
         .map_err(|e| map_semantic_error(&e))?;
-    Ok(Json(pending).into_response())
+
+    // Phase 1.6 — load confirmed claims so conflict detection covers both
+    // peer proposals (pending) and existing claims (confirmed). `all_claims_current`
+    // buckets all confirmed claims into active/future/past as of the ledger
+    // head; we flatten all three so a pending proposal that re-states a past
+    // (superseded/retracted) value still flags as a duplicate (useful review
+    // signal even though it is not strictly "in conflict"). When the call
+    // fails or yields nothing, `confirmed` stays empty and detection degrades
+    // gracefully to pending-only (per spec).
+    let mut confirmed: Vec<crate::semantic::ClaimView> = Vec::new();
+    if let Ok(head) = state.store.ledger_head() {
+        if let Ok(current) = state.store.all_claims_current(head, Utc::now()) {
+            confirmed.extend(current.active);
+            confirmed.extend(current.future);
+            confirmed.extend(current.past);
+        }
+    }
+
+    let conflicts = crate::inbox_conflicts::detect_conflicts(&pending, &confirmed);
+    let out: Vec<InboxProposal> = pending
+        .into_iter()
+        .map(|p| {
+            let proposal_id = p.proposal_id;
+            let c = conflicts.get(&proposal_id).cloned().unwrap_or_default();
+            InboxProposal {
+                proposal: p,
+                conflicts: c,
+            }
+        })
+        .collect();
+    Ok(Json(out))
 }
 
 async fn evidence(
