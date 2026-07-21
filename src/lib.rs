@@ -45,6 +45,7 @@ pub mod galaxy;
 pub mod git;
 /// Concept graph construction, community detection, and renderers.
 pub mod graph;
+pub mod inbox_conflicts;
 /// Tantivy index lifecycle manager for a single wiki space.
 pub mod index_manager;
 /// Tantivy schema builder and field classification.
@@ -85,7 +86,6 @@ pub mod server;
 /// Slug validation, resolution, and URI parsing.
 pub mod slug;
 pub mod snippet;
-pub mod inbox_conflicts;
 /// SSRF-guarded source fetch + chunking for `brain_ingest_source` (Task D3).
 pub mod source_ingest;
 /// Builds SpaceTypeRegistry and IndexSchema from schema files.
