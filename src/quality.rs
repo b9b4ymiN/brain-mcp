@@ -87,7 +87,11 @@ pub struct QualityTag {
 }
 
 impl QualityTag {
-    pub fn new(kind: QualityTagKind, severity: QualitySeverity, message: impl Into<String>) -> Self {
+    pub fn new(
+        kind: QualityTagKind,
+        severity: QualitySeverity,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             kind,
             severity,
@@ -140,19 +144,27 @@ impl Default for QualityChecker {
     /// Default constructor for tests / legacy call sites that don't yet
     /// inject a validator. Subject validation is silently skipped.
     fn default() -> Self {
-        Self { subject_validator: None }
+        Self {
+            subject_validator: None,
+        }
     }
 }
 
 impl QualityChecker {
-    pub fn new(subject_validator: std::sync::Arc<crate::subject_validator::SubjectValidator>) -> Self {
-        Self { subject_validator: Some(subject_validator) }
+    pub fn new(
+        subject_validator: std::sync::Arc<crate::subject_validator::SubjectValidator>,
+    ) -> Self {
+        Self {
+            subject_validator: Some(subject_validator),
+        }
     }
 
     /// Legacy constructor that skips subject validation. Used by tests that
     /// don't care about subject rules. Prefer `new()`.
     pub fn without_subject_validation() -> Self {
-        Self { subject_validator: None }
+        Self {
+            subject_validator: None,
+        }
     }
 
     /// Run all deterministic rules and return the union of tags. Order is
@@ -437,7 +449,9 @@ fn check_subject_shape(
     input: &QualityCheckerInput<'_>,
     tags: &mut Vec<QualityTag>,
 ) {
-    let Some(validator) = &checker.subject_validator else { return };
+    let Some(validator) = &checker.subject_validator else {
+        return;
+    };
     let report = validator.validate(&input.proposal.subject);
     tags.extend(report.quality_tags);
 }

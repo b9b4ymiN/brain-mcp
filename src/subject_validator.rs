@@ -24,12 +24,29 @@ pub const SUBJECT_VALIDATOR_VERSION: &str = "subject-validator-v1";
 /// (rules/subject_rules.toml) maps each shape to a verdict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SubjectShape {
-    Empty, Slug, Filename, Url, Date, TimeExpr,
-    NumberLed, CurrencyLed, Sentence, Question,
-    ThaiPure, ThaiLatinMixed,
-    Ticker, Acronym, TitleCase, LowercaseNoun,
-    VerbLed, Demonstrative, MultiEntity, Possessive,
-    WikiMarkup, Placeholder, Plain,
+    Empty,
+    Slug,
+    Filename,
+    Url,
+    Date,
+    TimeExpr,
+    NumberLed,
+    CurrencyLed,
+    Sentence,
+    Question,
+    ThaiPure,
+    ThaiLatinMixed,
+    Ticker,
+    Acronym,
+    TitleCase,
+    LowercaseNoun,
+    VerbLed,
+    Demonstrative,
+    MultiEntity,
+    Possessive,
+    WikiMarkup,
+    Placeholder,
+    Plain,
     Unknown,
 }
 
@@ -151,20 +168,24 @@ pub(crate) fn check_subject_mechanical(normalized: &str) -> Option<MechanicalDef
         return Some(MechanicalDefect::TooLong);
     }
     // Punctuation-only: no alphanumeric chars and no Thai
-    if !chars.iter().any(|c| c.is_alphanumeric() || ('\u{0E00}'..='\u{0E7F}').contains(c)) {
+    if !chars
+        .iter()
+        .any(|c| c.is_alphanumeric() || ('\u{0E00}'..='\u{0E7F}').contains(c))
+    {
         return Some(MechanicalDefect::PunctuationOnly);
     }
     // Control chars (Unicode General_Category Cc, except tab/newline/CR which get their own bucket)
-    if chars.iter().any(|&c| {
-        c != '\t' && c != '\n' && c != '\r' && (c.is_control())
-    }) {
+    if chars
+        .iter()
+        .any(|&c| c != '\t' && c != '\n' && c != '\r' && (c.is_control()))
+    {
         return Some(MechanicalDefect::ControlChars);
     }
     if chars.iter().any(|&c| c == '\t' || c == '\n' || c == '\r') {
         return Some(MechanicalDefect::TabNewlineCr);
     }
     // RTL override
-    if chars.iter().any(|&c| c == '\u{202E}') {
+    if chars.contains(&'\u{202E}') {
         return Some(MechanicalDefect::RtlOverride);
     }
     // Emoji: chars with Emoji property that aren't ASCII digits/symbols.
@@ -178,11 +199,19 @@ pub(crate) fn check_subject_mechanical(normalized: &str) -> Option<MechanicalDef
         return Some(MechanicalDefect::HtmlInjection);
     }
     // Template injection
-    if normalized.contains("${") || normalized.contains("{{") || normalized.contains("%{") || normalized.contains("<%") {
+    if normalized.contains("${")
+        || normalized.contains("{{")
+        || normalized.contains("%{")
+        || normalized.contains("<%")
+    {
         return Some(MechanicalDefect::TemplateInjection);
     }
     // Wiki markup leak
-    if normalized.contains("[[") || normalized.contains("]]") || normalized.contains("'''") || normalized.starts_with("==") {
+    if normalized.contains("[[")
+        || normalized.contains("]]")
+        || normalized.contains("'''")
+        || normalized.starts_with("==")
+    {
         return Some(MechanicalDefect::WikiMarkupLeak);
     }
     None
@@ -257,8 +286,7 @@ mod tests_layer0 {
 use regex::Regex;
 use std::sync::LazyLock;
 
-static RE_ACRONYM: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Z]{2,8}$").unwrap());
+static RE_ACRONYM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Z]{2,8}$").unwrap());
 static RE_TICKER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Z]{1,6}(\.[A-Z]{1,4})?$").unwrap());
 static RE_SLUG: LazyLock<Regex> =
@@ -320,7 +348,9 @@ pub(crate) fn classify_shape(normalized: &str) -> SubjectShape {
     // Thai detection — must run BEFORE Possessive/Sentence so "บมจ. ปตท."
     // (ends with '.') and similar Thai entities ending in punctuation
     // classify by script, not by trailing punctuation.
-    let has_thai = normalized.chars().any(|c| ('\u{0E00}'..='\u{0E7F}').contains(&c));
+    let has_thai = normalized
+        .chars()
+        .any(|c| ('\u{0E00}'..='\u{0E7F}').contains(&c));
     let has_latin = normalized.chars().any(|c| c.is_ascii_alphabetic());
     if has_thai && !has_latin {
         return SubjectShape::ThaiPure;
@@ -331,7 +361,11 @@ pub(crate) fn classify_shape(normalized: &str) -> SubjectShape {
     // Sentence — ends with '.' and not all caps. Checked BEFORE Possessive
     // because "China's largest battery maker." is a full statement, not a
     // possessive-noun pattern.
-    if normalized.ends_with('.') && !normalized.chars().all(|c| !c.is_alphabetic() || c.is_uppercase()) {
+    if normalized.ends_with('.')
+        && !normalized
+            .chars()
+            .all(|c| !c.is_alphabetic() || c.is_uppercase())
+    {
         return SubjectShape::Sentence;
     }
     // Possessive
@@ -339,7 +373,11 @@ pub(crate) fn classify_shape(normalized: &str) -> SubjectShape {
         return SubjectShape::Possessive;
     }
     // Grammatical cues (English) — first-token-based
-    let first_token = normalized.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+    let first_token = normalized
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let first_token_lower = first_token.as_str();
 
     // Verb-led
@@ -351,7 +389,10 @@ pub(crate) fn classify_shape(normalized: &str) -> SubjectShape {
         return SubjectShape::Demonstrative;
     }
     // Lowercase noun — all alphabetic chars are lowercase (most common LLM fail)
-    let all_alpha_lower = normalized.chars().filter(|c| c.is_alphabetic()).all(|c| c.is_lowercase());
+    let all_alpha_lower = normalized
+        .chars()
+        .filter(|c| c.is_alphabetic())
+        .all(|c| c.is_lowercase());
     if all_alpha_lower && normalized.chars().any(|c| c.is_alphabetic()) {
         return SubjectShape::LowercaseNoun;
     }
@@ -362,7 +403,11 @@ pub(crate) fn classify_shape(normalized: &str) -> SubjectShape {
     // Sentence — ends with '.' and not all caps. Checked AFTER Thai + Title
     // detection so that Thai entities ending in '.' ("บมจ. ปตท.") classify
     // as ThaiPure, not Sentence. Only English full statements land here.
-    if normalized.ends_with('.') && !normalized.chars().all(|c| !c.is_alphabetic() || c.is_uppercase()) {
+    if normalized.ends_with('.')
+        && !normalized
+            .chars()
+            .all(|c| !c.is_alphabetic() || c.is_uppercase())
+    {
         return SubjectShape::Sentence;
     }
     SubjectShape::Plain
@@ -373,32 +418,42 @@ fn is_title_case(s: &str) -> bool {
     if words.is_empty() {
         return false;
     }
-    words.iter().all(|w| {
-        w.chars().next().map_or(false, |c| c.is_uppercase())
-    })
+    words
+        .iter()
+        .all(|w| w.chars().next().is_some_and(|c| c.is_uppercase()))
 }
 
 const VERB_CUES: &[&str] = &[
-    "produced", "filed", "grew", "increased", "decreased", "reported",
-    "announced", "launched", "shipped", "posted",
+    "produced",
+    "filed",
+    "grew",
+    "increased",
+    "decreased",
+    "reported",
+    "announced",
+    "launched",
+    "shipped",
+    "posted",
 ];
 
-const DEMONSTRATIVES: &[&str] = &[
-    "it", "this", "that", "these", "those", "the",
-];
+const DEMONSTRATIVES: &[&str] = &["it", "this", "that", "these", "those", "the"];
 
 fn has_multi_entity_pattern(s: &str) -> bool {
     // "X, Y" with both X and Y starting uppercase
     let comma_joined = s.contains(',')
         && s.split(',').filter(|p| !p.trim().is_empty()).count() >= 2
-        && s.split(',').all(|p| p.trim().chars().next().map_or(false, |c| c.is_uppercase()));
+        && s.split(',')
+            .all(|p| p.trim().chars().next().is_some_and(|c| c.is_uppercase()));
     if comma_joined {
         return true;
     }
     // "X and Y" with both capitalized (check original case, not lowercased)
     if s.contains(" and ") {
         let parts: Vec<&str> = s.split(" and ").collect();
-        if parts.iter().all(|p| p.trim().chars().next().map_or(false, |c| c.is_uppercase())) {
+        if parts
+            .iter()
+            .all(|p| p.trim().chars().next().is_some_and(|c| c.is_uppercase()))
+        {
             return true;
         }
     }
@@ -416,56 +471,95 @@ mod tests_layer1 {
 
     #[test]
     fn single_char_too_short() {
-        assert_eq!(check_subject_mechanical("A"), Some(MechanicalDefect::TooShort));
+        assert_eq!(
+            check_subject_mechanical("A"),
+            Some(MechanicalDefect::TooShort)
+        );
     }
 
     #[test]
     fn over_80_chars_too_long() {
         let long = "A".repeat(81);
-        assert_eq!(check_subject_mechanical(&long), Some(MechanicalDefect::TooLong));
+        assert_eq!(
+            check_subject_mechanical(&long),
+            Some(MechanicalDefect::TooLong)
+        );
     }
 
     #[test]
     fn punctuation_only_rejected() {
-        assert_eq!(check_subject_mechanical("---"), Some(MechanicalDefect::PunctuationOnly));
-        assert_eq!(check_subject_mechanical("..."), Some(MechanicalDefect::PunctuationOnly));
+        assert_eq!(
+            check_subject_mechanical("---"),
+            Some(MechanicalDefect::PunctuationOnly)
+        );
+        assert_eq!(
+            check_subject_mechanical("..."),
+            Some(MechanicalDefect::PunctuationOnly)
+        );
     }
 
     #[test]
     fn control_char_rejected() {
-        assert_eq!(check_subject_mechanical("CA\u{0001}TL"), Some(MechanicalDefect::ControlChars));
+        assert_eq!(
+            check_subject_mechanical("CA\u{0001}TL"),
+            Some(MechanicalDefect::ControlChars)
+        );
     }
 
     #[test]
     fn tab_rejected() {
-        assert_eq!(check_subject_mechanical("CA\tTL"), Some(MechanicalDefect::TabNewlineCr));
+        assert_eq!(
+            check_subject_mechanical("CA\tTL"),
+            Some(MechanicalDefect::TabNewlineCr)
+        );
     }
 
     #[test]
     fn html_script_rejected() {
-        assert_eq!(check_subject_mechanical("<script>alert(1)</script>"), Some(MechanicalDefect::HtmlInjection));
+        assert_eq!(
+            check_subject_mechanical("<script>alert(1)</script>"),
+            Some(MechanicalDefect::HtmlInjection)
+        );
     }
 
     #[test]
     fn template_injection_rejected() {
-        assert_eq!(check_subject_mechanical("${evil}"), Some(MechanicalDefect::TemplateInjection));
-        assert_eq!(check_subject_mechanical("{{evil}}"), Some(MechanicalDefect::TemplateInjection));
+        assert_eq!(
+            check_subject_mechanical("${evil}"),
+            Some(MechanicalDefect::TemplateInjection)
+        );
+        assert_eq!(
+            check_subject_mechanical("{{evil}}"),
+            Some(MechanicalDefect::TemplateInjection)
+        );
     }
 
     #[test]
     fn wiki_markup_rejected() {
-        assert_eq!(check_subject_mechanical("[[wiki]]"), Some(MechanicalDefect::WikiMarkupLeak));
-        assert_eq!(check_subject_mechanical("==Heading=="), Some(MechanicalDefect::WikiMarkupLeak));
+        assert_eq!(
+            check_subject_mechanical("[[wiki]]"),
+            Some(MechanicalDefect::WikiMarkupLeak)
+        );
+        assert_eq!(
+            check_subject_mechanical("==Heading=="),
+            Some(MechanicalDefect::WikiMarkupLeak)
+        );
     }
 
     #[test]
     fn rtl_override_rejected() {
-        assert_eq!(check_subject_mechanical("\u{202E}CATL"), Some(MechanicalDefect::RtlOverride));
+        assert_eq!(
+            check_subject_mechanical("\u{202E}CATL"),
+            Some(MechanicalDefect::RtlOverride)
+        );
     }
 
     #[test]
     fn emoji_rejected() {
-        assert_eq!(check_subject_mechanical("CATL 🚀"), Some(MechanicalDefect::Emoji));
+        assert_eq!(
+            check_subject_mechanical("CATL 🚀"),
+            Some(MechanicalDefect::Emoji)
+        );
     }
 
     #[test]
@@ -478,8 +572,8 @@ mod tests_layer1 {
 
 #[cfg(test)]
 mod tests_layer2_structural {
-    use super::classify_shape;
     use super::SubjectShape;
+    use super::classify_shape;
 
     #[test]
     fn empty_is_empty() {
@@ -497,8 +591,14 @@ mod tests_layer2_structural {
     }
     #[test]
     fn slug_hyphen_separated() {
-        assert_eq!(classify_shape("international-peers-deep"), SubjectShape::Slug);
-        assert_eq!(classify_shape("thai-shipping-bf-report"), SubjectShape::Slug);
+        assert_eq!(
+            classify_shape("international-peers-deep"),
+            SubjectShape::Slug
+        );
+        assert_eq!(
+            classify_shape("thai-shipping-bf-report"),
+            SubjectShape::Slug
+        );
     }
     #[test]
     fn filename_underscore_separated() {
@@ -539,8 +639,8 @@ mod tests_layer2_structural {
 
 #[cfg(test)]
 mod tests_layer2_grammatical {
-    use super::*;
     use super::classify_shape;
+    use super::*;
 
     #[test]
     fn thai_pure_no_latin() {
@@ -548,11 +648,17 @@ mod tests_layer2_grammatical {
     }
     #[test]
     fn thai_latin_mixed() {
-        assert_eq!(classify_shape("บมจ. ปตท. (PTT)"), SubjectShape::ThaiLatinMixed);
+        assert_eq!(
+            classify_shape("บมจ. ปตท. (PTT)"),
+            SubjectShape::ThaiLatinMixed
+        );
     }
     #[test]
     fn verb_led() {
-        assert_eq!(classify_shape("Produced deliverable"), SubjectShape::VerbLed);
+        assert_eq!(
+            classify_shape("Produced deliverable"),
+            SubjectShape::VerbLed
+        );
         assert_eq!(classify_shape("reported earnings"), SubjectShape::VerbLed);
     }
     #[test]
@@ -562,9 +668,15 @@ mod tests_layer2_grammatical {
     }
     #[test]
     fn lowercase_noun_most_common_fail() {
-        assert_eq!(classify_shape("risk-free rate"), SubjectShape::LowercaseNoun);
+        assert_eq!(
+            classify_shape("risk-free rate"),
+            SubjectShape::LowercaseNoun
+        );
         assert_eq!(classify_shape("beta"), SubjectShape::LowercaseNoun);
-        assert_eq!(classify_shape("current case price"), SubjectShape::LowercaseNoun);
+        assert_eq!(
+            classify_shape("current case price"),
+            SubjectShape::LowercaseNoun
+        );
     }
     #[test]
     fn title_case() {
@@ -573,7 +685,10 @@ mod tests_layer2_grammatical {
     }
     #[test]
     fn sentence_with_period() {
-        assert_eq!(classify_shape("China's largest battery maker."), SubjectShape::Sentence);
+        assert_eq!(
+            classify_shape("China's largest battery maker."),
+            SubjectShape::Sentence
+        );
     }
     #[test]
     fn plain_fallback() {
@@ -605,8 +720,7 @@ impl SubjectRules {
     /// Load from a TOML string. Validates every shape has a verdict and
     /// every verdict is one of the 5 known values.
     pub fn parse(toml_str: &str) -> Result<Self, RulesError> {
-        let file: SubjectRulesFile = toml::from_str(toml_str)
-            .map_err(RulesError::TomlSyntax)?;
+        let file: SubjectRulesFile = toml::from_str(toml_str).map_err(RulesError::TomlSyntax)?;
         let mut verdicts = std::collections::HashMap::new();
         for (shape_name, verdict_str) in &file.verdicts {
             let shape = parse_shape(shape_name)
@@ -629,22 +743,38 @@ impl SubjectRules {
     }
 
     pub fn verdict_for(&self, shape: SubjectShape) -> SubjectVerdict {
-        self.verdicts.get(&shape).copied().unwrap_or(SubjectVerdict::DeferToLLM)
+        self.verdicts
+            .get(&shape)
+            .copied()
+            .unwrap_or(SubjectVerdict::DeferToLLM)
     }
 }
 
 pub(crate) const ALL_SHAPES: &[SubjectShape] = &[
-    SubjectShape::Empty, SubjectShape::Slug, SubjectShape::Filename,
-    SubjectShape::Url, SubjectShape::Date, SubjectShape::TimeExpr,
-    SubjectShape::NumberLed, SubjectShape::CurrencyLed,
-    SubjectShape::Sentence, SubjectShape::Question,
-    SubjectShape::ThaiPure, SubjectShape::ThaiLatinMixed,
-    SubjectShape::Ticker, SubjectShape::Acronym,
-    SubjectShape::TitleCase, SubjectShape::LowercaseNoun,
-    SubjectShape::VerbLed, SubjectShape::Demonstrative,
-    SubjectShape::MultiEntity, SubjectShape::Possessive,
-    SubjectShape::WikiMarkup, SubjectShape::Placeholder,
-    SubjectShape::Plain, SubjectShape::Unknown,
+    SubjectShape::Empty,
+    SubjectShape::Slug,
+    SubjectShape::Filename,
+    SubjectShape::Url,
+    SubjectShape::Date,
+    SubjectShape::TimeExpr,
+    SubjectShape::NumberLed,
+    SubjectShape::CurrencyLed,
+    SubjectShape::Sentence,
+    SubjectShape::Question,
+    SubjectShape::ThaiPure,
+    SubjectShape::ThaiLatinMixed,
+    SubjectShape::Ticker,
+    SubjectShape::Acronym,
+    SubjectShape::TitleCase,
+    SubjectShape::LowercaseNoun,
+    SubjectShape::VerbLed,
+    SubjectShape::Demonstrative,
+    SubjectShape::MultiEntity,
+    SubjectShape::Possessive,
+    SubjectShape::WikiMarkup,
+    SubjectShape::Placeholder,
+    SubjectShape::Plain,
+    SubjectShape::Unknown,
 ];
 
 fn parse_shape(name: &str) -> Option<SubjectShape> {
@@ -745,11 +875,16 @@ pub struct SubjectAllowlist {
 }
 
 impl SubjectAllowlist {
-    pub fn parse(toml_str: &str, canonical: std::collections::HashSet<String>) -> Result<Self, RulesError> {
+    pub fn parse(
+        toml_str: &str,
+        canonical: std::collections::HashSet<String>,
+    ) -> Result<Self, RulesError> {
         let file: AllowlistFile = toml::from_str(toml_str).map_err(RulesError::TomlSyntax)?;
         let user_overrides = file.user_overrides.keys().cloned().collect();
-        let tickers = file.tickers.values()
-            .flat_map(|g| g.symbols.iter().cloned().map(|s| s.to_uppercase()))
+        let tickers = file
+            .tickers
+            .values()
+            .flat_map(|g| g.symbols.iter().map(|s| s.to_uppercase()))
             .collect();
         Ok(Self {
             last_reviewed: file.last_reviewed,
@@ -834,9 +969,9 @@ impl SubjectDenylist {
 
 // ── SubjectValidator facade + Layer 5 combiner ──────────────────────────
 
+use crate::quality::{QualitySeverity, QualityTagKind};
 use std::path::Path;
 use std::sync::Arc;
-use crate::quality::{QualityTagKind, QualitySeverity};
 
 /// Top-level validator. Holds the parsed rules. Construct once at app boot.
 pub struct SubjectValidator {
@@ -885,10 +1020,9 @@ impl SubjectValidator {
         canonical: std::collections::HashMap<uuid::Uuid, String>,
     ) -> Result<Arc<Self>, ValidatorError> {
         let rules = SubjectRules::parse(rules_str).map_err(ValidatorError::Rules)?;
-        let canonical_set: std::collections::HashSet<String> =
-            canonical.into_values().collect();
-        let allowlist = SubjectAllowlist::parse(allow_str, canonical_set)
-            .map_err(ValidatorError::Rules)?;
+        let canonical_set: std::collections::HashSet<String> = canonical.into_values().collect();
+        let allowlist =
+            SubjectAllowlist::parse(allow_str, canonical_set).map_err(ValidatorError::Rules)?;
         let denylist = SubjectDenylist::parse(deny_str).map_err(ValidatorError::Rules)?;
         Ok(Arc::new(Self {
             rules,
@@ -925,18 +1059,24 @@ impl SubjectValidator {
                 DenylistCategory::Heading => QualityTag::new(
                     QualityTagKind::BadSubjectShape,
                     QualitySeverity::Critical,
-                    format!("subject `{}` matches a section heading (not an entity)", normalized),
-                ).with_evidence(normalized.clone()),
+                    format!(
+                        "subject `{}` matches a section heading (not an entity)",
+                        normalized
+                    ),
+                )
+                .with_evidence(normalized.clone()),
                 DenylistCategory::Stopword => QualityTag::new(
                     QualityTagKind::BadSubjectShape,
                     QualitySeverity::Critical,
                     format!("subject `{}` is a stopword", normalized),
-                ).with_evidence(normalized.clone()),
+                )
+                .with_evidence(normalized.clone()),
                 DenylistCategory::LlmBleed => QualityTag::new(
                     QualityTagKind::BadSubjectShape,
                     QualitySeverity::Critical,
                     format!("subject `{}` is an LLM placeholder bleed", normalized),
-                ).with_evidence(normalized.clone()),
+                )
+                .with_evidence(normalized.clone()),
             };
             return SubjectReport {
                 normalized,
@@ -961,32 +1101,54 @@ impl SubjectValidator {
         // Layer 3 + 5: shape verdict (with ambiguous-acronym boost)
         let shape_verdict = self.rules.verdict_for(shape);
         let mut tags = match shape_verdict {
-            SubjectVerdict::Reject => vec![QualityTag::new(
-                QualityTagKind::BadSubjectShape,
-                QualitySeverity::Critical,
-                format!("subject `{}` has shape `{:?}` which is not a valid entity name", normalized, shape),
-            ).with_evidence(normalized.clone())],
-            SubjectVerdict::SoftFlag => vec![QualityTag::new(
-                QualityTagKind::BadSubjectShape,
-                QualitySeverity::Warning,
-                soft_flag_message(shape, &normalized),
-            ).with_evidence(normalized.clone())],
+            SubjectVerdict::Reject => vec![
+                QualityTag::new(
+                    QualityTagKind::BadSubjectShape,
+                    QualitySeverity::Critical,
+                    format!(
+                        "subject `{}` has shape `{:?}` which is not a valid entity name",
+                        normalized, shape
+                    ),
+                )
+                .with_evidence(normalized.clone()),
+            ],
+            SubjectVerdict::SoftFlag => vec![
+                QualityTag::new(
+                    QualityTagKind::BadSubjectShape,
+                    QualitySeverity::Warning,
+                    soft_flag_message(shape, &normalized),
+                )
+                .with_evidence(normalized.clone()),
+            ],
             SubjectVerdict::AcceptWithInfo => {
                 let mut v = vec![];
-                if shape == SubjectShape::Acronym && self.denylist.is_ambiguous_acronym(&normalized) {
-                    v.push(QualityTag::new(
-                        QualityTagKind::SubjectAmbiguousAcronym,
-                        QualitySeverity::Info,
-                        format!("subject `{}` is an ambiguous acronym — verify intent", normalized),
-                    ).with_evidence(normalized.clone()));
+                if shape == SubjectShape::Acronym && self.denylist.is_ambiguous_acronym(&normalized)
+                {
+                    v.push(
+                        QualityTag::new(
+                            QualityTagKind::SubjectAmbiguousAcronym,
+                            QualitySeverity::Info,
+                            format!(
+                                "subject `{}` is an ambiguous acronym — verify intent",
+                                normalized
+                            ),
+                        )
+                        .with_evidence(normalized.clone()),
+                    );
                 }
                 v
             }
-            SubjectVerdict::DeferToLLM => vec![QualityTag::new(
-                QualityTagKind::SubjectNeedsContext,
-                QualitySeverity::Warning,
-                format!("subject `{}` could not be confidently classified", normalized),
-            ).with_evidence(normalized.clone())],
+            SubjectVerdict::DeferToLLM => vec![
+                QualityTag::new(
+                    QualityTagKind::SubjectNeedsContext,
+                    QualitySeverity::Warning,
+                    format!(
+                        "subject `{}` could not be confidently classified",
+                        normalized
+                    ),
+                )
+                .with_evidence(normalized.clone()),
+            ],
             SubjectVerdict::Accept => vec![],
         };
 
@@ -1015,17 +1177,50 @@ impl SubjectValidator {
 
 fn mechanical_defect_tag(defect: &MechanicalDefect, subject: &str) -> QualityTag {
     let (kind, msg) = match defect {
-        MechanicalDefect::Empty => (QualityTagKind::BadSubjectEmpty, "subject is empty".to_string()),
-        MechanicalDefect::TooShort => (QualityTagKind::BadSubjectLength, "subject is too short (1 char)".to_string()),
-        MechanicalDefect::TooLong => (QualityTagKind::BadSubjectLength, "subject is too long (>80 chars)".to_string()),
-        MechanicalDefect::PunctuationOnly => (QualityTagKind::BadSubjectStructural, "subject is punctuation-only".to_string()),
-        MechanicalDefect::ControlChars => (QualityTagKind::BadSubjectStructural, "subject contains control characters".to_string()),
-        MechanicalDefect::TabNewlineCr => (QualityTagKind::BadSubjectStructural, "subject contains tab/newline/CR".to_string()),
-        MechanicalDefect::WikiMarkupLeak => (QualityTagKind::BadSubjectStructural, "subject contains wiki markup".to_string()),
-        MechanicalDefect::Emoji => (QualityTagKind::BadSubjectStructural, "subject contains emoji".to_string()),
-        MechanicalDefect::HtmlInjection => (QualityTagKind::BadSubjectAdversarial, "subject contains HTML injection".to_string()),
-        MechanicalDefect::TemplateInjection => (QualityTagKind::BadSubjectAdversarial, "subject contains template injection".to_string()),
-        MechanicalDefect::RtlOverride => (QualityTagKind::BadSubjectAdversarial, "subject contains RTL override (U+202E)".to_string()),
+        MechanicalDefect::Empty => (
+            QualityTagKind::BadSubjectEmpty,
+            "subject is empty".to_string(),
+        ),
+        MechanicalDefect::TooShort => (
+            QualityTagKind::BadSubjectLength,
+            "subject is too short (1 char)".to_string(),
+        ),
+        MechanicalDefect::TooLong => (
+            QualityTagKind::BadSubjectLength,
+            "subject is too long (>80 chars)".to_string(),
+        ),
+        MechanicalDefect::PunctuationOnly => (
+            QualityTagKind::BadSubjectStructural,
+            "subject is punctuation-only".to_string(),
+        ),
+        MechanicalDefect::ControlChars => (
+            QualityTagKind::BadSubjectStructural,
+            "subject contains control characters".to_string(),
+        ),
+        MechanicalDefect::TabNewlineCr => (
+            QualityTagKind::BadSubjectStructural,
+            "subject contains tab/newline/CR".to_string(),
+        ),
+        MechanicalDefect::WikiMarkupLeak => (
+            QualityTagKind::BadSubjectStructural,
+            "subject contains wiki markup".to_string(),
+        ),
+        MechanicalDefect::Emoji => (
+            QualityTagKind::BadSubjectStructural,
+            "subject contains emoji".to_string(),
+        ),
+        MechanicalDefect::HtmlInjection => (
+            QualityTagKind::BadSubjectAdversarial,
+            "subject contains HTML injection".to_string(),
+        ),
+        MechanicalDefect::TemplateInjection => (
+            QualityTagKind::BadSubjectAdversarial,
+            "subject contains template injection".to_string(),
+        ),
+        MechanicalDefect::RtlOverride => (
+            QualityTagKind::BadSubjectAdversarial,
+            "subject contains RTL override (U+202E)".to_string(),
+        ),
     };
     QualityTag::new(kind, QualitySeverity::Critical, msg).with_evidence(subject.to_string())
 }
@@ -1099,9 +1294,18 @@ Unknown = "accept_info"
     #[test]
     fn parses_all_shapes() {
         let rules = SubjectRules::parse(TEST_RULES).expect("parse");
-        assert_eq!(rules.verdict_for(SubjectShape::Slug), SubjectVerdict::Reject);
-        assert_eq!(rules.verdict_for(SubjectShape::Ticker), SubjectVerdict::Accept);
-        assert_eq!(rules.verdict_for(SubjectShape::ThaiPure), SubjectVerdict::AcceptWithInfo);
+        assert_eq!(
+            rules.verdict_for(SubjectShape::Slug),
+            SubjectVerdict::Reject
+        );
+        assert_eq!(
+            rules.verdict_for(SubjectShape::Ticker),
+            SubjectVerdict::Accept
+        );
+        assert_eq!(
+            rules.verdict_for(SubjectShape::ThaiPure),
+            SubjectVerdict::AcceptWithInfo
+        );
     }
 
     #[test]
@@ -1132,7 +1336,9 @@ mod tests_layer4 {
     use super::*;
     use std::collections::HashSet;
 
-    fn empty_canonical() -> HashSet<String> { HashSet::new() }
+    fn empty_canonical() -> HashSet<String> {
+        HashSet::new()
+    }
 
     #[test]
     fn allowlist_user_override_matches() {
@@ -1168,7 +1374,10 @@ version = "v1"
 "DCF Assumptions" = "auto"
 "#;
         let dl = SubjectDenylist::parse(toml_str).unwrap();
-        assert_eq!(dl.matches("DCF Assumptions"), Some(DenylistCategory::Heading));
+        assert_eq!(
+            dl.matches("DCF Assumptions"),
+            Some(DenylistCategory::Heading)
+        );
         assert_eq!(dl.matches("CATL"), None);
     }
 
@@ -1240,7 +1449,11 @@ mod tests_facade {
         let v = validator();
         let r = v.validate("international-peers-deep");
         assert_eq!(r.verdict, SubjectVerdict::Reject);
-        assert!(r.quality_tags.iter().any(|t| t.severity == QualitySeverity::Critical));
+        assert!(
+            r.quality_tags
+                .iter()
+                .any(|t| t.severity == QualitySeverity::Critical)
+        );
     }
 
     #[test]
@@ -1248,7 +1461,11 @@ mod tests_facade {
         let v = validator();
         let r = v.validate("risk-free rate");
         assert_eq!(r.verdict, SubjectVerdict::Reject);
-        assert!(r.quality_tags.iter().any(|t| t.kind == QualityTagKind::BadSubjectShape));
+        assert!(
+            r.quality_tags
+                .iter()
+                .any(|t| t.kind == QualityTagKind::BadSubjectShape)
+        );
     }
 
     #[test]
@@ -1263,7 +1480,11 @@ mod tests_facade {
     fn ambiguous_acronym_gets_info_tag() {
         let v = validator();
         let r = v.validate("BAT");
-        assert!(r.quality_tags.iter().any(|t| t.kind == QualityTagKind::SubjectAmbiguousAcronym));
+        assert!(
+            r.quality_tags
+                .iter()
+                .any(|t| t.kind == QualityTagKind::SubjectAmbiguousAcronym)
+        );
     }
 
     #[test]
