@@ -73,6 +73,7 @@ pub mod provider;
 /// deterministic + AI rules that tag proposals for faster human review.
 /// Read-only: produces tags only, never mutates the ledger.
 pub mod quality;
+pub mod subject_validator;
 /// Backup, restore, upgrade, rollback contract (Task 6.3) — encrypted backup
 /// report, clean-host restore drill, schema-upgrade plan, RPO/RTO.
 pub mod recovery;

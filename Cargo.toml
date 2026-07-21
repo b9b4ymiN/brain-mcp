@@ -57,6 +57,10 @@ hex        = "0.4"
 # Regex
 regex      = "1"
 
+# Unicode (subject validator Layer 0: NFC normalize, UAX#29 word boundaries)
+unicode-normalization = "0.1"
+unicode-segmentation  = "1.12"
+
 # Markdown
 # (frontmatter crate removed — unused, pulled in unmaintained yaml-rust)
 
