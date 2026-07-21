@@ -29,7 +29,7 @@ services:
     # Built fresh from the repo Dockerfile on `docker compose up --build`.
     # Pin to a release tag (e.g. `brain:v0.5`) in production and drop the
     # `build:` block to deploy a pre-built image from a registry.
-    image: brain:v0.9-lenient-parser
+    image: brain:v0.10-ai-review
     build:
       context: .
       dockerfile: Dockerfile
@@ -46,6 +46,13 @@ services:
       # Operator's config — single-file bind mount inside the writable /data
       # volume (see header comment for the state_dir rationale).
       - ./config/config.toml:/data/config.toml:ro
+      # Subject Validator v1 rules (Phase 1.5) — bind mount the host rules/
+      # directory so operators can edit verdicts / denylists / allowlists
+      # without rebuilding the image. Override of the COPY'd fallback in
+      # /app/rules. The binary looks for "rules/" relative to cwd (/data),
+      # then falls back to include_str!-embedded copies — this mount makes
+      # the relative lookup succeed.
+      - ./rules:/data/rules:ro
     environment:
       # tracing filter — adjust per-operator preference.
       - RUST_LOG=llm_wiki=info,warn

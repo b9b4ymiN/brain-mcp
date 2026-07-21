@@ -45,6 +45,9 @@ COPY src/ ./src/
 COPY examples/ ./examples/
 COPY schemas/ ./schemas/
 COPY web/hugo-cms/ ./web/hugo-cms/
+# Subject Validator v1 (Phase 1.5) — embedded fallback when rules/ bind mount
+# is absent. The runtime bind mount in docker-compose.yml overrides these.
+COPY rules/ ./rules/
 # Build with BuildKit cache mounts for cargo registry + target dir. The cache
 # mounts are not baked into the image layer.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
@@ -76,6 +79,12 @@ RUN useradd --uid 1000 --create-home --shell /bin/bash brain
 COPY --from=builder /llm-wiki /usr/local/bin/llm-wiki
 # Copy the Console SPA from the console-builder stage.
 COPY --from=console-builder /console/dist /app/web/console/dist
+
+# Subject Validator v1 rules — embedded fallback. Operators can override at
+# runtime by bind-mounting /app/rules. cwd at runtime is /data, so the binary
+# finds these via the include_str! embedded copy if the runtime path lookup
+# fails. See src/subject_validator.rs::load_with_embedded_fallback.
+COPY --chown=brain:brain rules/ /app/rules/
 
 # Volumes mount points (created with brain ownership so bind mounts work).
 RUN mkdir -p /data /backups && chown -R brain:brain /data /backups /app
