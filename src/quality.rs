@@ -710,6 +710,11 @@ mod tests {
             excerpt: Some("some evidence".to_string()),
             source_id: None,
             quote_hash: None,
+            value_located: false,
+            value_offset: None,
+            value_len: None,
+            excerpt_truncated: false,
+            additional_sources: Vec::new(),
         }
     }
 

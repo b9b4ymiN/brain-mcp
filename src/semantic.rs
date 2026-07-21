@@ -692,6 +692,21 @@ pub struct EvidenceSummary {
     pub excerpt: Option<String>,
     pub source_id: Option<Uuid>,
     pub quote_hash: Option<String>,
+    /// Phase 1.6 — true iff the proposal value was found in the excerpt.
+    #[serde(default)]
+    pub value_located: bool,
+    /// Phase 1.6 — char offset of the value within `excerpt` (None if `!value_located`).
+    #[serde(default)]
+    pub value_offset: Option<usize>,
+    /// Phase 1.6 — char length of the value within `excerpt` (None if `!value_located`).
+    #[serde(default)]
+    pub value_len: Option<usize>,
+    /// Phase 1.6 — true if the excerpt was windowed/clamped.
+    #[serde(default)]
+    pub excerpt_truncated: bool,
+    /// Phase 1.6 — rendition IDs of non-primary spans (collapsed "N more sources" UI).
+    #[serde(default)]
+    pub additional_sources: Vec<String>,
 }
 
 /// Result of `purge_preview`: the caller must echo `preview_hash` and
@@ -4203,6 +4218,11 @@ impl SemanticStore {
             excerpt,
             source_id,
             quote_hash,
+            value_located: false,
+            value_offset: None,
+            value_len: None,
+            excerpt_truncated: false,
+            additional_sources: Vec::new(),
         })
     }
 

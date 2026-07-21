@@ -482,6 +482,11 @@ fn false_positive_rate_on_30_confirmed_claims_reported() {
         excerpt: Some("evidence text".to_string()),
         source_id: None,
         quote_hash: None,
+        value_located: false,
+        value_offset: None,
+        value_len: None,
+        excerpt_truncated: false,
+        additional_sources: Vec::new(),
     };
 
     let mut flagged = 0usize;
