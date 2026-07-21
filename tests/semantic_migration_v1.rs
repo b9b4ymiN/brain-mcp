@@ -211,6 +211,7 @@ fn backfill_never_promotes_an_llm_claim_to_confirmed() {
                 method: "llm_extract".to_owned(),
                 model: Some("zai-glm".to_owned()),
                 prompt_version: Some("v1".to_owned()),
+                subject_validator_version: None,
                 draft: stock_draft("GULF", 60),
             },
         )

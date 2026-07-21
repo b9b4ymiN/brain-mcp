@@ -349,6 +349,13 @@ pub struct ProposeInferenceCommand {
     pub method: String,
     pub model: Option<String>,
     pub prompt_version: Option<String>,
+    /// Subject validator version that screened this proposal's subject.
+    /// `None` for legacy proposals (pre-Phase 1.5) or when validation skipped.
+    /// `#[serde(default)]` keeps backward compat: historical JSON without
+    /// this field deserializes to None instead of failing under
+    /// `deny_unknown_fields`.
+    #[serde(default)]
+    pub subject_validator_version: Option<String>,
     pub draft: ClaimDraft,
 }
 

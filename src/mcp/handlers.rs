@@ -1156,6 +1156,9 @@ pub fn handle_brain_extract(server: &McpServer, args: &Map<String, Value>) -> To
                     method: method.clone(),
                     model: model.clone(),
                     prompt_version: Some(prompt_version.clone()),
+                    subject_validator_version: Some(
+                        crate::subject_validator::SUBJECT_VALIDATOR_VERSION.to_string(),
+                    ),
                     draft: crate::semantic::ClaimDraft {
                         subject: proposal.subject,
                         predicate: proposal.predicate,
@@ -1290,6 +1293,9 @@ pub fn handle_brain_propose(server: &McpServer, args: &Map<String, Value>) -> To
                 method,
                 model,
                 prompt_version,
+                subject_validator_version: Some(
+                    crate::subject_validator::SUBJECT_VALIDATOR_VERSION.to_string(),
+                ),
                 draft: crate::semantic::ClaimDraft {
                     subject,
                     predicate,

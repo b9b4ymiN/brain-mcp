@@ -176,7 +176,7 @@ fn check_proposal(store: &SemanticStore, proposal_id: Uuid) -> Vec<llm_wiki::qua
         evidence: &evidence,
         existing_claims: &existing,
     };
-    QualityChecker::new().check_deterministic(&input)
+    QualityChecker::without_subject_validation().check_deterministic(&input)
 }
 
 fn has_tag(
@@ -505,7 +505,7 @@ fn false_positive_rate_on_30_confirmed_claims_reported() {
             evidence: &ev_template,
             existing_claims: &active, // pass all active so DuplicatePredicate can fire
         };
-        let tags = QualityChecker::new().check_deterministic(&input);
+        let tags = QualityChecker::without_subject_validation().check_deterministic(&input);
         if !tags.is_empty() {
             flagged += 1;
         }

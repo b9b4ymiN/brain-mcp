@@ -186,12 +186,26 @@ async fn serve_http(
                 "Console HTTP API mounted at /api/v1 (dev bootstrap auth)"
             );
             Some({
+                // Phase 1.5 — boot-load the Subject Validator from `rules/`
+                // (falling back to the embedded TOMLs when files are absent).
+                // Canonical subjects come from the live entity table so the
+                // allowlist can short-circuit known entities. A parse failure
+                // is fatal: subject quality tags are part of the contract.
+                let canonical_subjects = store.entity_canonical_subjects_owned();
+                let rules_dir = std::path::Path::new("rules");
+                let subject_validator =
+                    crate::subject_validator::SubjectValidator::load_with_embedded_fallback(
+                        rules_dir,
+                        canonical_subjects,
+                    )
+                    .expect("FATAL: subject validator rules failed to parse");
                 let mut state = crate::api::ConsoleApiState::with_credentials(
                     store,
                     creds.username,
                     creds.password,
                     serve_cfg.http_bind_all_interfaces,
-                );
+                )
+                .with_subject_validator(subject_validator);
                 if let Some(p) = &console_provider {
                     state = state.with_ai_provider(p.clone());
                 }

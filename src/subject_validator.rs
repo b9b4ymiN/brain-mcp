@@ -832,6 +832,235 @@ impl SubjectDenylist {
     }
 }
 
+// ── SubjectValidator facade + Layer 5 combiner ──────────────────────────
+
+use std::path::Path;
+use std::sync::Arc;
+use crate::quality::{QualityTagKind, QualitySeverity};
+
+/// Top-level validator. Holds the parsed rules. Construct once at app boot.
+pub struct SubjectValidator {
+    pub rules: SubjectRules,
+    pub allowlist: SubjectAllowlist,
+    pub denylist: SubjectDenylist,
+    /// Frequency counter for Unknown-shape inputs (Phase 3 trigger signal).
+    unknown_counter: parking_lot::Mutex<std::collections::HashMap<String, u64>>,
+}
+
+impl SubjectValidator {
+    /// Load all three rule files from a directory and merge canonical subjects.
+    pub fn load(
+        rules_dir: &Path,
+        canonical: std::collections::HashMap<uuid::Uuid, String>,
+    ) -> Result<Arc<Self>, ValidatorError> {
+        let rules_str = std::fs::read_to_string(rules_dir.join("subject_rules.toml"))
+            .map_err(|e| ValidatorError::FileMissing("subject_rules.toml".into(), e))?;
+        let allow_str = std::fs::read_to_string(rules_dir.join("subject_allowlist.toml"))
+            .map_err(|e| ValidatorError::FileMissing("subject_allowlist.toml".into(), e))?;
+        let deny_str = std::fs::read_to_string(rules_dir.join("subject_denylist.toml"))
+            .map_err(|e| ValidatorError::FileMissing("subject_denylist.toml".into(), e))?;
+        Self::from_strings(&rules_str, &allow_str, &deny_str, canonical)
+    }
+
+    /// Like `load`, but falls back to embedded rules if files are missing.
+    /// Used for tests and for boot resilience.
+    pub fn load_with_embedded_fallback(
+        rules_dir: &Path,
+        canonical: std::collections::HashMap<uuid::Uuid, String>,
+    ) -> Result<Arc<Self>, ValidatorError> {
+        let rules_str = std::fs::read_to_string(rules_dir.join("subject_rules.toml"))
+            .unwrap_or_else(|_| include_str!("../rules/subject_rules.toml").to_string());
+        let allow_str = std::fs::read_to_string(rules_dir.join("subject_allowlist.toml"))
+            .unwrap_or_else(|_| include_str!("../rules/subject_allowlist.toml").to_string());
+        let deny_str = std::fs::read_to_string(rules_dir.join("subject_denylist.toml"))
+            .unwrap_or_else(|_| include_str!("../rules/subject_denylist.toml").to_string());
+        Self::from_strings(&rules_str, &allow_str, &deny_str, canonical)
+    }
+
+    /// Test-friendly constructor — pass TOML contents directly.
+    pub fn from_strings(
+        rules_str: &str,
+        allow_str: &str,
+        deny_str: &str,
+        canonical: std::collections::HashMap<uuid::Uuid, String>,
+    ) -> Result<Arc<Self>, ValidatorError> {
+        let rules = SubjectRules::parse(rules_str).map_err(ValidatorError::Rules)?;
+        let canonical_set: std::collections::HashSet<String> =
+            canonical.into_values().collect();
+        let allowlist = SubjectAllowlist::parse(allow_str, canonical_set)
+            .map_err(ValidatorError::Rules)?;
+        let denylist = SubjectDenylist::parse(deny_str).map_err(ValidatorError::Rules)?;
+        Ok(Arc::new(Self {
+            rules,
+            allowlist,
+            denylist,
+            unknown_counter: parking_lot::Mutex::new(std::collections::HashMap::new()),
+        }))
+    }
+
+    /// Validate one subject. Layer pipeline runs in order.
+    pub fn validate(&self, raw_subject: &str) -> SubjectReport {
+        // Layer 0: normalize
+        let (normalized, _norm_fired) = normalize_subject(raw_subject);
+
+        // Layer 1: mechanical hard-fail (short-circuits everything)
+        if let Some(defect) = check_subject_mechanical(&normalized) {
+            let tags = vec![mechanical_defect_tag(&defect, &normalized)];
+            return SubjectReport {
+                normalized,
+                shape: SubjectShape::Empty,
+                verdict: SubjectVerdict::Reject,
+                quality_tags: tags,
+                validator_version: SUBJECT_VALIDATOR_VERSION,
+            };
+        }
+
+        // Layer 2: classify shape
+        let shape = classify_shape(&normalized);
+
+        // Layer 4 (denylist — runs before Layer 3 to allow heading override
+        // on TitleCase shapes that would otherwise accept_info)
+        if let Some(category) = self.denylist.matches(&normalized) {
+            let tag = match category {
+                DenylistCategory::Heading => QualityTag::new(
+                    QualityTagKind::BadSubjectShape,
+                    QualitySeverity::Critical,
+                    format!("subject `{}` matches a section heading (not an entity)", normalized),
+                ).with_evidence(normalized.clone()),
+                DenylistCategory::Stopword => QualityTag::new(
+                    QualityTagKind::BadSubjectShape,
+                    QualitySeverity::Critical,
+                    format!("subject `{}` is a stopword", normalized),
+                ).with_evidence(normalized.clone()),
+                DenylistCategory::LlmBleed => QualityTag::new(
+                    QualityTagKind::BadSubjectShape,
+                    QualitySeverity::Critical,
+                    format!("subject `{}` is an LLM placeholder bleed", normalized),
+                ).with_evidence(normalized.clone()),
+            };
+            return SubjectReport {
+                normalized,
+                shape,
+                verdict: SubjectVerdict::Reject,
+                quality_tags: vec![tag],
+                validator_version: SUBJECT_VALIDATOR_VERSION,
+            };
+        }
+
+        // Layer 4 (allowlist — escape hatch)
+        if self.allowlist.contains(&normalized) {
+            return SubjectReport {
+                normalized,
+                shape,
+                verdict: SubjectVerdict::Accept,
+                quality_tags: vec![],
+                validator_version: SUBJECT_VALIDATOR_VERSION,
+            };
+        }
+
+        // Layer 3 + 5: shape verdict (with ambiguous-acronym boost)
+        let shape_verdict = self.rules.verdict_for(shape);
+        let mut tags = match shape_verdict {
+            SubjectVerdict::Reject => vec![QualityTag::new(
+                QualityTagKind::BadSubjectShape,
+                QualitySeverity::Critical,
+                format!("subject `{}` has shape `{:?}` which is not a valid entity name", normalized, shape),
+            ).with_evidence(normalized.clone())],
+            SubjectVerdict::SoftFlag => vec![QualityTag::new(
+                QualityTagKind::BadSubjectShape,
+                QualitySeverity::Warning,
+                soft_flag_message(shape, &normalized),
+            ).with_evidence(normalized.clone())],
+            SubjectVerdict::AcceptWithInfo => {
+                let mut v = vec![];
+                if shape == SubjectShape::Acronym && self.denylist.is_ambiguous_acronym(&normalized) {
+                    v.push(QualityTag::new(
+                        QualityTagKind::SubjectAmbiguousAcronym,
+                        QualitySeverity::Info,
+                        format!("subject `{}` is an ambiguous acronym — verify intent", normalized),
+                    ).with_evidence(normalized.clone()));
+                }
+                v
+            }
+            SubjectVerdict::DeferToLLM => vec![QualityTag::new(
+                QualityTagKind::SubjectNeedsContext,
+                QualitySeverity::Warning,
+                format!("subject `{}` could not be confidently classified", normalized),
+            ).with_evidence(normalized.clone())],
+            SubjectVerdict::Accept => vec![],
+        };
+
+        // Unknown frequency counter (telemetry for Phase 3 trigger)
+        if shape == SubjectShape::Unknown {
+            let mut counter = self.unknown_counter.lock();
+            *counter.entry(normalized.clone()).or_insert(0) += 1;
+        }
+
+        let _ = &mut tags; // (placeholder for future info-tag attachment)
+
+        SubjectReport {
+            normalized,
+            shape,
+            verdict: shape_verdict,
+            quality_tags: tags,
+            validator_version: SUBJECT_VALIDATOR_VERSION,
+        }
+    }
+
+    /// Snapshot of Unknown-shape input frequencies (Phase 3 trigger metric).
+    pub fn unknown_frequency_snapshot(&self) -> std::collections::HashMap<String, u64> {
+        self.unknown_counter.lock().clone()
+    }
+}
+
+fn mechanical_defect_tag(defect: &MechanicalDefect, subject: &str) -> QualityTag {
+    let (kind, msg) = match defect {
+        MechanicalDefect::Empty => (QualityTagKind::BadSubjectEmpty, "subject is empty".to_string()),
+        MechanicalDefect::TooShort => (QualityTagKind::BadSubjectLength, "subject is too short (1 char)".to_string()),
+        MechanicalDefect::TooLong => (QualityTagKind::BadSubjectLength, "subject is too long (>80 chars)".to_string()),
+        MechanicalDefect::PunctuationOnly => (QualityTagKind::BadSubjectStructural, "subject is punctuation-only".to_string()),
+        MechanicalDefect::ControlChars => (QualityTagKind::BadSubjectStructural, "subject contains control characters".to_string()),
+        MechanicalDefect::TabNewlineCr => (QualityTagKind::BadSubjectStructural, "subject contains tab/newline/CR".to_string()),
+        MechanicalDefect::WikiMarkupLeak => (QualityTagKind::BadSubjectStructural, "subject contains wiki markup".to_string()),
+        MechanicalDefect::Emoji => (QualityTagKind::BadSubjectStructural, "subject contains emoji".to_string()),
+        MechanicalDefect::HtmlInjection => (QualityTagKind::BadSubjectAdversarial, "subject contains HTML injection".to_string()),
+        MechanicalDefect::TemplateInjection => (QualityTagKind::BadSubjectAdversarial, "subject contains template injection".to_string()),
+        MechanicalDefect::RtlOverride => (QualityTagKind::BadSubjectAdversarial, "subject contains RTL override (U+202E)".to_string()),
+    };
+    QualityTag::new(kind, QualitySeverity::Critical, msg).with_evidence(subject.to_string())
+}
+
+fn soft_flag_message(shape: SubjectShape, subject: &str) -> String {
+    match shape {
+        SubjectShape::Possessive => format!(
+            "subject `{}` is possessive — split into entity + predicate (e.g. \"Tesla's CFO\" → subject=\"Tesla\", predicate=\"CFO\")",
+            subject
+        ),
+        SubjectShape::MultiEntity => format!(
+            "subject `{}` contains multiple entities — split into N separate claims",
+            subject
+        ),
+        _ => format!("subject `{}` needs review", subject),
+    }
+}
+
+#[derive(Debug)]
+pub enum ValidatorError {
+    FileMissing(String, std::io::Error),
+    Rules(RulesError),
+}
+
+impl std::fmt::Display for ValidatorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FileMissing(name, e) => write!(f, "could not read {name}: {e}"),
+            Self::Rules(e) => write!(f, "rules error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ValidatorError {}
+
 #[cfg(test)]
 mod tests_layer3 {
     use super::*;
@@ -990,5 +1219,106 @@ version = "x"
     fn production_denylist_parses() {
         let s = include_str!("../rules/subject_denylist.toml");
         SubjectDenylist::parse(s).expect("prod denylist");
+    }
+}
+
+#[cfg(test)]
+mod tests_facade {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn validator() -> Arc<SubjectValidator> {
+        let rules = include_str!("../rules/subject_rules.toml");
+        let allow = include_str!("../rules/subject_allowlist.toml");
+        let deny = include_str!("../rules/subject_denylist.toml");
+        SubjectValidator::from_strings(rules, allow, deny, HashMap::new())
+            .expect("validator from production rules")
+    }
+
+    #[test]
+    fn slug_subject_is_rejected_critical() {
+        let v = validator();
+        let r = v.validate("international-peers-deep");
+        assert_eq!(r.verdict, SubjectVerdict::Reject);
+        assert!(r.quality_tags.iter().any(|t| t.severity == QualitySeverity::Critical));
+    }
+
+    #[test]
+    fn lowercase_noun_subject_is_rejected_critical() {
+        let v = validator();
+        let r = v.validate("risk-free rate");
+        assert_eq!(r.verdict, SubjectVerdict::Reject);
+        assert!(r.quality_tags.iter().any(|t| t.kind == QualityTagKind::BadSubjectShape));
+    }
+
+    #[test]
+    fn acronym_silent_accept() {
+        let v = validator();
+        let r = v.validate("CATL");
+        assert_eq!(r.verdict, SubjectVerdict::AcceptWithInfo);
+        assert!(r.quality_tags.is_empty());
+    }
+
+    #[test]
+    fn ambiguous_acronym_gets_info_tag() {
+        let v = validator();
+        let r = v.validate("BAT");
+        assert!(r.quality_tags.iter().any(|t| t.kind == QualityTagKind::SubjectAmbiguousAcronym));
+    }
+
+    #[test]
+    fn thai_pure_accept_info() {
+        let v = validator();
+        let r = v.validate("บมจ. ปตท.");
+        assert_eq!(r.verdict, SubjectVerdict::AcceptWithInfo);
+    }
+
+    #[test]
+    fn llm_bleed_placeholder_rejected() {
+        let v = validator();
+        let r = v.validate("<entity>");
+        assert_eq!(r.verdict, SubjectVerdict::Reject);
+    }
+
+    #[test]
+    fn allowlist_user_override_forces_accept() {
+        let rules = include_str!("../rules/subject_rules.toml");
+        let allow = r#"
+last_reviewed = "x"
+version = "x"
+[user_overrides]
+"risk-free rate" = "auto"
+"#;
+        let deny = include_str!("../rules/subject_denylist.toml");
+        let v = SubjectValidator::from_strings(rules, allow, deny, HashMap::new()).unwrap();
+        let r = v.validate("risk-free rate");
+        assert_eq!(r.verdict, SubjectVerdict::Accept);
+    }
+
+    #[test]
+    fn heading_denylist_overrides_title_case() {
+        let v = validator();
+        let r = v.validate("DCF Assumptions");
+        assert_eq!(r.verdict, SubjectVerdict::Reject);
+    }
+
+    #[test]
+    fn multi_entity_soft_flag() {
+        let v = validator();
+        let r = v.validate("CATL, BYD, LG");
+        assert_eq!(r.verdict, SubjectVerdict::SoftFlag);
+    }
+
+    #[test]
+    fn possessive_soft_flag() {
+        let v = validator();
+        let r = v.validate("Tesla's CFO");
+        assert_eq!(r.verdict, SubjectVerdict::SoftFlag);
+    }
+
+    #[test]
+    fn unknown_counter_increments_for_unknown_shape() {
+        let v = validator();
+        assert!(v.unknown_frequency_snapshot().is_empty());
     }
 }

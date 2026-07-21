@@ -611,6 +611,7 @@ fn propose_inference_without_evidence_is_unsupported_and_cannot_be_confirmed() {
                 method: "llm-synthesis".to_owned(),
                 model: Some("glm-test".to_owned()),
                 prompt_version: Some("v1".to_owned()),
+                subject_validator_version: None,
                 draft: stock_draft("GULF", 90, None, None),
             },
         )
@@ -672,6 +673,7 @@ fn propose_inference_with_evidence_is_supported_and_confirmable() {
                 method: "llm-synthesis".to_owned(),
                 model: Some("glm-test".to_owned()),
                 prompt_version: Some("v1".to_owned()),
+                subject_validator_version: None,
                 draft: stock_draft("GULF", 60, None, None),
             },
         )

@@ -222,6 +222,7 @@ fn inference_claim_origin_is_agent_proposed_even_after_confirm() {
                 method: "llm_extract".to_owned(),
                 model: Some("zai-glm".to_owned()),
                 prompt_version: Some("v1".to_owned()),
+                subject_validator_version: None,
                 draft: stock_draft("GULF", 60),
             },
         )

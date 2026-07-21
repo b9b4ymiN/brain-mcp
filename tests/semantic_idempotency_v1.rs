@@ -300,6 +300,7 @@ fn propose_inference_replays_idempotently_and_conflicts_on_different_payload() {
                 method: "llm-synthesis".to_owned(),
                 model: Some("glm-test".to_owned()),
                 prompt_version: Some("v1".to_owned()),
+                subject_validator_version: None,
                 draft: draft("GULF"),
             },
         )
@@ -313,6 +314,7 @@ fn propose_inference_replays_idempotently_and_conflicts_on_different_payload() {
                 method: "llm-synthesis".to_owned(),
                 model: Some("glm-test".to_owned()),
                 prompt_version: Some("v1".to_owned()),
+                subject_validator_version: None,
                 draft: draft("GULF"),
             },
         )
@@ -332,6 +334,7 @@ fn propose_inference_replays_idempotently_and_conflicts_on_different_payload() {
                 method: "llm-synthesis".to_owned(),
                 model: Some("glm-test".to_owned()),
                 prompt_version: Some("v2".to_owned()),
+                subject_validator_version: None,
                 draft: draft("GULF"),
             },
         ),

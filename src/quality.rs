@@ -17,7 +17,11 @@ use uuid::Uuid;
 
 /// Bumped whenever a rule's behavior or the response shape changes.
 /// Recorded in `AiReviewResponse.checker_version` for audit.
-pub const QUALITY_CHECKER_VERSION: &str = "quality-v1";
+///
+/// v1-subject-shape (2026-07-21): adds `check_subject_shape` rule with 8 new
+/// tag variants for bad subjects (Family A/B/C/D/F/G — see Subject Validator
+/// spec).
+pub const QUALITY_CHECKER_VERSION: &str = "quality-v1-subject-shape";
 
 /// Closed-canon domain vocabulary (anti-patterns.md §17). Phase 1 uses the
 /// strict 4-value list from the doc; a future session may relax this if the
@@ -61,6 +65,15 @@ pub enum QualityTagKind {
     SourceClaimMismatch,
     SemanticDuplicate,
     ProvenanceLoss,
+    // Phase 1.5 — Subject Validator:
+    BadSubjectEmpty,
+    BadSubjectStructural,
+    BadSubjectShape,
+    BadSubjectLength,
+    BadSubjectMixedScript,
+    BadSubjectAdversarial,
+    SubjectAmbiguousAcronym,
+    SubjectNeedsContext,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -74,7 +87,7 @@ pub struct QualityTag {
 }
 
 impl QualityTag {
-    fn new(kind: QualityTagKind, severity: QualitySeverity, message: impl Into<String>) -> Self {
+    pub fn new(kind: QualityTagKind, severity: QualitySeverity, message: impl Into<String>) -> Self {
         Self {
             kind,
             severity,
@@ -82,7 +95,7 @@ impl QualityTag {
             evidence: None,
         }
     }
-    fn with_evidence(mut self, evidence: impl Into<String>) -> Self {
+    pub fn with_evidence(mut self, evidence: impl Into<String>) -> Self {
         self.evidence = Some(evidence.into());
         self
     }
@@ -115,14 +128,31 @@ pub struct QualityCheckerInput<'a> {
 
 // ── Checker ──────────────────────────────────────────────────────────────
 
-/// Stateless deterministic checker. Clone-able but doesn't need to be —
-/// `QualityChecker::new()` is cheap.
-#[derive(Clone, Debug, Default)]
-pub struct QualityChecker;
+/// Stateless deterministic checker (mostly). Holds an `Arc<SubjectValidator>`
+/// so the subject-shape rule can read TOML rules. Construct once at app boot
+/// and clone cheaply per request.
+#[derive(Clone)]
+pub struct QualityChecker {
+    pub subject_validator: Option<std::sync::Arc<crate::subject_validator::SubjectValidator>>,
+}
+
+impl Default for QualityChecker {
+    /// Default constructor for tests / legacy call sites that don't yet
+    /// inject a validator. Subject validation is silently skipped.
+    fn default() -> Self {
+        Self { subject_validator: None }
+    }
+}
 
 impl QualityChecker {
-    pub fn new() -> Self {
-        Self
+    pub fn new(subject_validator: std::sync::Arc<crate::subject_validator::SubjectValidator>) -> Self {
+        Self { subject_validator: Some(subject_validator) }
+    }
+
+    /// Legacy constructor that skips subject validation. Used by tests that
+    /// don't care about subject rules. Prefer `new()`.
+    pub fn without_subject_validation() -> Self {
+        Self { subject_validator: None }
     }
 
     /// Run all deterministic rules and return the union of tags. Order is
@@ -138,6 +168,7 @@ impl QualityChecker {
         check_duplicate_predicate(input, &mut tags);
         check_confidence_too_high(input, &mut tags);
         check_kind_mismatch(input, &mut tags);
+        check_subject_shape(self, input, &mut tags);
         tags
     }
 }
@@ -397,6 +428,18 @@ fn check_kind_mismatch(input: &QualityCheckerInput<'_>, tags: &mut Vec<QualityTa
             ),
         ));
     }
+}
+
+/// Phase 1.5 rule — delegate to `SubjectValidator` if injected. No-op if
+/// the checker was constructed via `without_subject_validation()` (legacy).
+fn check_subject_shape(
+    checker: &QualityChecker,
+    input: &QualityCheckerInput<'_>,
+    tags: &mut Vec<QualityTag>,
+) {
+    let Some(validator) = &checker.subject_validator else { return };
+    let report = validator.validate(&input.proposal.subject);
+    tags.extend(report.quality_tags);
 }
 
 // ── Phase 3: AI semantic checker ──────────────────────────────────────────
@@ -663,7 +706,7 @@ mod tests {
             evidence: &ev,
             existing_claims: existing,
         };
-        QualityChecker::new().check_deterministic(&input)
+        QualityChecker::without_subject_validation().check_deterministic(&input)
     }
 
     fn has_tag(tags: &[QualityTag], kind: QualityTagKind) -> bool {

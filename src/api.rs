@@ -144,6 +144,10 @@ pub struct ConsoleApiState {
     /// Shared with MCP via `Arc` (single adapter instance — see
     /// `server::serve`).
     ai_provider: Option<Arc<dyn crate::provider::AiProvider>>,
+    /// Optional Subject Validator (Phase 1.5). When `None`, deterministic
+    /// quality checks run without subject-validation tags (legacy mode). Set
+    /// at boot via [`Self::with_subject_validator`] from the loaded rules.
+    pub subject_validator: Option<std::sync::Arc<crate::subject_validator::SubjectValidator>>,
 }
 
 impl ConsoleApiState {
@@ -194,6 +198,7 @@ impl ConsoleApiState {
             secure_cookie,
             events: Arc::new(events),
             ai_provider: None, // Phase 3 — set via with_ai_provider builder
+            subject_validator: None, // Phase 1.5 — set via with_subject_validator
         }
     }
 
@@ -202,6 +207,18 @@ impl ConsoleApiState {
     /// between MCP and Console (single adapter, single compliance log).
     pub fn with_ai_provider(mut self, provider: Arc<dyn crate::provider::AiProvider>) -> Self {
         self.ai_provider = Some(provider);
+        self
+    }
+
+    /// Attach a [`SubjectValidator`] (Phase 1.5) so `ai_review`'s
+    /// deterministic pass can emit subject-quality tags (UnknownSubject,
+    /// SubjectOnDenylist, etc.). When absent, subject-validation tags are
+    /// skipped — legacy mode.
+    pub fn with_subject_validator(
+        mut self,
+        validator: std::sync::Arc<crate::subject_validator::SubjectValidator>,
+    ) -> Self {
+        self.subject_validator = Some(validator);
         self
     }
 
@@ -891,8 +908,14 @@ async fn ai_review(
         existing_claims: &existing,
     };
 
-    // Deterministic rules — always run.
-    let mut tags = crate::quality::QualityChecker::new().check_deterministic(&input);
+    // Deterministic rules — always run. Build a checker bound to the
+    // configured Subject Validator (Phase 1.5) when present so subject
+    // quality tags fire; fall back to subject-validation-less legacy mode.
+    let checker = match &state.subject_validator {
+        Some(v) => crate::quality::QualityChecker::new(v.clone()),
+        None => crate::quality::QualityChecker::without_subject_validation(),
+    };
+    let mut tags = checker.check_deterministic(&input);
 
     // Phase 3: AI semantic rules — only when a provider is attached. On
     // egress denial / provider error / unparseable response, `check` returns
