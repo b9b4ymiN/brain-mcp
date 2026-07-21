@@ -60,3 +60,125 @@ pub fn build_value_snippet(
         additional_sources: Vec::new(),
     }
 }
+
+/// Normalize a proposal's `value` (a `serde_json::Value`) into a list of
+/// candidate search strings to look for in the span text. We try the
+/// longest/most-specific candidate first and fall back to shorter forms.
+///
+/// Examples:
+///   `"¥361"`    → `["¥361", "361"]`
+///   `"1.75%"`   → `["1.75%", "1.75"]`
+///   `"2,000.8B"`→ `["2,000.8B", "2000.8B", "2,000.8", "2000.8"]`
+///   `361`        → `["361"]`
+///   `null` / `[]` / `{}` → `[]`
+pub(crate) fn normalize_value_candidates(value: &serde_json::Value) -> Vec<String> {
+    use serde_json::Value;
+    let primary = match value {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => return Vec::new(),
+    };
+    let mut cands: Vec<String> = vec![primary.clone()];
+
+    let stripped_currency: String = primary
+        .trim_start_matches(['¥', '$', '€', '£', '฿'])
+        .to_string();
+    if stripped_currency != primary {
+        cands.push(stripped_currency.clone());
+    }
+
+    let stripped_pct: String = primary.trim_end_matches('%').to_string();
+    if stripped_pct != primary {
+        cands.push(stripped_pct);
+    }
+
+    let no_commas = remove_inter_digit_commas(&primary);
+    if no_commas != primary {
+        cands.push(no_commas);
+    }
+
+    let combined = remove_inter_digit_commas(&stripped_currency)
+        .trim_end_matches('%')
+        .to_string();
+    if combined != primary && !cands.contains(&combined) {
+        cands.push(combined);
+    }
+
+    cands.sort_by(|a, b| b.len().cmp(&a.len()));
+    cands.dedup();
+    cands
+}
+
+fn remove_inter_digit_commas(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(chars.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if c == ',' {
+            let prev = i.checked_sub(1).and_then(|j| chars.get(j)).copied();
+            let next = chars.get(i + 1).copied();
+            if matches!(prev, Some(p) if p.is_ascii_digit())
+                && matches!(next, Some(n) if n.is_ascii_digit())
+            {
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests_normalize {
+    use super::normalize_value_candidates;
+    use serde_json::json;
+
+    #[test]
+    fn string_value_passes_through_with_and_without_currency() {
+        let v = json!("¥361");
+        let cands = normalize_value_candidates(&v);
+        assert!(cands.contains(&"¥361".to_string()));
+        assert!(cands.contains(&"361".to_string()));
+    }
+
+    #[test]
+    fn percent_value_keeps_with_and_without_sign() {
+        let v = json!("1.75%");
+        let cands = normalize_value_candidates(&v);
+        assert!(cands.contains(&"1.75%".to_string()));
+        assert!(cands.contains(&"1.75".to_string()));
+    }
+
+    #[test]
+    fn suffix_scaled_value_provides_with_and_without_commas() {
+        let v = json!("2,000.8B");
+        let cands = normalize_value_candidates(&v);
+        assert!(cands.iter().any(|c| c == "2,000.8B"));
+        assert!(cands.iter().any(|c| c == "2000.8B"));
+    }
+
+    #[test]
+    fn number_value_stringifies() {
+        let v = json!(361);
+        let cands = normalize_value_candidates(&v);
+        assert!(cands.contains(&"361".to_string()));
+    }
+
+    #[test]
+    fn float_value_stringifies() {
+        let v = json!(1.75);
+        let cands = normalize_value_candidates(&v);
+        assert!(cands.contains(&"1.75".to_string()));
+    }
+
+    #[test]
+    fn none_value_returns_empty() {
+        let cands = normalize_value_candidates(&json!(null));
+        assert!(cands.is_empty());
+    }
+
+    #[test]
+    fn array_or_object_returns_empty() {
+        assert!(normalize_value_candidates(&json!([1, 2, 3])).is_empty());
+        assert!(normalize_value_candidates(&json!({"a": 1})).is_empty());
+    }
+}
