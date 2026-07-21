@@ -862,12 +862,12 @@ async fn inbox(
     // fails or yields nothing, `confirmed` stays empty and detection degrades
     // gracefully to pending-only (per spec).
     let mut confirmed: Vec<crate::semantic::ClaimView> = Vec::new();
-    if let Ok(head) = state.store.ledger_head() {
-        if let Ok(current) = state.store.all_claims_current(head, Utc::now()) {
-            confirmed.extend(current.active);
-            confirmed.extend(current.future);
-            confirmed.extend(current.past);
-        }
+    if let Ok(head) = state.store.ledger_head()
+        && let Ok(current) = state.store.all_claims_current(head, Utc::now())
+    {
+        confirmed.extend(current.active);
+        confirmed.extend(current.future);
+        confirmed.extend(current.past);
     }
 
     let conflicts = crate::inbox_conflicts::detect_conflicts(&pending, &confirmed);

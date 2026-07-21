@@ -5,8 +5,8 @@
 //! real SemanticStore to confirm no panic and expected shapes on end-to-end
 //! reads.
 
-use llm_wiki::snippet::build_value_snippet;
 use llm_wiki::inbox_conflicts::detect_conflicts;
+use llm_wiki::snippet::build_value_snippet;
 use serde_json::json;
 
 #[test]
@@ -38,8 +38,8 @@ fn detect_conflicts_smoke_no_panic_on_empty() {
 
 #[test]
 fn detect_conflicts_finds_duplicate_in_pending() {
-    use llm_wiki::semantic::ProposalSummary;
     use chrono::Utc;
+    use llm_wiki::semantic::ProposalSummary;
     use uuid::Uuid;
 
     fn prop(value: serde_json::Value) -> ProposalSummary {

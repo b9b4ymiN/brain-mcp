@@ -4210,16 +4210,7 @@ impl SemanticStore {
                     *utterance_byte_start,
                     *utterance_byte_end,
                 )?;
-                (
-                    Some(text),
-                    None,
-                    None,
-                    false,
-                    None,
-                    None,
-                    false,
-                    Vec::new(),
-                )
+                (Some(text), None, None, false, None, None, false, Vec::new())
             }
             Provenance::Inference { evidence, .. } => {
                 if evidence.is_empty() {
@@ -4275,9 +4266,16 @@ impl SemanticStore {
                     )
                 }
             }
-            Provenance::Mechanical { output_hash, .. } => {
-                (None, None, Some(output_hash.clone()), false, None, None, false, Vec::new())
-            }
+            Provenance::Mechanical { output_hash, .. } => (
+                None,
+                None,
+                Some(output_hash.clone()),
+                false,
+                None,
+                None,
+                false,
+                Vec::new(),
+            ),
         };
         Ok(EvidenceSummary {
             provenance_kind,
