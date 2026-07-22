@@ -2181,6 +2181,17 @@ impl SemanticStore {
                         .to_owned(),
                     reversible: true,
                 }],
+                (4, 5) => vec![crate::recovery::UpgradeStep {
+                    description: (
+                        "brain_search FTS5: add value_flat column to claim_status, create the \
+                         claim_search_fts FTS5 virtual table (trigram tokenizer, external-content \
+                         over claim_status), install claim_status_ai/_ad/_au sync triggers, and \
+                         backfill the index from existing rows. Reversible: drop the triggers + \
+                         FTS table + value_flat column."
+                    )
+                        .to_owned(),
+                    reversible: true,
+                }],
                 _ => unreachable!("schema_upgrade_path_exists gates this match"),
             },
             from_version: from,

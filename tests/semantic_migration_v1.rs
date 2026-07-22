@@ -760,3 +760,29 @@ fn v4_to_v5_upgrade_path_is_known() {
         "v4→v5 upgrade path must be recognized, got: {plan:?}"
     );
 }
+
+/// FTS5 Task 2: planning a v4→v5 upgrade yields a reversible plan whose step
+/// description names the FTS5 index + value_flat column + sync triggers. The
+/// plan must advertise reversibility or `execute_schema_upgrade` will refuse it.
+#[test]
+fn v4_to_v5_plan_is_reversible_and_names_fts5() {
+    use llm_wiki::semantic::{SemanticConfig, SemanticStore};
+    let parent = tempfile::tempdir().expect("fixture parent");
+    let root = parent.path().join("semantic-store");
+    let (store, _admin) =
+        SemanticStore::create(&root, SemanticConfig::enabled_for(parent.path()))
+            .expect("create");
+    let plan = store.plan_schema_upgrade(4, 5).expect("plan v4→v5");
+    assert!(plan.is_reversible(), "v4→v5 plan must be reversible");
+    assert_eq!(plan.steps.len(), 1, "v4→v5 is one step");
+    let desc = plan.steps[0].description.to_lowercase();
+    assert!(desc.contains("fts5"), "step description must name FTS5, got: {desc}");
+    assert!(
+        desc.contains("value_flat") || desc.contains("value flat"),
+        "step description must name value_flat, got: {desc}"
+    );
+    assert!(
+        desc.contains("trigger"),
+        "step description must name the sync triggers, got: {desc}"
+    );
+}
