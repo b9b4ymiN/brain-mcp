@@ -7218,6 +7218,34 @@ fn validate_operation_id(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Flatten a `serde_json::Value` into a space-separated searchable string for
+/// FTS5 indexing. Used to populate `claim_status.value_flat` so that array and
+/// object values (e.g. `["Tesla","BMW"]`) are searchable as `tesla` / `bmw`.
+///   - String → the string itself
+///   - Number → its string representation
+///   - Bool   → "true" / "false"
+///   - Array  → space-joined elements (recursively flattened)
+///   - Object → space-joined values (recursively flattened)
+///   - Null   → empty string
+pub fn flatten_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .map(flatten_json)
+            .collect::<Vec<_>>()
+            .join(" "),
+        serde_json::Value::Object(obj) => obj
+            .values()
+            .map(flatten_json)
+            .collect::<Vec<_>>()
+            .join(" "),
+        serde_json::Value::Null => String::new(),
+    }
+}
+
 fn validate_interval(from: Option<DateTime<Utc>>, to: Option<DateTime<Utc>>) -> Result<()> {
     if from.zip(to).is_some_and(|(from, to)| from >= to) {
         return Err(SemanticError::InvalidInterval);
