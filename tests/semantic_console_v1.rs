@@ -38,7 +38,7 @@ fn stock_draft(subject: &str, value: i64) -> ClaimDraft {
         predicate: "target_price".to_owned(),
         value: json!(value),
         claim_kind: "external_fact".to_owned(),
-        domain: "stocks".to_owned(),
+        domain: Some("stocks".to_owned()),
         confidence_basis_points: 8_000,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,
@@ -156,7 +156,7 @@ fn claim_timeline_returns_chronological_history_for_scope() {
         .unwrap();
 
     let timeline = store
-        .claim_timeline("stocks", "GULF", "target_price")
+        .claim_timeline(Some("stocks"), "GULF", "target_price")
         .unwrap();
     assert_eq!(timeline.len(), 2);
     assert_eq!(timeline[0].value, json!(58));
@@ -339,7 +339,7 @@ fn supersede_by_proposal_id_allows_a_different_client_to_supersede() {
     assert_eq!(outcome.event.client_id, reviewer.client_id());
     assert_ne!(outcome.event.client_id, proposer.client_id());
     let timeline = store
-        .claim_timeline("stocks", "GULF", "target_price")
+        .claim_timeline(Some("stocks"), "GULF", "target_price")
         .unwrap();
     assert_eq!(timeline.len(), 2);
     assert_eq!(timeline[0].claim_id, first_claim_id);

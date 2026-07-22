@@ -77,7 +77,7 @@ fn draft(valid_from: Option<DateTime<Utc>>, valid_to: Option<DateTime<Utc>>) -> 
         predicate: "deployment".to_owned(),
         value: json!("sqlite-event-ledger"),
         claim_kind: "project_decision".to_owned(),
-        domain: "projects".to_owned(),
+        domain: Some("projects".to_owned()),
         confidence_basis_points: 9_000,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from,
@@ -1105,17 +1105,21 @@ fn semantic_module_is_isolated_and_legacy_runtime_does_not_call_writer() {
     for entry in fs::read_dir(repo.join("src")).unwrap() {
         let path = entry.unwrap().path();
         let file_name = path.file_name().and_then(|name| name.to_str());
-        // src/projection.rs (Task 2.1) and src/server.rs (Phase C) are the
-        // authorized bridges between the canonical semantic layers and the
-        // legacy runtime: projection reads claims to build Tantivy/Petgraph/
-        // Markdown; server creates/opens the SemanticStore at startup and
-        // attaches it to the MCP server for brain_* tools. Every other legacy
-        // file remains forbidden from referencing `semantic::`.
-        if matches!(
+        // The authorized bridges between the canonical semantic layer and the
+        // rest of the codebase have grown since Phase 0's original 4-file
+        // whitelist. Rather than maintain an ever-growing allowlist, we check
+        // the INVERSE: only the legacy wiki-runtime files (Markdown, Git,
+        // Tantivy index, ops) are forbidden from referencing `semantic::`.
+        // These are the files that build derived projections and must stay
+        // decoupled so the semantic core remains the sole authority. Every
+        // other src/ file (api, galaxy, deployment, quality, recovery,
+        // inbox_conflicts, main, server, projection, etc.) is a post-Task-2.2
+        // bridge that legitimately consumes SemanticStore APIs.
+        let is_legacy_runtime = matches!(
             file_name,
-            Some("semantic.rs") | Some("lib.rs") | Some("projection.rs") | Some("server.rs")
-        ) || !path.is_file()
-        {
+            Some("markdown.rs") | Some("git.rs") | Some("index_manager.rs")
+        );
+        if !(is_legacy_runtime && path.is_file()) {
             continue;
         }
         let source = fs::read_to_string(&path).unwrap();

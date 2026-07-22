@@ -57,7 +57,7 @@ fn draft(subject: &str, value: i64) -> ClaimDraft {
         predicate: "target_price".to_owned(),
         value: json!(value),
         claim_kind: "external_fact".to_owned(),
-        domain: "stocks".to_owned(),
+        domain: Some("stocks".to_owned()),
         confidence_basis_points: 8_000,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,
@@ -141,7 +141,7 @@ fn seed_user_assertion(
                     predicate: predicate.to_owned(),
                     value: json!(value),
                     claim_kind: "user_assertion".to_owned(),
-                    domain: "stocks".to_owned(),
+                    domain: Some("stocks".to_owned()),
                     confidence_basis_points: 9_000,
                     privacy_label: PrivacyLabel::LocalOnly,
                     valid_from: None,
@@ -187,7 +187,7 @@ fn confirm_a_claim_object_id(store: &SemanticStore, context: &TrustedContext) ->
                     predicate: "deployment".to_owned(),
                     value: json!("kubernetes"),
                     claim_kind: "decision".to_owned(),
-                    domain: "projects".to_owned(),
+                    domain: Some("projects".to_owned()),
                     confidence_basis_points: 9_000,
                     privacy_label: PrivacyLabel::LocalOnly,
                     valid_from: None,
@@ -522,10 +522,10 @@ async fn entity_merge_requires_csrf() {
 async fn entity_merge_happy_path() {
     let (_parent, store, ctx) = make_store();
     let source = store
-        .resolve_or_create_entity(&ctx, "stocks", "GULF-dup")
+        .resolve_or_create_entity(&ctx, "GULF-dup")
         .expect("source entity");
     let target = store
-        .resolve_or_create_entity(&ctx, "stocks", "GULF")
+        .resolve_or_create_entity(&ctx, "GULF")
         .expect("target entity");
     // Seed a claim on the source so the merge has something to move.
     seed_user_assertion(&store, &ctx, "merge-src", "GULF-dup", "target_price", 58);
@@ -587,10 +587,10 @@ async fn entity_split_requires_csrf() {
 async fn entity_split_happy_path() {
     let (_parent, store, ctx) = make_store();
     let source = store
-        .resolve_or_create_entity(&ctx, "stocks", "GULF-combined")
+        .resolve_or_create_entity(&ctx, "GULF-combined")
         .expect("source entity");
     let target = store
-        .resolve_or_create_entity(&ctx, "stocks", "GULF-prices")
+        .resolve_or_create_entity(&ctx, "GULF-prices")
         .expect("target entity");
     // Two claims on the source: one whose predicate we move, one we leave.
     seed_user_assertion(&store, &ctx, "split-1", "GULF-combined", "target_price", 58);
@@ -627,13 +627,13 @@ async fn entity_split_happy_path() {
 async fn entity_split_rejects_duplicate_predicate() {
     let (_parent, store, ctx) = make_store();
     let source = store
-        .resolve_or_create_entity(&ctx, "stocks", "GULF-dup-src")
+        .resolve_or_create_entity(&ctx, "GULF-dup-src")
         .expect("source entity");
     let target_a = store
-        .resolve_or_create_entity(&ctx, "stocks", "GULF-dup-a")
+        .resolve_or_create_entity(&ctx, "GULF-dup-a")
         .expect("target A");
     let target_b = store
-        .resolve_or_create_entity(&ctx, "stocks", "GULF-dup-b")
+        .resolve_or_create_entity(&ctx, "GULF-dup-b")
         .expect("target B");
 
     let base = spawn(ConsoleApiState::new(store, SECRET.to_owned(), false)).await;

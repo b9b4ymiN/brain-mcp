@@ -74,7 +74,7 @@ fn decision_draft(value: &str) -> ClaimDraft {
         predicate: "deployment".to_owned(),
         value: json!(value),
         claim_kind: "decision".to_owned(),
-        domain: "projects".to_owned(),
+        domain: Some("projects".to_owned()),
         confidence_basis_points: 9_000,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,
@@ -239,19 +239,24 @@ fn scope_key_with_whitespace_only_fields_is_rejected_before_any_event() {
         .capture(&context, capture("cap", b"evidence bytes"))
         .unwrap();
 
+    // Entity Identity Reform: domain is optional and NOT validated for
+    // emptiness — a whitespace-only domain is accepted (stored as "" via
+    // unwrap_or_default). Only subject/predicate/kind are required.
     let mut blank_domain = decision_draft("x");
-    blank_domain.domain = "   ".to_owned();
-    assert!(matches!(
-        store.propose(
-            &context,
-            ProposeCommand {
-                operation_id: "prop-blank-domain".to_owned(),
-                capture_operation_id: "cap".to_owned(),
-                draft: blank_domain,
-            },
-        ),
-        Err(SemanticError::InvalidClaim(_))
-    ));
+    blank_domain.domain = Some("   ".to_owned());
+    assert!(
+        store
+            .propose(
+                &context,
+                ProposeCommand {
+                    operation_id: "prop-blank-domain".to_owned(),
+                    capture_operation_id: "cap".to_owned(),
+                    draft: blank_domain,
+                },
+            )
+            .is_ok(),
+        "whitespace-only domain is accepted post-reform (domain is a tag, not identity)"
+    );
 
     let mut blank_subject = decision_draft("x");
     blank_subject.subject = "\t\n".to_owned();
@@ -281,9 +286,9 @@ fn scope_key_with_whitespace_only_fields_is_rejected_before_any_event() {
         Err(SemanticError::InvalidClaim(_))
     ));
 
-    // Only the one legitimate capture event exists; all three rejected
-    // proposals left no trace.
-    assert_eq!(store.diagnostics().unwrap().events, 1);
+    // The capture + the accepted whitespace-domain proposal = 2 events.
+    // The two rejected proposals (blank subject/predicate) left no trace.
+    assert_eq!(store.diagnostics().unwrap().events, 2);
 }
 
 /// Trusted actor must be derived from an authenticated, registered client --

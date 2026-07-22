@@ -66,7 +66,7 @@ fn seed_claim(
                     predicate: predicate.to_owned(),
                     value,
                     claim_kind: "external_fact".to_owned(),
-                    domain: domain.to_owned(),
+                    domain: Some(domain.to_owned()),
                     confidence_basis_points: 8_000,
                     privacy_label: PrivacyLabel::LocalOnly,
                     valid_from: None,
@@ -86,14 +86,15 @@ fn seed_claim(
         .unwrap();
 }
 
-/// Resolve the stable entity_id behind a `(domain, subject)` after seeding.
+/// Resolve the stable entity_id behind a subject after seeding.
 fn entity_id_for(
     store: &SemanticStore,
     context: &TrustedContext,
     domain: &str,
     subject: &str,
 ) -> Uuid {
-    store.resolve_entity(context, domain, subject).unwrap()
+    let _ = domain;
+    store.resolve_entity(context, subject).unwrap()
 }
 
 async fn spawn(state: ConsoleApiState) -> String {

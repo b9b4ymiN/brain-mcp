@@ -34,7 +34,7 @@ fn draft() -> ClaimDraft {
         predicate: "deployment".to_owned(),
         value: json!("sqlite-event-ledger"),
         claim_kind: "project_decision".to_owned(),
-        domain: "projects".to_owned(),
+        domain: Some("projects".to_owned()),
         confidence_basis_points: 9_000,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,

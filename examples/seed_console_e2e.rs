@@ -84,7 +84,7 @@ fn draft(subject: &str, predicate: &str, value: Value, domain: &str) -> ClaimDra
         predicate: predicate.to_owned(),
         value,
         claim_kind: "external_fact".to_owned(),
-        domain: domain.to_owned(),
+        domain: Some(domain.to_owned()),
         confidence_basis_points: 8_000,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,
@@ -387,7 +387,7 @@ fn main() -> ExitCode {
             for p in &list {
                 eprintln!(
                     "  pending: {} {}={} ({})",
-                    p.subject, p.predicate, p.value, p.domain
+                    p.subject, p.predicate, p.value, p.domain.as_deref().unwrap_or("-")
                 );
             }
         }

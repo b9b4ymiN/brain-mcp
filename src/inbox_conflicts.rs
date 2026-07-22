@@ -299,7 +299,7 @@ mod tests_detect {
     ) -> ProposalSummary {
         ProposalSummary {
             proposal_id: Uuid::new_v4(),
-            domain: domain.to_string(),
+            domain: Some(domain.to_string()),
             subject: subject.to_string(),
             predicate: predicate.to_string(),
             value,

@@ -57,7 +57,7 @@ fn custom_draft(
         predicate: predicate.to_owned(),
         value,
         claim_kind: claim_kind.to_owned(),
-        domain: domain.to_owned(),
+        domain: Some(domain.to_owned()),
         confidence_basis_points,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,
@@ -496,7 +496,7 @@ fn false_positive_rate_on_30_confirmed_claims_reported() {
         // "what would the proposal have looked like that produced this claim?"
         let p = ProposalSummary {
             proposal_id: cv.proposal_id,
-            domain: cv.domain.clone(),
+            domain: Some(cv.domain.clone()),
             subject: cv.subject.clone(),
             predicate: cv.predicate.clone(),
             value: cv.value.clone(),

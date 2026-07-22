@@ -46,7 +46,7 @@ fn custom_draft(
         predicate: predicate.to_owned(),
         value,
         claim_kind: claim_kind.to_owned(),
-        domain: domain.to_owned(),
+        domain: Some(domain.to_owned()),
         confidence_basis_points,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,

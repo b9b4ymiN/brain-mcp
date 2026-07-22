@@ -701,7 +701,7 @@ mod tests {
     fn proposal(subject: &str, predicate: &str, value: serde_json::Value) -> ProposalSummary {
         ProposalSummary {
             proposal_id: Uuid::new_v4(),
-            domain: "financial".to_string(),
+            domain: Some("financial".to_string()),
             subject: subject.to_string(),
             predicate: predicate.to_string(),
             value,
@@ -743,7 +743,7 @@ mod tests {
     #[test]
     fn taxonomy_drift_domain_stocks_tagged() {
         let mut p = proposal("CATL", "margin", json!("24%"));
-        p.domain = "stocks".to_string();
+        p.domain = Some("stocks".to_string());
         let tags = run(&p, &[]);
         assert!(
             has_tag(&tags, QualityTagKind::TaxonomyDrift),
@@ -893,7 +893,7 @@ mod tests {
         // The live-fire negative case from the spec.
         let mut p = proposal("USDTHB-2026-07-20", "has_rate", json!("33.59"));
         p.predicate = "has_rate".to_string();
-        p.domain = "fx".to_string(); // not in canon — will trip TaxonomyDrift
+        p.domain = Some("fx".to_string()); // not in canon — will trip TaxonomyDrift
         // The spec's live-fire test says USDTHB-2026-07-20 should be clean.
         // BUT with strict 4-domain canon, fx is NOT allowed → TaxonomyDrift fires.
         // That is the user-acknowledged strict-canon trade-off (Phase 1.4

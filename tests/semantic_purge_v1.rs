@@ -69,7 +69,7 @@ fn draft() -> ClaimDraft {
         predicate: "deployment".to_owned(),
         value: json!("kubernetes"),
         claim_kind: "decision".to_owned(),
-        domain: "projects".to_owned(),
+        domain: Some("projects".to_owned()),
         confidence_basis_points: 9_000,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,
@@ -856,7 +856,7 @@ fn claims_current_uses_one_snapshot_across_all_rows_despite_a_mid_query_denial()
     draft_a.subject = "GULF".to_owned();
     draft_a.predicate = "target_price".to_owned();
     draft_a.claim_kind = "external_fact".to_owned();
-    draft_a.domain = "stocks".to_owned();
+    draft_a.domain = Some("stocks".to_owned());
     draft_a.value = json!(58);
     let mut draft_b = draft_a.clone();
     draft_b.value = json!(62);

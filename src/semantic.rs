@@ -7224,16 +7224,10 @@ fn validate_claim_draft(draft: &ClaimDraft) -> Result<()> {
             "subject, predicate, and kind are required".to_owned(),
         ));
     }
-    // Entity Identity Reform: domain is optional. If present, allow any
-    // non-empty string (it is a categorization tag, not an identity key).
-    if let Some(d) = &draft.domain {
-        if d.trim().is_empty() {
-            // Treat whitespace-only domain as None — callers that build a
-            // draft with "   " should not see a stored "   " tag.
-            // (We do not mutate draft here; the caller's intent is captured
-            // by the tag value going forward; legacy "" is preserved as-is.)
-        }
-    }
+    // Entity Identity Reform: domain is optional and no longer validated for
+    // emptiness — it is a categorization tag, not an identity key. A
+    // whitespace-only or None domain is stored as "" via unwrap_or_default()
+    // in build_confirmation_material (claim_status.domain is TEXT NOT NULL).
     if draft.confidence_basis_points > 10_000 {
         return Err(SemanticError::InvalidClaim(
             "confidence_basis_points must be between 0 and 10000".to_owned(),

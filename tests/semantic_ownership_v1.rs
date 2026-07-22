@@ -55,7 +55,7 @@ fn preference_draft(subject: &str, value: &str) -> ClaimDraft {
         predicate: "preference".to_owned(),
         value: json!(value),
         claim_kind: "preference".to_owned(),
-        domain: "projects".to_owned(),
+        domain: Some("projects".to_owned()),
         confidence_basis_points: 9_000,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,
@@ -69,7 +69,7 @@ fn stock_draft(subject: &str, value: i64) -> ClaimDraft {
         predicate: "target_price".to_owned(),
         value: json!(value),
         claim_kind: "external_fact".to_owned(),
-        domain: "stocks".to_owned(),
+        domain: Some("stocks".to_owned()),
         confidence_basis_points: 8_000,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,
@@ -297,10 +297,10 @@ fn resolve_or_create_entity_is_idempotent_per_domain_subject() {
     let (_parent, _root, store, context) = fixture();
 
     let first = store
-        .resolve_or_create_entity(&context, "stocks", "GULF")
+        .resolve_or_create_entity(&context, "GULF")
         .expect("first resolve");
     let second = store
-        .resolve_or_create_entity(&context, "stocks", "GULF")
+        .resolve_or_create_entity(&context, "GULF")
         .expect("second resolve");
     assert_eq!(
         first, second,
@@ -309,14 +309,14 @@ fn resolve_or_create_entity_is_idempotent_per_domain_subject() {
 
     // A different subject in the same domain is a different entity.
     let other = store
-        .resolve_or_create_entity(&context, "stocks", "PTT")
+        .resolve_or_create_entity(&context, "PTT")
         .expect("other resolve");
     assert_ne!(first, other);
 
     // Same subject string in a DIFFERENT domain is also a different entity —
     // domain is part of the entity scope key.
     let cross = store
-        .resolve_or_create_entity(&context, "projects", "GULF")
+        .resolve_or_create_entity(&context, "GULF")
         .expect("cross-domain resolve");
     assert_ne!(first, cross);
 }
@@ -330,7 +330,7 @@ fn rename_entity_preserves_id_and_keeps_old_subject_as_backlink() {
     let (_parent, _root, store, context) = fixture();
 
     let entity_id = store
-        .resolve_or_create_entity(&context, "stocks", "GULF-old")
+        .resolve_or_create_entity(&context, "GULF-old")
         .expect("resolve");
 
     store
@@ -353,13 +353,13 @@ fn rename_entity_preserves_id_and_keeps_old_subject_as_backlink() {
 
     // The OLD subject still resolves to the same entity_id — backlink preserved.
     let backlink = store
-        .resolve_entity(&context, "stocks", "GULF-old")
+        .resolve_entity(&context, "GULF-old")
         .expect("resolve old subject");
     assert_eq!(backlink, entity_id);
 
     // The NEW subject also resolves.
     let direct = store
-        .resolve_entity(&context, "stocks", "GULF")
+        .resolve_entity(&context, "GULF")
         .expect("resolve new subject");
     assert_eq!(direct, entity_id);
 }
@@ -375,10 +375,10 @@ fn merge_entities_moves_claims_and_keeps_aliases_as_backlinks() {
 
     // Two entities, each with one confirmed claim.
     let source = store
-        .resolve_or_create_entity(&context, "stocks", "GULF-dup")
+        .resolve_or_create_entity(&context, "GULF-dup")
         .expect("source entity");
     let target = store
-        .resolve_or_create_entity(&context, "stocks", "GULF")
+        .resolve_or_create_entity(&context, "GULF")
         .expect("target entity");
 
     store
@@ -392,7 +392,7 @@ fn merge_entities_moves_claims_and_keeps_aliases_as_backlinks() {
                     predicate: "target_price".to_owned(),
                     value: json!(58),
                     claim_kind: "user_assertion".to_owned(),
-                    domain: "stocks".to_owned(),
+                    domain: Some("stocks".to_owned()),
                     confidence_basis_points: 9_000,
                     privacy_label: PrivacyLabel::LocalOnly,
                     valid_from: None,
@@ -424,7 +424,7 @@ fn merge_entities_moves_claims_and_keeps_aliases_as_backlinks() {
 
     // The source subject now resolves to the TARGET entity (backlink).
     let resolved = store
-        .resolve_entity(&context, "stocks", "GULF-dup")
+        .resolve_entity(&context, "GULF-dup")
         .expect("resolve merged-away subject");
     assert_eq!(resolved, target);
 
@@ -451,7 +451,7 @@ fn merge_entities_moves_claims_and_keeps_aliases_as_backlinks() {
 fn merge_entity_into_itself_is_rejected() {
     let (_parent, _root, store, context) = fixture();
     let entity = store
-        .resolve_or_create_entity(&context, "stocks", "GULF")
+        .resolve_or_create_entity(&context, "GULF")
         .expect("resolve");
 
     let result = store.merge_entities(
@@ -475,10 +475,10 @@ fn merge_entity_into_itself_is_rejected() {
 fn rename_to_an_existing_subject_in_same_domain_is_rejected() {
     let (_parent, _root, store, context) = fixture();
     let a = store
-        .resolve_or_create_entity(&context, "stocks", "GULF")
+        .resolve_or_create_entity(&context, "GULF")
         .expect("a");
     let _b = store
-        .resolve_or_create_entity(&context, "stocks", "PTT")
+        .resolve_or_create_entity(&context, "PTT")
         .expect("b");
 
     let result = store.rename_entity(
@@ -542,7 +542,7 @@ fn opening_a_schema_v1_store_under_a_v2_binary_fails_closed() {
 fn rename_entity_is_idempotent_under_operation_id_replay() {
     let (_parent, _root, store, context) = fixture();
     let entity = store
-        .resolve_or_create_entity(&context, "stocks", "GULF-old")
+        .resolve_or_create_entity(&context, "GULF-old")
         .expect("resolve");
 
     let first = store
@@ -569,12 +569,12 @@ fn rename_entity_is_idempotent_under_operation_id_replay() {
 
     assert_eq!(first.event.event_seq, replay.event.event_seq);
     assert_eq!(
-        store.resolve_entity(&context, "stocks", "GULF").unwrap(),
+        store.resolve_entity(&context, "GULF").unwrap(),
         entity
     );
     assert_eq!(
         store
-            .resolve_entity(&context, "stocks", "GULF-old")
+            .resolve_entity(&context, "GULF-old")
             .unwrap(),
         entity
     );

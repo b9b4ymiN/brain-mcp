@@ -215,7 +215,7 @@ fn quality_checker_with_validator_flags_bad_subject() {
 
     let p = ProposalSummary {
         proposal_id: Uuid::new_v4(),
-        domain: "financial".to_string(),
+        domain: Some("financial".to_string()),
         subject: "risk-free rate".to_string(),
         predicate: "is".to_string(),
         value: json!("1.75%"),

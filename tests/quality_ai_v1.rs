@@ -63,7 +63,7 @@ fn proposal_with_excerpt(
 ) -> (ProposalSummary, EvidenceSummary) {
     let p = ProposalSummary {
         proposal_id: Uuid::new_v4(),
-        domain: "financial".to_string(),
+        domain: Some("financial".to_string()),
         subject: "CATL".to_string(),
         predicate: "Q1 2026 gross margin".to_string(),
         value: json!("24%"),

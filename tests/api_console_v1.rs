@@ -36,7 +36,7 @@ fn draft(subject: &str, value: i64) -> ClaimDraft {
         predicate: "target_price".to_owned(),
         value: json!(value),
         claim_kind: "external_fact".to_owned(),
-        domain: "stocks".to_owned(),
+        domain: Some("stocks".to_owned()),
         confidence_basis_points: 8_000,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,
@@ -586,7 +586,7 @@ async fn supersede_happy_path() {
     assert!(body["claim_id"].is_string());
 
     let timeline = store
-        .claim_timeline("stocks", "GULF", "target_price")
+        .claim_timeline(Some("stocks"), "GULF", "target_price")
         .unwrap();
     assert_eq!(timeline.len(), 2);
 }

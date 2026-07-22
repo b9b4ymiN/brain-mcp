@@ -36,7 +36,7 @@ fn draft(subject: &str) -> ClaimDraft {
         predicate: "target_price".to_owned(),
         value: json!(58),
         claim_kind: "external_fact".to_owned(),
-        domain: "stocks".to_owned(),
+        domain: Some("stocks".to_owned()),
         confidence_basis_points: 8_000,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,

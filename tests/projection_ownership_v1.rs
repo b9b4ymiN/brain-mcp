@@ -59,7 +59,7 @@ fn evidence_draft(subject: &str, value: i64) -> ClaimDraft {
         predicate: "target_price".to_owned(),
         value: json!(value),
         claim_kind: "external_fact".to_owned(),
-        domain: "stocks".to_owned(),
+        domain: Some("stocks".to_owned()),
         confidence_basis_points: 8_000,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,
@@ -73,7 +73,7 @@ fn preference_draft(subject: &str, value: &str) -> ClaimDraft {
         predicate: "preference".to_owned(),
         value: json!(value),
         claim_kind: "preference".to_owned(),
-        domain: "projects".to_owned(),
+        domain: Some("projects".to_owned()),
         confidence_basis_points: 9_000,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,
@@ -389,7 +389,7 @@ fn entity_id_is_stable_across_a_rename_visible_in_projection() {
 
     // Resolve the entity, rename it, rebuild.
     let entity_id = store
-        .resolve_entity(&context, "projects", "GULF-old")
+        .resolve_entity(&context, "GULF-old")
         .expect("resolve");
     assert_eq!(entity_id.to_string(), entity_id_before);
 

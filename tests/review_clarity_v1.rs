@@ -45,7 +45,7 @@ fn detect_conflicts_finds_duplicate_in_pending() {
     fn prop(value: serde_json::Value) -> ProposalSummary {
         ProposalSummary {
             proposal_id: Uuid::new_v4(),
-            domain: "finance".to_string(),
+            domain: Some("finance".to_string()),
             subject: "CATL".to_string(),
             predicate: "market_cap".to_string(),
             value,

@@ -235,7 +235,7 @@ fn draft_with(subject: &str, predicate: &str, value: i64) -> ClaimDraft {
         predicate: predicate.to_owned(),
         value: json!(value),
         claim_kind: "external_fact".to_owned(),
-        domain: "stocks".to_owned(),
+        domain: Some("stocks".to_owned()),
         confidence_basis_points: 8_000,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,
@@ -301,7 +301,7 @@ fn seed_confirmed_as(
         predicate: predicate.to_owned(),
         value: json!(value),
         claim_kind: "external_fact".to_owned(),
-        domain: "stocks".to_owned(),
+        domain: Some("stocks".to_owned()),
         confidence_basis_points: 8_000,
         privacy_label: PrivacyLabel::LocalOnly,
         valid_from: None,
@@ -589,10 +589,10 @@ fn split_entities_moves_claims_by_predicate() {
 
     // Create source + target entities explicitly.
     let source = store
-        .resolve_or_create_entity(&context, "stocks", "GULF-combined")
+        .resolve_or_create_entity(&context, "GULF-combined")
         .expect("source entity");
     let target = store
-        .resolve_or_create_entity(&context, "stocks", "GULF-prices")
+        .resolve_or_create_entity(&context, "GULF-prices")
         .expect("target entity");
 
     // Two claims on the source: one whose predicate we move, one we leave.
@@ -607,7 +607,7 @@ fn split_entities_moves_claims_by_predicate() {
                     predicate: "target_price".to_owned(),
                     value: json!(58),
                     claim_kind: "user_assertion".to_owned(),
-                    domain: "stocks".to_owned(),
+                    domain: Some("stocks".to_owned()),
                     confidence_basis_points: 9_000,
                     privacy_label: PrivacyLabel::LocalOnly,
                     valid_from: None,
@@ -636,7 +636,7 @@ fn split_entities_moves_claims_by_predicate() {
                     predicate: "sector".to_owned(),
                     value: json!("energy"),
                     claim_kind: "user_assertion".to_owned(),
-                    domain: "stocks".to_owned(),
+                    domain: Some("stocks".to_owned()),
                     confidence_basis_points: 9_000,
                     privacy_label: PrivacyLabel::LocalOnly,
                     valid_from: None,
@@ -720,10 +720,10 @@ fn split_entities_moves_claims_by_predicate() {
 fn split_entities_is_idempotent_on_operation_id() {
     let (_parent, store, context) = fixture();
     let source = store
-        .resolve_or_create_entity(&context, "stocks", "GULF-idem")
+        .resolve_or_create_entity(&context, "GULF-idem")
         .expect("source entity");
     let target = store
-        .resolve_or_create_entity(&context, "stocks", "GULF-idem-out")
+        .resolve_or_create_entity(&context, "GULF-idem-out")
         .expect("target entity");
     store
         .propose_user_assertion(
@@ -736,7 +736,7 @@ fn split_entities_is_idempotent_on_operation_id() {
                     predicate: "target_price".to_owned(),
                     value: json!(58),
                     claim_kind: "user_assertion".to_owned(),
-                    domain: "stocks".to_owned(),
+                    domain: Some("stocks".to_owned()),
                     confidence_basis_points: 9_000,
                     privacy_label: PrivacyLabel::LocalOnly,
                     valid_from: None,
@@ -779,10 +779,10 @@ fn split_entities_is_idempotent_on_operation_id() {
 fn split_entities_rejects_cross_domain() {
     let (_parent, store, context) = fixture();
     let stocks_source = store
-        .resolve_or_create_entity(&context, "stocks", "GULF-x")
+        .resolve_or_create_entity(&context, "GULF-x")
         .expect("source");
     let projects_target = store
-        .resolve_or_create_entity(&context, "projects", "GULF-x-prj")
+        .resolve_or_create_entity(&context, "GULF-x-prj")
         .expect("target");
 
     let err = store
@@ -813,13 +813,13 @@ fn split_entities_rejects_cross_domain() {
 fn split_entities_rejects_duplicate_predicate_with_divergent_targets() {
     let (_parent, store, context) = fixture();
     let source = store
-        .resolve_or_create_entity(&context, "stocks", "GULF-dup-src")
+        .resolve_or_create_entity(&context, "GULF-dup-src")
         .expect("source");
     let target_a = store
-        .resolve_or_create_entity(&context, "stocks", "GULF-dup-a")
+        .resolve_or_create_entity(&context, "GULF-dup-a")
         .expect("target A");
     let target_b = store
-        .resolve_or_create_entity(&context, "stocks", "GULF-dup-b")
+        .resolve_or_create_entity(&context, "GULF-dup-b")
         .expect("target B");
 
     // Divergent targets for the same predicate → reject.
