@@ -19,6 +19,7 @@
 import ForceGraph, { type NodeObject } from 'force-graph'
 import type { GalaxyNode, GalaxyPayload } from './api'
 import { escapeHtml } from './safeText'
+import { starColorFor } from './galaxyColors'
 import type {
   GraphRenderer,
   RendererCallbacks,
@@ -99,8 +100,8 @@ export function createRenderer2d(opts: RendererOpts): GraphRenderer {
           const domainPart = g.raw.domain ? ' · ' + escapeHtml(g.raw.domain) : ''
           return `<b>${label}</b><br/>${kind}${domainPart}`
         })
-        .nodeAutoColorBy('kind')
-        .linkAutoColorBy('kind')
+        .nodeColor((node) => starColorFor((node as GalaxyGraphNode).raw))
+        .linkColor(() => 'rgba(216, 232, 245, 0.18)')
         .onNodeClick((node) => {
           callbacks.onNodeClick?.((node as GalaxyGraphNode).raw)
         })

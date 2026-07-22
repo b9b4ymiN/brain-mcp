@@ -48,6 +48,7 @@ import {
 } from 'three'
 import type { GalaxyNode, GalaxyPayload } from './api'
 import { escapeHtml } from './safeText'
+import { starColorFor } from './galaxyColors'
 import type {
   GraphRenderer,
   RendererCallbacks,
@@ -111,20 +112,12 @@ function getStarTexture(): CanvasTexture {
   return tex
 }
 
-// ── Color by kind — but cool/neutral by default (DESIGN.md §5 + One-Voice) ─
-// Most kinds read as cool-white or holo-cyan; only specific semantic kinds
-// get saturated color (danger=red, accent=amber for "active" kinds). This
-// keeps the One-Voice Rule intact: amber still carries ≤10% of the screen.
-const KIND_COLOR: Record<string, string> = {
-  // default cosmic palette
-  source: '#dce8f5', // cool white — most claims
-  concept: '#a8d4e8', // holo-cyan tint
-  entity: '#c8d4e8', // pale blue
-  project: '#e8d4c8', // warm pale
-  decision: '#f5b342', // amber — important nodes get the accent
-  error: '#e85a5a', // danger — contradictions
-}
-const DEFAULT_NODE_COLOR = '#dce8f5'
+// ── Node color — delegated to galaxyColors.ts ──────────────────────────
+// The old KIND_COLOR table (source/concept/entity keys) almost never matched
+// live claim_kind values, so every node fell through to a single white.
+// starColorFor() now hashes the node's domain into a 12-color stellar palette
+// (see galaxyColors.ts) for multi-hued starlight. Kind overrides
+// (decision → amber, error → danger) are preserved.
 
 /**
  * Build the renderer. Returned object's `mount` constructs the ForceGraph3D
@@ -242,7 +235,7 @@ export function createRenderer3d(opts: RendererOpts): GraphRenderer {
         // only on "active" kinds, danger on errors — One Voice Rule holds).
         .nodeColor((node) => {
           const g = node as GalaxyGraphNode
-          return KIND_COLOR[g.raw.kind] ?? DEFAULT_NODE_COLOR
+          return starColorFor(g.raw)
         })
         .nodeRelSize(2.5)
         // nodeVal scales the node by its lib-rendered default-size; combined
@@ -260,7 +253,7 @@ export function createRenderer3d(opts: RendererOpts): GraphRenderer {
           const val = Math.min(12, 1 + Math.sqrt(g.__degree ?? 1))
           const coreSize = Math.max(1.5, val * 0.6)
           const haloScale = Math.max(8, val * 6)
-          const colorHex = KIND_COLOR[g.raw.kind] ?? DEFAULT_NODE_COLOR
+          const colorHex = starColorFor(g.raw)
 
           const group = new Group()
           // Bright core — small sphere that always reads as a pinpoint.

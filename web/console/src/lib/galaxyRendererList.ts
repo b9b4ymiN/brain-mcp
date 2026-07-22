@@ -14,6 +14,7 @@
 
 import type { GalaxyPayload } from './api'
 import type { GraphRenderer, RendererKind, RendererCallbacks } from './galaxyRendererDetect'
+import { starColorFor } from './galaxyColors'
 
 /** Build the DOM-list renderer. */
 export function createRendererList(): GraphRenderer {
@@ -56,6 +57,13 @@ export function createRendererList(): GraphRenderer {
           }
           li.onmouseenter = (): void => callbacks.onNodeHover?.(node)
           li.onmouseleave = (): void => callbacks.onNodeHover?.(null)
+
+          // Color dot — stellar palette indicator matching the 2D/3D
+          // renderers, so the list view is color-consistent with the graph.
+          const dotSpan = document.createElement('span')
+          dotSpan.className = 'galaxy-list-node-dot'
+          dotSpan.style.backgroundColor = starColorFor(node)
+          li.appendChild(dotSpan)
 
           const labelSpan = document.createElement('span')
           labelSpan.className = 'galaxy-list-node-label'
