@@ -1,7 +1,10 @@
-# brain_search FTS5 — Implementation Spec
+# brain_search FTS5 — Implementation Spec (v2)
 
 > **Date:** 2026-07-22
-> **Status:** APPROVED — ready for implementation plan
+> **Status:** DRAFT v2 — pending user review before implementation plan
+> **Supersedes:** v1 (this same file, 2026-07-22) — two design points revised after research:
+>   1. **Tokenizer:** `porter unicode61` → **`trigram`** (Thai is a first-class `SubjectShape`; porter collapses Thai into one giant token).
+>   2. **Sync:** hand-written INSERTs in the write path → **SQL triggers** (research: triggers cannot be forgotten across code paths/migrations and stay atomic).
 > **Branch:** `vnext/phase-0`
 > **Depends on:** Entity Identity Reform (schema v4, shipped)
 
@@ -15,27 +18,41 @@
 
 2. **Substring match is too literal.** Searching `"reinvent wheel"` misses the claim `"Reinvent the Wheel"` because the literal substring doesn't appear (the string has `"the "` in the middle).
 
-## Research — What Production Systems Do
+## Research — "Don't Reinvent the Wheel" (2026-07-22)
 
-Every production knowledge graph separates structured storage from a full-text search index, with an automated sync pipeline:
+The brief was to confirm the wheel already exists before building one. Findings from three parallel investigations:
 
-| System | Structured Store | Search Index | Sync |
-|--------|-----------------|-------------|------|
-| Wikidata | Blazegraph (SPARQL) | Elasticsearch/CirrusSearch (BM25) | Streaming Updater |
-| MusicBrainz | PostgreSQL | Solr/Lucene | Replication triggers |
-| GitHub | MySQL | Elasticsearch | Kafka stream |
+### What this project already ships
 
-**SQLite FTS5** is the lightweight equivalent for embedded systems: it provides BM25 ranking, tokenization (porter stemming + unicode), prefix queries, and column weighting — all inside the SQLite database we already ship (rusqlite bundles SQLite ≥3.34 with FTS5 compiled in).
+| Existing wheel | Designed for | Fit for brain claims? |
+|----------------|--------------|----------------------|
+| **tantivy 0.26** (`src/index_manager.rs`) | File-based markdown wiki search. Rebuilds the *whole* index when git HEAD changes (`state.commit = git hash`). MMAP segment files, single `IndexWriter` behind `parking_lot::RwLock`. | **No — category mismatch.** brain claims are rows written one-at-a-time inside a SQLite transaction, not files in a git tree. Dual-write (SQLite commit + separate tantivy `commit()`) drifts on crash; single-writer lock contends with concurrent confirm/retract; segment/MMAP/50 MB heap overhead doesn't amortize below ~10k small docs. Real-world projects that combine the two (bichon, ParadeDB) make tantivy *the* store, never a mirror of SQL rows. |
+| **SQLite FTS5** (compiled into rusqlite `bundled`) | Full-text index inside the same SQLite file. | **Yes — exact fit.** Lives in the same transaction, no dual-write, BM25 + tokenization + column weighting for free. |
+
+### What production knowledge-graphs do
+
+Wikidata (Blazegraph + Elasticsearch/CirrusSearch) and MusicBrainz (PostgreSQL + Solr) both split structured store from search index. They sync via an outbox/CDC pipeline *only because* the search engine is a separate process. **Here, FTS5 is inside the same SQLite file, so one transaction is enough — an outbox would be overkill** (Kleppmann, *DDIA* Ch. 11). This is the genuine "wheel already invented" for the embedded/transactional case: SQLite's own FTS5 external-content table with SQL triggers.
 
 ### FTS5 best practices (from SQLite docs + production patterns)
 
 - **External-content table** (`content='claim_status', content_rowid='claim_id'`) — the FTS table stores only the inverted index, not a copy of the data. Keeps storage lean and avoids dual-write drift.
-- **`porter unicode61` tokenizer** — Unicode-aware tokenization + Porter stemming. "running" → "run", "Reinvent" matches "reinvent".
-- **`bm25()` with column weights** — `bm25(fts, 10.0, 5.0, 1.0, 2.0)` weights subject > predicate > domain > value for relevance ranking.
-- **`MATCH` query syntax** — supports `AND`/`OR`, prefix (`rein*`), phrase (`"exact match"`).
-- **Sync in the same transaction** as the write to `claim_status` — atomic, no drift.
-- **`INSERT INTO fts(fts) VALUES('rebuild')`** for initial backfill from existing data.
-- **`INSERT INTO fts(fts) VALUES('optimize')`** after bulk loads to merge index segments.
+- **SQL triggers** (`AFTER INSERT` / `AFTER DELETE` / `AFTER UPDATE`) — the documented production pattern. Triggers cannot be forgotten across code paths or migrations, and they fire atomically inside the source write transaction. v1 of this spec proposed hand-written INSERTs in `build_confirmation_material`; research shows triggers are strictly safer, so v2 adopts them.
+- **`trigram` tokenizer** — indexes every 3-character window, giving substring match across **all scripts including Thai/CJK**. `porter unicode61` (v1's choice) is English-only and collapses unspaced Thai into a single oversized token, which would make `SubjectShape::ThaiPure` subjects (e.g. "บมจ. ปตท.") effectively unsearchable. The cost is a larger index and the loss of English stemming (`running` no longer matches `run`), accepted at this scale (10k rows × <200 bytes).
+- **`bm25()` with column weights** — `bm25(fts, 10.0, 5.0, 1.0, 2.0)` weights subject > predicate > value > domain for relevance ranking.
+- **`MATCH` query syntax** — supports `AND`/`OR`, prefix (`rein*`), phrase (`"exact match"`). Note: `trigram` supports phrase and substring queries; prefix queries still work.
+- **`INSERT INTO fts(fts) VALUES('rebuild')`** for initial backfill; `VALUES('integrity-check')` for drift detection.
+
+### Source URLs (selected)
+
+- SQLite FTS5 — external content: https://www.sqlite.org/fts5.html#external_content_tables
+- SQLite FTS5 — external content pitfalls (no-trigger drift): https://www.sqlite.org/fts5.html#external_content_table_pitfalls
+- SQLite FTS5 — special insert commands (`rebuild`/`integrity-check`/`optimize`): https://www.sqlite.org/fts5.html#special_insert_commands
+- SQLite FTS5 — trigram tokenizer: https://www.sqlite.org/fts5.html#the_trigram_tokenizer
+- SQLite FTS5 — unicode61 tokenizer (Thai limitation): https://www.sqlite.org/fts5.html#unicode61_tokenizer
+- Wikidata Streaming Updater: https://wikitech.wikimedia.org/wiki/Wikidata_Query_Service/Streaming_Updater
+- MusicBrainz Search Architecture (trigger + RabbitMQ + SIR worker): https://musicbrainz.org/doc/Development/Search_Architecture
+- Transactional outbox pattern (Debezium): https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/
+- "Don't reinvent the wheel" (Atwood): https://blog.codinghorror.com/dont-reinvent-the-wheel-unless-you-plan-on-learning-more-about-wheels/
 
 ---
 
@@ -44,59 +61,62 @@ Every production knowledge graph separates structured storage from a full-text s
 ### Architecture
 
 ```
-                                    ┌─────────────────────┐
-  brain_search MCP tool             │  SQLite (schema v5)  │
-        │                           │                       │
-        ▼                           │  claim_status (rows)  │
-  SemanticStore::                   │       │               │
-  search_claims(query, top_k)       │       │ content='...'  │
-        │                           │       ▼               │
-        ▼                           │  claim_search_fts     │
-  SELECT claim_id, subject,         │  (FTS5 virtual table) │
-         predicate, value, domain,  │  - BM25 ranking       │
-         bm25(...) AS score         │  - porter unicode61   │
-  FROM claim_search_fts             │  - 4 indexed columns  │
-  WHERE claim_search_fts MATCH ?    │                       │
-    AND active (not superseded/     │  Sync: written in the  │
-         retracted)                 │  SAME transaction as   │
-  ORDER BY bm25(...) ASC            │  claim_status writes   │
-  LIMIT ?                           └─────────────────────┘
+                                    ┌─────────────────────────────┐
+  brain_search MCP tool             │  SQLite (schema v5)          │
+        │                           │                               │
+        ▼                           │  claim_status (rows)          │
+  SemanticStore::                   │    + value_flat TEXT column   │
+  search_claims(query, top_k)       │       │                       │
+        │                           │       │ content='claim_status'│
+        ▼                           │       ▼                       │
+  SELECT claim_id, subject,         │  claim_search_fts             │
+         predicate, value, domain,  │  (FTS5 virtual table)         │
+         bm25(...) AS score         │  - BM25 ranking               │
+  FROM claim_search_fts             │  - trigram tokenizer          │
+  WHERE claim_search_fts MATCH ?    │  - 4 indexed columns          │
+    AND active (not superseded/     │                               │
+         retracted)                 │  Sync: SQL triggers on        │
+  ORDER BY bm25(...) ASC            │  claim_status (INSERT/DELETE/ │
+  LIMIT ?                           │  UPDATE), in the same tx      │
+                                    └─────────────────────────────┘
 ```
+
+### Why triggers instead of hand-written INSERTs (v2 change)
+
+v1 proposed adding `INSERT INTO claim_search_fts ...` calls to `build_confirmation_material`, the supersede path, and the retract path. Research found two problems:
+
+1. **Three call sites to remember.** The retract path (`src/semantic.rs:2964`) does an `UPDATE claim_status SET retracted_at_event_seq=...`, and the supersede path does a similar `UPDATE ... SET superseded_by_event_seq=...`. Forgetting any site silently drifts the index. A future migration or refactor could add a fourth.
+2. **SQLite's documented pitfall.** The FTS5 docs explicitly warn that hand-maintained external-content tables desync when the source row is UPDATEd or DELETEd without a matching FTS write, and that triggers are the recommended cure because they fire for *every* DML path including bulk tooling.
+
+With triggers, the write path in `build_confirmation_material` and the supersede/retract paths stay **unchanged** — they keep issuing their existing `INSERT`/`UPDATE` on `claim_status`, and the triggers maintain the FTS index atomically inside the same transaction.
+
+### Active-claim filtering
+
+FTS5 cannot filter "active" (not superseded/retracted) inside the index itself — that status is derived from sequence columns. The read query therefore JOINs back to `claim_status` and filters in SQL:
+
+```sql
+SELECT cs.claim_id, cs.subject, cs.predicate, cs.value, cs.domain,
+       bm25(claim_search_fts, 10.0, 5.0, 1.0, 2.0) AS score
+FROM claim_search_fts fts
+JOIN claim_status cs ON cs.claim_id = fts.rowid
+WHERE claim_search_fts MATCH ?
+  AND cs.superseded_by_event_seq IS NULL
+  AND cs.retracted_at_event_seq IS NULL
+ORDER BY score ASC
+LIMIT ?
+```
+
+This keeps as-of queries correct and means the FTS row for a superseded claim is *retained* (still indexable for historical/timeline views), just excluded from the default search. The trigram tokenizer means the `MATCH ?` argument is treated as a phrase/substring query by default.
 
 ### Data Flow
 
-**Write path (brain_confirm / brain_supersede):**
+**Write path (brain_confirm):** `build_confirmation_material` issues its existing `INSERT INTO claim_status(...)`. The `AFTER INSERT` trigger populates the FTS row from the just-inserted columns. Both run in the same transaction.
 
-```
-build_confirmation_material()
-  → INSERT INTO claim_status (...)
-  → INSERT INTO claim_search_fts(rowid, subject, predicate, value_flat, domain)
-        VALUES (claim_id, subject, predicate, flatten(value), domain)
-  ↑ both inside the SAME SQLite transaction (atomic)
-```
+**Supersede path:** `UPDATE claim_status SET superseded_by_event_seq=...`. The `AFTER UPDATE` trigger fires (because content columns were potentially touched — even if not, it's a no-op on FTS) and the row stays in the index, filtered out at read time by the `superseded_by_event_seq IS NULL` clause.
 
-**Delete path (supersede / retract):**
+**Retract path:** `UPDATE claim_status SET retracted_at_event_seq=...`. Same as supersede — row stays indexed, filtered at read time.
 
-```
-UPDATE claim_status SET superseded_by_event_seq = ...
-  → DELETE FROM claim_search_fts WHERE rowid = superseded_claim_id
-  ↑ same transaction
-```
-
-**Read path (brain_search):**
-
-```
-brain_search(query="reinvent wheel", top_k=10)
-  → SELECT cs.claim_id, cs.subject, cs.predicate, cs.value, cs.domain,
-           bm25(claim_search_fts, 10.0, 5.0, 1.0, 2.0) AS score
-    FROM claim_search_fts fts
-    JOIN claim_status cs ON cs.claim_id = fts.rowid
-    WHERE claim_search_fts MATCH ?
-      AND cs.superseded_by_event_seq IS NULL
-      AND cs.retracted_at_event_seq IS NULL
-    ORDER BY score ASC
-    LIMIT ?
-```
+**Read path (brain_search):** the `search_claims` method runs the FTS5 MATCH + JOIN + active-filter query above.
 
 ---
 
@@ -107,37 +127,32 @@ brain_search(query="reinvent wheel", top_k=10)
 **File:** `src/semantic.rs`
 
 - `CURRENT_DISK_SCHEMA_VERSION: 4 → 5`
-- Add `(4, 5)` to `schema_upgrade_path_exists` and `schema_upgrade_reachable`
-- `run_upgrade_step_forward` — add `(4, 5, 0)` arm:
-  ```sql
-  CREATE VIRTUAL TABLE claim_search_fts USING fts5(
-      subject,
-      predicate,
-      value_flat,
-      domain,
-      content='claim_status',
-      content_rowid='claim_id',
-      tokenize = 'porter unicode61'
-  );
-  -- Backfill from existing claim_status rows.
-  -- value_flat must be the JSON value flattened to a searchable string.
-  INSERT INTO claim_search_fts(rowid, subject, predicate, value_flat, domain)
-  SELECT claim_id, subject, flatten_json_value(value), domain
-  FROM claim_status
-  WHERE superseded_by_event_seq IS NULL AND retracted_at_event_seq IS NULL;
-  INSERT INTO claim_search_fts(claim_search_fts) VALUES('optimize');
-  ```
-  **Note:** `flatten_json_value` is not a built-in SQL function — it must be done in Rust during the migration step (read rows, flatten, insert). Or store the flattened value on `claim_status` as a new column `value_flat TEXT` during the migration, then the FTS5 external-content table references it. The latter is simpler for sync (write `value_flat` alongside every `claim_status` INSERT).
-
-  **Recommended approach:** add a `value_flat TEXT` column to `claim_status` (populated by Rust at confirm time via `flatten_json(&value)`), and the FTS5 table indexes `subject, predicate, value_flat, domain` from `claim_status` directly. This keeps the external-content sync purely SQL-triggered (no Rust in the read path).
-
-- `run_upgrade_step_reverse` — add `(4, 5, 0)` arm:
-  ```sql
-  DROP TABLE claim_search_fts;
-  -- value_flat column stays (harmless); or recreate claim_status without it
-  -- (table recreation, same pattern as v3→v4 constraint change)
-  ```
-- Fresh-store DDL in `initialize_schema` — add the FTS5 table + `value_flat` column for new stores created at v5.
+- Add `(4, 5)` to `schema_upgrade_path_exists` and `schema_upgrade_reachable`.
+- `plan_schema_upgrade` — add a `(4, 5)` arm describing the FTS5 + `value_flat` + triggers migration (reversible).
+- `run_upgrade_step_forward` — add a `(4, 5, 0)` arm that calls a new `run_fts5_forward(transaction)` helper:
+  1. Recreate `claim_status` with a new `value_flat TEXT` column (same table-recreation pattern proven in v3→v4 Entity Identity Reform).
+  2. Backfill `value_flat` for existing rows in Rust: read each row's `value` JSON, run `flatten_json`, `UPDATE claim_status SET value_flat=? WHERE claim_id=?`.
+  3. Create the FTS5 virtual table:
+     ```sql
+     CREATE VIRTUAL TABLE claim_search_fts USING fts5(
+         subject,
+         predicate,
+         value_flat,
+         domain,
+         content='claim_status',
+         content_rowid='claim_id',
+         tokenize = 'trigram'
+     );
+     ```
+  4. Create the three sync triggers (`claim_status_ai`, `claim_status_ad`, `claim_status_au`) — SQL bodies identical to the SQLite docs canonical external-content example, adapted to our columns.
+  5. Backfill the index from existing rows:
+     ```sql
+     INSERT INTO claim_search_fts(rowid, subject, predicate, value_flat, domain)
+       SELECT claim_id, subject, predicate, value_flat, domain FROM claim_status;
+     INSERT INTO claim_search_fts(claim_search_fts) VALUES('optimize');
+     ```
+- `run_upgrade_step_reverse` — add a `(4, 5, 0)` arm that calls `run_fts5_reverse(transaction)`: `DROP TABLE claim_search_fts`, drop the three triggers, and recreate `claim_status` without `value_flat` (table-recreation, same pattern as v3→v4 reverse).
+- Fresh-store DDL in `initialize_schema` — emit the `value_flat` column, the FTS5 table, and the three triggers so brand-new v5 stores are consistent.
 
 ### 2. `value_flat` helper
 
@@ -171,36 +186,13 @@ fn flatten_json(value: &serde_json::Value) -> String {
 }
 ```
 
-### 3. Write path — populate FTS5 on confirm
+### 3. Write path — populate `value_flat` (triggers handle the FTS row)
 
-**File:** `src/semantic.rs` — `build_confirmation_material` (around line 7175)
+**File:** `src/semantic.rs` — `build_confirmation_material` (around line 7546)
 
-Add the FTS5 INSERT in the same transaction block that writes `claim_status`:
+The only change to the write path is that the `INSERT INTO claim_status(...)` now also writes the new `value_flat` column, computed via `flatten_json(&value)`. The FTS row is populated by the `AFTER INSERT` trigger, *not* by a hand-written `INSERT INTO claim_search_fts`. This keeps the write path single-site and impossible to forget.
 
-```rust
-// After the existing INSERT INTO claim_status(...):
-let value_flat = flatten_json(&value);
-transaction.execute(
-    "INSERT INTO claim_search_fts(rowid, subject, predicate, value_flat, domain)
-     VALUES (?1, ?2, ?3, ?4, ?5)",
-    params![claim_id.to_string(), &subject, &predicate, &value_flat, &domain_for_claim],
-)?;
-```
-
-**File:** `src/semantic.rs` — supersede path
-
-When `claim_status` is marked superseded (`UPDATE ... SET superseded_by_event_seq = ...`), delete the FTS5 row:
-
-```rust
-transaction.execute(
-    "DELETE FROM claim_search_fts WHERE rowid = ?1",
-    [superseded_id.to_string()],
-)?;
-```
-
-**File:** `src/semantic.rs` — retract path (if separate from supersede)
-
-Same pattern — delete the FTS5 row when the claim is retracted.
+Supersede and retract paths: **no change**. They already `UPDATE claim_status`; the `AFTER UPDATE` trigger keeps the index consistent. Active filtering happens at read time.
 
 ### 4. New `search_claims` method on `SemanticStore`
 
@@ -209,20 +201,18 @@ Same pattern — delete the FTS5 row when the claim is retracted.
 ```rust
 /// Full-text search over confirmed, active claims using the FTS5 index.
 /// Returns claims ranked by BM25 relevance to the query.
-/// The query supports FTS5 MATCH syntax: tokens, prefixes (`rein*`),
-/// phrases (`"exact match"`), AND/OR.
+/// The query is run as a trigram phrase/substring query; prefix and boolean
+/// operators are also supported by FTS5 MATCH syntax.
 pub fn search_claims(
     &self,
     query: &str,
     domain: Option<&str>,
     top_k: usize,
 ) -> Result<Vec<ClaimSearchHit>> {
-    // Build SQL: FTS5 MATCH + join claim_status + filter active + optional domain
+    // Build SQL: FTS5 MATCH + JOIN claim_status + filter active + optional domain
     // Column weights: subject=10, predicate=5, value_flat=1, domain=2
     // ORDER BY bm25(claim_search_fts, 10.0, 5.0, 1.0, 2.0) ASC
     // LIMIT top_k
-    // Each hit: { claim_id, subject, predicate, value (from event payload),
-    //            domain, score }
 }
 ```
 
@@ -246,42 +236,13 @@ pub struct ClaimSearchHit {
 
 **File:** `src/mcp/handlers.rs` — `handle_brain_search` (line 856)
 
-Replace the linear-scan + substring-filter with:
+Replace the linear-scan + substring-filter with a call to `store.search_claims(...)`.
 
-```rust
-pub fn handle_brain_search(server: &McpServer, args: &Map<String, Value>) -> ToolHandlerResult {
-    let Some(store) = &server.semantic_store else {
-        return Err("brain not initialized".to_owned());
-    };
-    let query = arg_str_req(args, "query")?;
-    let domain = arg_str(args, "domain");
-    let top_k = arg_str(args, "top_k")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(10);
-
-    let hits = store
-        .search_claims(&query, domain.as_deref(), top_k)
-        .map_err(|e| format!("{e}"))?;
-
-    let payload = serde_json::json!({
-        "count": hits.len(),
-        "query": query,
-        "results": hits.iter().map(|h| serde_json::json!({
-            "claim_id": h.claim_id,
-            "subject": h.subject,
-            "predicate": h.predicate,
-            "value": h.value,
-            "domain": h.domain,
-            "score": h.score,
-        })).collect::<Vec<_>>(),
-    });
-    ok_text(serde_json::to_string_pretty(&payload)?)
-}
-```
+**`value` field resolution (verified against the codebase).** `claim_status` does **not** store the claim `value` — it lives encrypted in the confirmation event payload (`src/semantic.rs:3938-3948` shows `claims_current` resolving it via `confirmed_event_seq → events.object_id → decrypt_object → ConfirmationObject.claim.value`). `search_claims` must follow the **same** rehydration path: the FTS5 query returns the rowids + ranking, then for each hit the method joins `claim_status.confirmed_event_seq → events.object_id`, decrypts the payload, and extracts `value`. This keeps the response shape identical to today's (`claim_id`, `subject`, `predicate`, `value`, `domain`) and adds `score`.
 
 ### 6. `claim_timeline` interaction
 
-No change needed — `claim_timeline` already queries `claim_status` directly and is unaffected by the FTS5 index.
+No change needed — `claim_timeline` queries `claim_status` directly and is unaffected by the FTS5 index. Because superseded/retracted rows remain in the index (filtered at read time), historical timeline views still work.
 
 ### 7. Tests
 
@@ -290,19 +251,24 @@ No change needed — `claim_timeline` already queries `claim_status` directly an
 Test cases:
 
 1. **Basic match** — confirm a claim, `search_claims("reinvent")` finds it.
-2. **Tokenized match** — search `"reinvent wheel"` finds `"Reinvent the Wheel"` (the tokenizer splits both sides and matches all tokens).
+2. **Tokenized match** — search `"reinvent wheel"` finds `"Reinvent the Wheel"` (trigram indexes overlapping windows of both strings).
 3. **Value search** — confirm a claim with `value: json!(["Tesla", "BMW"])`, search `"tesla"` finds it via `value_flat`.
-4. **Domain filter** — search with `domain: Some("engineering")` filters to that domain only.
-5. **BM25 ranking** — confirm 3 claims with different overlap to the query; assert the most-relevant one has the lowest (best) score.
-6. **Supersede removes from search** — confirm → supersede → search no longer finds the old claim.
-7. **Migration test** — stage a v4 store with existing claims, upgrade to v5, assert FTS5 backfill finds all pre-existing claims.
-8. **Empty/edge queries** — empty string, special characters, very long query.
+4. **Thai search** — confirm a claim with subject `"บมจ. ปตท."`, search `"ปตท"` finds it (validates the trigram-over-porter decision).
+5. **Domain filter** — search with `domain: Some("engineering")` filters to that domain only.
+6. **BM25 ranking** — confirm 3 claims with different overlap to the query; assert the most-relevant one has the lowest (best) score.
+7. **Supersede excludes from search** — confirm → supersede → search no longer returns the old claim (filtered by `superseded_by_event_seq IS NULL`), but a direct `claim_timeline` still sees it.
+8. **Migration test** — stage a v4 store with existing claims, upgrade to v5, assert FTS5 backfill finds all pre-existing claims and `integrity-check` passes.
+9. **Empty/edge queries** — empty string, special characters, very long query, query shorter than 3 characters (trigram minimum — document the behavior).
+
+**File:** `tests/semantic_migration_v1.rs` (extend)
+
+Add a v4→v5 round-trip: forward, verify FTS works, reverse, verify rollback drops the FTS table and `value_flat` column cleanly.
 
 ### 8. MCP tool manifest
 
 **File:** `src/mcp/tools.rs`
 
-No change to the `brain_search` tool definition (same args: `query`, `domain`, `top_k`). The description could be updated to mention BM25 ranking:
+No change to the `brain_search` tool definition (same args: `query`, `domain`, `top_k`). Update the description to mention BM25 ranking:
 
 ```
 "Search confirmed claims in the semantic brain (BM25-ranked full-text search across subject, predicate, value, and domain)"
@@ -315,23 +281,25 @@ No change to the `brain_search` tool definition (same args: `query`, `domain`, `
 ### Phase A — Schema + migration (v4→v5)
 
 1. Add `value_flat TEXT` column to `claim_status` (table recreation, same pattern as v3→v4).
-2. Create `claim_search_fts` FTS5 virtual table.
-3. Backfill: iterate existing `claim_status` rows, compute `value_flat` in Rust, populate FTS5.
-4. Bump `CURRENT_DISK_SCHEMA_VERSION` to 5.
-5. Test: migration on a copy of the live store (34 entities, 97 claims).
+2. Create `claim_search_fts` FTS5 virtual table with `trigram` tokenizer.
+3. Create the three sync triggers (`claim_status_ai`/`_ad`/`_au`).
+4. Backfill `value_flat` in Rust, then `INSERT INTO claim_search_fts(...) SELECT ... FROM claim_status`.
+5. `INSERT INTO claim_search_fts(claim_search_fts) VALUES('optimize')`.
+6. Bump `CURRENT_DISK_SCHEMA_VERSION` to 5.
+7. Test: migration on a copy of the live store (34 entities, 97 claims) and an `integrity-check` pass.
 
 ### Phase B — Write path
 
 1. Add `flatten_json` helper.
-2. In `build_confirmation_material`: compute `value_flat`, write to `claim_status.value_flat` + `claim_search_fts` in the same transaction.
-3. In supersede/retract paths: delete FTS5 row in the same transaction.
+2. In `build_confirmation_material`: compute `value_flat`, include it in the existing `INSERT INTO claim_status(...)`. The trigger populates the FTS row.
+3. Supersede/retract paths: **no change** (already `UPDATE claim_status`; trigger + read-time filter handle the rest).
 4. Test: confirm a claim → search finds it immediately.
 
 ### Phase C — Read path
 
 1. Add `search_claims` method.
 2. Rewrite `handle_brain_search` handler.
-3. Test: all 8 test cases pass.
+3. Test: all 9 test cases pass.
 4. Run full workspace test suite.
 
 ### Phase D — Production migration
@@ -340,7 +308,7 @@ No change to the `brain_search` tool definition (same args: `query`, `domain`, `
 2. Backup v4 store.
 3. `docker compose build && docker compose up -d`.
 4. `recovery upgrade` (v4→v5).
-5. Verify: `brain_search "reinvent wheel"` returns the claim.
+5. Verify: `brain_search "reinvent wheel"` returns the claim; `brain_search "ปตท"` returns the Thai claim.
 
 ---
 
@@ -349,10 +317,13 @@ No change to the `brain_search` tool definition (same args: `query`, `domain`, `
 | Risk | Level | Mitigation |
 |------|-------|------------|
 | FTS5 not compiled into bundled SQLite | Low | rusqlite `bundled` feature compiles SQLite with FTS5 enabled by default. Verify with `SELECT fts5(?)` during migration. |
-| External-content table drift (FTS5 out of sync with claim_status) | Medium | All writes go through the same transaction. Add `INSERT INTO fts(fts) VALUES('integrity-check')` to a health-check endpoint. |
+| External-content table drift (FTS5 out of sync with claim_status) | **Low (improved from v1)** | v1's risk was Medium because it relied on three hand-written INSERT sites. v2 uses SQL triggers, which the SQLite docs identify as the canonical drift cure. Add `INSERT INTO fts(fts) VALUES('integrity-check')` to a health-check endpoint. |
 | `value_flat` column addition requires table recreation | Medium | Same table-recreation pattern as v3→v4 (proven in Entity Identity Reform). Atomic, reversible. |
+| `trigram` index larger than `porter unicode61` | Low | At 10k rows × <200 bytes the absolute size is still small. `VALUES('optimize')` compacts segments after backfill. |
+| Loss of English stemming vs v1 (`running` no longer matches `run`) | Low | Trigram still matches the full word `running`. Stemming is a nice-to-have, not a requirement; the trigram choice buys Thai/CJK support which is a first-class `SubjectShape`. |
+| Trigram requires ≥3 characters per query token | Low | Claim search keywords are typically ≥3 chars. Sub-3-char queries (e.g. "AI") are documented as a known limitation; fall back to `claim_timeline` for those. |
 | BM25 column weights need tuning | Low | Weights are a single constant array in `search_claims`; easy to adjust post-ship. Start with subject=10, predicate=5, value=1, domain=2. |
-| Existing `brain_search` callers expect substring behavior | Low | FTS5 MATCH is a superset of substring (prefix queries + tokenization). The old behavior is preserved as a subset. |
+| Existing `brain_search` callers expect substring behavior | Low | Trigram MATCH is a superset of substring for ≥3-char queries. Old behavior preserved as a subset. |
 
 ---
 
@@ -361,21 +332,24 @@ No change to the `brain_search` tool definition (same args: `query`, `domain`, `
 ### Functional
 - [ ] `brain_search "reinvent wheel"` returns the "Reinvent the Wheel" claim (ranked by BM25)
 - [ ] `brain_search "tesla"` finds claims whose `value` is a JSON array containing "Tesla"
+- [ ] `brain_search "ปตท"` finds the Thai subject claim (validates trigram choice)
 - [ ] `brain_search` with `domain: "engineering"` filters correctly
-- [ ] Superseded/retracted claims are excluded from search results
+- [ ] Superseded/retracted claims are excluded from search results but visible in `claim_timeline`
 - [ ] BM25 ranking: most-relevant result appears first
 
 ### Architectural
-- [ ] `claim_search_fts` FTS5 table exists with `porter unicode61` tokenizer
+- [ ] `claim_search_fts` FTS5 table exists with `trigram` tokenizer
+- [ ] Three SQL triggers (`claim_status_ai`/`_ad`/`_au`) exist and keep the index in sync
 - [ ] `value_flat` column on `claim_status`
 - [ ] `search_claims` method uses FTS5 MATCH, not linear scan
-- [ ] FTS5 writes are in the same transaction as `claim_status` writes
+- [ ] No hand-written `INSERT INTO claim_search_fts` in any write path (triggers only)
 - [ ] Schema version bumped to 5 with reversible migration
 
 ### Quality
 - [ ] `cargo test --workspace` passes
-- [ ] `tests/semantic_search_fts5_v1.rs` — 8 new tests pass
-- [ ] Migration tested on a copy of the live store
+- [ ] `tests/semantic_search_fts5_v1.rs` — 9 new tests pass
+- [ ] `tests/semantic_migration_v1.rs` — v4→v5 round-trip passes
+- [ ] `INSERT INTO claim_search_fts(claim_search_fts) VALUES('integrity-check')` returns no rows after migration
 - [ ] Docker rebuild + browser verify
 
 ---
@@ -384,8 +358,8 @@ No change to the `brain_search` tool definition (same args: `query`, `domain`, `
 
 | File | Change |
 |------|--------|
-| `src/semantic.rs` | Schema bump, FTS5 DDL, migration, `flatten_json`, `search_claims`, write-path sync |
+| `src/semantic.rs` | Schema bump, FTS5 DDL, triggers, migration (`run_fts5_forward`/`reverse`), `flatten_json`, `search_claims`; `build_confirmation_material` adds `value_flat` to its INSERT |
 | `src/mcp/handlers.rs` | Rewrite `handle_brain_search` to call `search_claims` |
 | `src/mcp/tools.rs` | Update `brain_search` description (optional) |
-| `tests/semantic_search_fts5_v1.rs` | New test file (8 tests) |
-| `tests/semantic_migration_v1.rs` | v4→v5 migration test |
+| `tests/semantic_search_fts5_v1.rs` | New test file (9 tests) |
+| `tests/semantic_migration_v1.rs` | Extend with v4→v5 round-trip |
