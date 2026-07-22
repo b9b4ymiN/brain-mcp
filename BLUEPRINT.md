@@ -610,6 +610,9 @@ Headroom 12GB เผื่อ peak load + index rebuild
 - [ ] Setup Tailscale บน VM + local
 - [ ] Configure Claude Desktop MCP config
 - [ ] **DoD:** เปิด Claude Desktop, `wiki_list` ทำงาน, ได้ empty list
+- [x] **Entity Identity Reform (2026-07-22):** dropped `domain` from entity
+      identity (Wikidata pattern). Schema bumped 3 → 4. Code complete, all
+      tests green. See ADR-0002. Production migration pending (Task 22).
 
 ### Phase 1 — Profile Read-Only (Week 1-2)
 **Goal:** Profile โหลดทุก session

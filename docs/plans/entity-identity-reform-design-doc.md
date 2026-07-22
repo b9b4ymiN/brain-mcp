@@ -1,7 +1,7 @@
 # Entity Identity Reform — Design Document
 
 > Created: 2026-07-21
-> Status: **DESIGN DOCUMENT — research-backed, awaiting review**
+> Status: **SHIPPED — schema v3→v4, code complete, tests green. Production migration pending (Task 22).**
 > Branch: `vnext/phase-0`
 > Principle: **"Don't reinvent the wheel"** — adopt the production-proven identity pattern (Wikidata, MusicBrainz, OSM, GitHub, OpenAI)
 > Supersedes: `docs/plans/entity-identity-reform-wikidata-pattern.md` (absorbed + expanded)
