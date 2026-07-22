@@ -81,7 +81,10 @@ pub fn detect_conflicts(
         all.push(Entry {
             id: p.proposal_id,
             status: PeerStatus::Pending,
-            domain: p.domain.clone(),
+            // Entity Identity Reform: ProposalSummary.domain is now Option<String>;
+            // the per-entry domain tag on Entry stays String (display context).
+            // Task 21 will revise the bucket key itself.
+            domain: p.domain.clone().unwrap_or_default(),
             subject: p.subject.clone(),
             predicate: p.predicate.clone(),
             value: p.value.clone(),

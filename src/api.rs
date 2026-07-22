@@ -826,7 +826,10 @@ async fn get_subject(
 
 #[derive(Deserialize)]
 struct TimelineParams {
-    domain: String,
+    /// Entity Identity Reform: domain is an optional filter. `None` returns
+    /// every claim for the given subject/predicate across all domains.
+    #[serde(default)]
+    domain: Option<String>,
     subject: String,
     predicate: String,
 }
@@ -838,7 +841,7 @@ async fn timeline(
 ) -> Result<Response, ApiError> {
     let timeline = state
         .store
-        .claim_timeline(&params.domain, &params.subject, &params.predicate)
+        .claim_timeline(params.domain.as_deref(), &params.subject, &params.predicate)
         .map_err(|e| map_semantic_error(&e))?;
     Ok(Json(timeline).into_response())
 }

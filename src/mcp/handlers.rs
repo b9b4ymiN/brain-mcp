@@ -1164,7 +1164,11 @@ pub fn handle_brain_extract(server: &McpServer, args: &Map<String, Value>) -> To
                         predicate: proposal.predicate,
                         value: proposal.value,
                         claim_kind: proposal.claim_kind,
-                        domain: proposal.domain,
+                        // Entity Identity Reform: ClaimDraft.domain is now
+                        // Option<String>. ExtractionProposal.domain is still
+                        // String (the extraction pipeline emits a domain tag);
+                        // wrap it so the draft sees Some(tag).
+                        domain: Some(proposal.domain),
                         confidence_basis_points: proposal.confidence_basis_points,
                         privacy_label: crate::semantic::PrivacyLabel::LocalOnly,
                         valid_from: None,
@@ -1205,7 +1209,8 @@ pub fn handle_brain_capture(server: &McpServer, args: &Map<String, Value>) -> To
     let subject = arg_str_req(args, "subject")?;
     let predicate = arg_str_req(args, "predicate")?;
     let value_str = arg_str_req(args, "value")?;
-    let domain = arg_str_req(args, "domain")?;
+    // Entity Identity Reform: domain is optional.
+    let domain = arg_str(args, "domain");
     let claim_kind = arg_str(args, "claim_kind").unwrap_or_else(|| "user_assertion".to_owned());
 
     let value: serde_json::Value =
@@ -1267,7 +1272,8 @@ pub fn handle_brain_propose(server: &McpServer, args: &Map<String, Value>) -> To
     let subject = arg_str_req(args, "subject")?;
     let predicate = arg_str_req(args, "predicate")?;
     let value_str = arg_str_req(args, "value")?;
-    let domain = arg_str_req(args, "domain")?;
+    // Entity Identity Reform: domain is optional.
+    let domain = arg_str(args, "domain");
     let method = arg_str_req(args, "method")?;
     let claim_kind = arg_str(args, "claim_kind").unwrap_or_else(|| "inference".to_owned());
     let model = arg_str(args, "model");

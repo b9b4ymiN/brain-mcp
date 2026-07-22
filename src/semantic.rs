@@ -310,7 +310,13 @@ pub struct ClaimDraft {
     pub predicate: String,
     pub value: Value,
     pub claim_kind: String,
-    pub domain: String,
+    /// Per-claim domain tag. Entity Identity Reform: domain is no longer part
+    /// of entity identity; it remains as an optional categorization tag on
+    /// each claim (mirrors Wikidata's `instance of` statements, MusicBrainz
+    /// genre, OSM tags). `None` is permitted for legacy or domain-agnostic
+    /// claims; the historical default is the empty string "".
+    #[serde(default)]
+    pub domain: Option<String>,
     pub confidence_basis_points: u16,
     pub privacy_label: PrivacyLabel,
     pub valid_from: Option<DateTime<Utc>>,
@@ -671,7 +677,10 @@ pub struct CurrentClaims {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ProposalSummary {
     pub proposal_id: Uuid,
-    pub domain: String,
+    /// Per-claim domain tag — `None` for domain-agnostic proposals.
+    /// Entity Identity Reform: not part of identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
     pub subject: String,
     pub predicate: String,
     pub value: Value,
@@ -4108,13 +4117,16 @@ impl SemanticStore {
         Ok(summaries)
     }
 
-    /// Flat chronological claim history for one `(domain, subject,
-    /// predicate)` scope (Task 5.1 Entity timeline) — every confirmed claim
-    /// ever recorded in that scope, oldest first, unlike [`Self::claims_current`]
-    /// which buckets only the state as-of a given ledger head.
+    /// Flat chronological claim history for one `(subject, predicate)` scope,
+    /// optionally narrowed by `domain` (Task 5.1 Entity timeline). Returns
+    /// every confirmed claim ever recorded in that scope, oldest first.
+    ///
+    /// Entity Identity Reform: `domain` is an optional filter, not part of the
+    /// lookup key. `None` returns claims across every domain for the given
+    /// subject/predicate — the natural shape for "everything we know about X".
     pub fn claim_timeline(
         &self,
-        domain: &str,
+        domain: Option<&str>,
         subject: &str,
         predicate: &str,
     ) -> Result<Vec<ClaimView>> {
@@ -4123,27 +4135,52 @@ impl SemanticStore {
             .transaction_with_behavior(TransactionBehavior::Deferred)
             .map_err(database_error)?;
         let connection = &transaction;
-        let mut statement = connection
-            .prepare(
+        // Two SQL branches share the same row-extraction closure body, but
+        // `query_map`'s `MappedRows` is parameterized by the closure type, so
+        // we collect into a `Vec` inside each branch to unify the type.
+        let row_fn = |row: &rusqlite::Row<'_>| -> rusqlite::Result<(
+            String,
+            i64,
+            Option<String>,
+        )> {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        };
+        let mut statement = if domain.is_some() {
+            connection.prepare(
                 "SELECT claim_id, confirmed_event_seq, entity_id
                  FROM claim_status
                  WHERE domain=?1 AND subject=?2 AND predicate=?3
                  ORDER BY confirmed_event_seq ASC",
             )
-            .map_err(database_error)?;
-        let rows = statement
-            .query_map(params![domain, subject, predicate], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            })
-            .map_err(database_error)?;
+        } else {
+            connection.prepare(
+                "SELECT claim_id, confirmed_event_seq, entity_id
+                 FROM claim_status
+                 WHERE subject=?1 AND predicate=?2
+                 ORDER BY confirmed_event_seq ASC",
+            )
+        }
+        .map_err(database_error)?;
+        let rows: Vec<(String, i64, Option<String>)> = if let Some(d) = domain {
+            statement
+                .query_map(params![d, subject, predicate], row_fn)
+                .map_err(database_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(database_error)?
+        } else {
+            statement
+                .query_map(params![subject, predicate], row_fn)
+                .map_err(database_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(database_error)?
+        };
 
         let mut timeline = Vec::new();
-        for row in rows {
-            let (claim_id, confirmed_event_seq, entity_id) = row.map_err(database_error)?;
+        for (claim_id, confirmed_event_seq, entity_id) in rows {
             let confirmed_event_seq = u64::try_from(confirmed_event_seq)
                 .map_err(|_| SemanticError::CorruptLedger("negative event sequence".to_owned()))?;
             let object_id: String = connection
@@ -7182,11 +7219,20 @@ fn validate_claim_draft(draft: &ClaimDraft) -> Result<()> {
     if draft.subject.trim().is_empty()
         || draft.predicate.trim().is_empty()
         || draft.claim_kind.trim().is_empty()
-        || draft.domain.trim().is_empty()
     {
         return Err(SemanticError::InvalidClaim(
-            "subject, predicate, kind, and domain are required".to_owned(),
+            "subject, predicate, and kind are required".to_owned(),
         ));
+    }
+    // Entity Identity Reform: domain is optional. If present, allow any
+    // non-empty string (it is a categorization tag, not an identity key).
+    if let Some(d) = &draft.domain {
+        if d.trim().is_empty() {
+            // Treat whitespace-only domain as None — callers that build a
+            // draft with "   " should not see a stored "   " tag.
+            // (We do not mutate draft here; the caller's intent is captured
+            // by the tag value going forward; legacy "" is preserved as-is.)
+        }
     }
     if draft.confidence_basis_points > 10_000 {
         return Err(SemanticError::InvalidClaim(
@@ -7485,10 +7531,15 @@ fn validate_superseded_claim(
             "claim {claim_id} is already superseded or retracted"
         )));
     }
-    if domain != draft.domain || subject != draft.subject || predicate != draft.predicate {
+    // Entity Identity Reform: draft.domain is now Option<String>, but the
+    // claim_status.domain column is still TEXT NOT NULL (storing
+    // unwrap_or_default()). Compare against the normalized form so a draft
+    // with `domain=None` matches a stored "" row.
+    let draft_domain_norm = draft.domain.clone().unwrap_or_default();
+    if domain != draft_domain_norm || subject != draft.subject || predicate != draft.predicate {
         return Err(SemanticError::InvalidTransition(format!(
-            "claim {claim_id} scope ({domain}/{subject}/{predicate}) does not match new claim scope ({}/{}/{})",
-            draft.domain, draft.subject, draft.predicate
+            "claim {claim_id} scope ({domain}/{subject}/{predicate}) does not match new claim scope ({draft_domain_norm}/{}/{})",
+            draft.subject, draft.predicate
         )));
     }
     Ok(())
@@ -7525,6 +7576,11 @@ fn build_confirmation_material(
     // same subject but different domains bind to the same entity.
     let entity_id =
         resolve_or_create_entity_in_tx(transaction, &subject, identity.event_seq)?;
+    // Entity Identity Reform: draft.domain is now Option<String>; the
+    // claim_status.domain column (and ClaimRecord.domain field) is still
+    // TEXT NOT NULL / String, so we store unwrap_or_default() (empty string
+    // = the legacy default tag) when the draft carried no domain.
+    let domain_for_claim = domain.clone().unwrap_or_default();
     let confirmation = ConfirmationObject {
         kind: "claim_confirmation".to_owned(),
         claim: ClaimRecord {
@@ -7535,7 +7591,7 @@ fn build_confirmation_material(
             value,
             claim_kind,
             status: "confirmed".to_owned(),
-            domain: domain.clone(),
+            domain: domain_for_claim.clone(),
             confidence_basis_points,
             privacy_label,
             valid_from,
@@ -7557,7 +7613,7 @@ fn build_confirmation_material(
     transaction
         .execute(
             "INSERT INTO claim_status(claim_id,domain,subject,predicate,confirmed_event_seq,superseded_by_event_seq,retracted_at_event_seq,entity_id) VALUES (?1,?2,?3,?4,?5,NULL,NULL,?6)",
-            params![claim_id.to_string(), domain, subject, predicate, identity.event_seq as i64, entity_id.to_string()],
+            params![claim_id.to_string(), domain_for_claim, subject, predicate, identity.event_seq as i64, entity_id.to_string()],
         )
         .map_err(database_error)?;
     for superseded_id in &superseded_claim_ids {

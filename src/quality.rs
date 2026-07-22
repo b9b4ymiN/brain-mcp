@@ -214,19 +214,25 @@ fn check_taxonomy_drift(input: &QualityCheckerInput<'_>, tags: &mut Vec<QualityT
     let domains = canon_set(ALLOWED_DOMAINS);
     let kinds = canon_set(ALLOWED_CLAIM_KINDS);
     let p = input.proposal;
-    if !domains.contains(p.domain.as_str()) {
-        tags.push(
-            QualityTag::new(
-                QualityTagKind::TaxonomyDrift,
-                QualitySeverity::Warning,
-                format!(
-                    "domain `{}` is not in the closed canon {:?}; \
-                     this fragments the (domain, subject) entity graph",
-                    p.domain, ALLOWED_DOMAINS
-                ),
-            )
-            .with_evidence(p.domain.clone()),
-        );
+    // Entity Identity Reform: ProposalSummary.domain is now Option<String>.
+    // The taxonomy-drift rule fires only when a domain tag is present and
+    // not in the canon. `None` (domain-agnostic) and empty string (legacy
+    // default) are not drift.
+    if let Some(d) = p.domain.as_deref() {
+        if !d.is_empty() && !domains.contains(d) {
+            tags.push(
+                QualityTag::new(
+                    QualityTagKind::TaxonomyDrift,
+                    QualitySeverity::Warning,
+                    format!(
+                        "domain `{}` is not in the closed canon {:?}; \
+                         this fragments the (domain, subject) entity graph",
+                        d, ALLOWED_DOMAINS
+                    ),
+                )
+                .with_evidence(d.to_owned()),
+            );
+        }
     }
     if !kinds.contains(p.claim_kind.as_str()) {
         tags.push(
@@ -522,7 +528,9 @@ pub fn build_review_prompt(input: &QualityCheckerInput<'_>) -> String {
         p.subject,
         p.predicate,
         p.value,
-        p.domain,
+        // Entity Identity Reform: ProposalSummary.domain is now Option<String>.
+        // Format as the inner string, or "(none)" for domain-agnostic proposals.
+        p.domain.as_deref().unwrap_or("(none)"),
         p.claim_kind,
         p.provenance_kind,
         evidence_excerpt,
