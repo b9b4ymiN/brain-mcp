@@ -6773,6 +6773,11 @@ fn run_upgrade_step_forward(
         run_entity_identity_reform_forward(transaction)?;
     }
 
+    // FTS5 Task 4: the v4→v5 migration (FTS5 table + value_flat + triggers).
+    if (from_version, to_version) == (4, 5) && forward_index == 0 {
+        run_fts5_forward(transaction)?;
+    }
+
     // Audit-trail row: records which step ran, against which version pair,
     // and whether the step advertises itself reversible. The value is the
     // step description (operator-readable in `SELECT key,value FROM meta`).
@@ -7021,6 +7026,129 @@ fn run_entity_identity_reform_forward(transaction: &Transaction) -> Result<()> {
         )
         .map_err(database_error)?;
 
+    Ok(())
+}
+
+/// FTS5 forward migration (v4 → v5). Runs entirely inside the caller's
+/// transaction — any failure rolls back via `?`. Steps:
+///   1. Recreate `claim_status` with a new `value_flat TEXT` column (table-
+///      recreation pattern proven by v3→v4; preserves all existing rows).
+///   2. Create the `claim_search_fts` FTS5 virtual table as an external-
+///      content table over `claim_status`, with the `trigram` tokenizer
+///      (matches all scripts incl. Thai/CJK; `porter unicode61` collapses
+///      unspaced Thai into one oversized token).
+///   3. Install the three sync triggers (`claim_status_ai`/`_ad`/`_au`) so
+///      every future INSERT/DELETE/UPDATE on claim_status keeps the index
+///      consistent inside the same transaction (SQLite-documented drift cure).
+///   4. Backfill the index from existing rows + optimize segments.
+///
+/// `value_flat` defaults to '' for pre-existing rows: the migration cannot
+/// decrypt event payloads without the store root handle, so legacy claims are
+/// searchable by subject/predicate/domain (the common case) but not by value
+/// terms until re-confirmed. Documented in the spec §Migration Plan Phase A.
+fn run_fts5_forward(transaction: &Transaction) -> Result<()> {
+    // Step 1: recreate claim_status with value_flat (same table-recreation
+    // pattern as run_entity_identity_reform_forward).
+    transaction
+        .execute(
+            "CREATE TABLE claim_status_fts5_reform(\
+                claim_id TEXT PRIMARY KEY,\
+                domain TEXT NOT NULL,\
+                subject TEXT NOT NULL,\
+                predicate TEXT NOT NULL,\
+                confirmed_event_seq INTEGER NOT NULL,\
+                superseded_by_event_seq INTEGER,\
+                retracted_at_event_seq INTEGER,\
+                entity_id TEXT,\
+                value_flat TEXT NOT NULL DEFAULT ''\
+             )",
+            [],
+        )
+        .map_err(database_error)?;
+    transaction
+        .execute(
+            "INSERT INTO claim_status_fts5_reform(\
+                claim_id, domain, subject, predicate, confirmed_event_seq,\
+                superseded_by_event_seq, retracted_at_event_seq, entity_id, value_flat\
+             ) \
+             SELECT claim_id, domain, subject, predicate, confirmed_event_seq,\
+                    superseded_by_event_seq, retracted_at_event_seq, entity_id, '' \
+             FROM claim_status",
+            [],
+        )
+        .map_err(database_error)?;
+    transaction
+        .execute("DROP TABLE claim_status", [])
+        .map_err(database_error)?;
+    transaction
+        .execute(
+            "ALTER TABLE claim_status_fts5_reform RENAME TO claim_status",
+            [],
+        )
+        .map_err(database_error)?;
+
+    // Step 2: create the FTS5 external-content table with trigram tokenizer.
+    transaction
+        .execute(
+            "CREATE VIRTUAL TABLE claim_search_fts USING fts5(\
+                subject,\
+                predicate,\
+                value_flat,\
+                domain,\
+                content='claim_status',\
+                content_rowid='claim_id',\
+                tokenize = 'trigram'\
+             )",
+            [],
+        )
+        .map_err(database_error)?;
+
+    // Step 3: install the three sync triggers (canonical SQLite external-
+    // content pattern from https://www.sqlite.org/fts5.html#external_content_tables).
+    transaction
+        .execute(
+            "CREATE TRIGGER claim_status_ai AFTER INSERT ON claim_status BEGIN \
+                INSERT INTO claim_search_fts(rowid, subject, predicate, value_flat, domain) \
+                VALUES (new.claim_id, new.subject, new.predicate, new.value_flat, new.domain); \
+             END",
+            [],
+        )
+        .map_err(database_error)?;
+    transaction
+        .execute(
+            "CREATE TRIGGER claim_status_ad AFTER DELETE ON claim_status BEGIN \
+                INSERT INTO claim_search_fts(claim_search_fts, rowid, subject, predicate, value_flat, domain) \
+                VALUES('delete', old.claim_id, old.subject, old.predicate, old.value_flat, old.domain); \
+             END",
+            [],
+        )
+        .map_err(database_error)?;
+    transaction
+        .execute(
+            "CREATE TRIGGER claim_status_au AFTER UPDATE ON claim_status BEGIN \
+                INSERT INTO claim_search_fts(claim_search_fts, rowid, subject, predicate, value_flat, domain) \
+                VALUES('delete', old.claim_id, old.subject, old.predicate, old.value_flat, old.domain); \
+                INSERT INTO claim_search_fts(rowid, subject, predicate, value_flat, domain) \
+                VALUES (new.claim_id, new.subject, new.predicate, new.value_flat, new.domain); \
+             END",
+            [],
+        )
+        .map_err(database_error)?;
+
+    // Step 4: backfill the index from existing rows, then optimize segments.
+    transaction
+        .execute(
+            "INSERT INTO claim_search_fts(rowid, subject, predicate, value_flat, domain)\
+             SELECT claim_id, subject, predicate, value_flat, domain FROM claim_status",
+            [],
+        )
+        .map_err(database_error)?;
+    transaction
+        .execute(
+            "INSERT INTO claim_search_fts(claim_search_fts) VALUES('optimize')",
+            [],
+        )
+        .map_err(database_error)?;
     Ok(())
 }
 

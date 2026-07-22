@@ -786,3 +786,69 @@ fn v4_to_v5_plan_is_reversible_and_names_fts5() {
         "step description must name the sync triggers, got: {desc}"
     );
 }
+
+// =============================================================================
+// FTS5 Task 4 — forward v4→v5 migration body
+// =============================================================================
+
+/// FTS5 Task 4: forward v4→v5 migration installs the FTS5 virtual table, the
+/// value_flat column, the three sync triggers, and backfills the index from
+/// existing claim_status rows.
+#[test]
+fn v4_to_v5_forward_installs_fts5_and_backfills() {
+    use llm_wiki::semantic::{SemanticConfig, SemanticStore};
+    let parent = tempfile::tempdir().expect("fixture parent");
+    let root = parent.path().join("semantic-store");
+    let (store, _admin) =
+        SemanticStore::create(&root, SemanticConfig::enabled_for(parent.path()))
+            .expect("create");
+    // Fresh store is at CURRENT_DISK_SCHEMA_VERSION (4 today; Task 6 bumps to 5).
+    let plan = store.plan_schema_upgrade(4, 5).expect("plan v4→v5");
+    store.execute_schema_upgrade(&plan).expect("execute v4→v5");
+
+    // Probe: FTS5 artifacts must exist on disk via a raw SQLite connection.
+    // The store's database file lives at <root>/semantic.sqlite3 (see
+    // DATABASE_FILE in src/semantic.rs); opening &root directly would fail.
+    drop(store);
+    let db_path = root.join("semantic.sqlite3");
+    let conn = rusqlite::Connection::open(&db_path).expect("open raw conn");
+
+    let fts_exists: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='claim_search_fts'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query fts existence");
+    assert_eq!(fts_exists, 1, "claim_search_fts must exist post-migration");
+
+    let trig_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'claim_status_%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query trigger count");
+    assert_eq!(trig_count, 3, "all three claim_status_* triggers must exist");
+
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(claim_status)")
+        .expect("prepare pragma")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("query_map")
+        .filter_map(|r| r.ok())
+        .collect();
+    assert!(
+        cols.iter().any(|c| c == "value_flat"),
+        "value_flat column must exist post-migration, got cols: {cols:?}"
+    );
+
+    let drift: Vec<(String,)> = conn
+        .prepare("INSERT INTO claim_search_fts(claim_search_fts) VALUES('integrity-check')")
+        .expect("prepare integrity-check")
+        .query_map([], |row| Ok((row.get::<_, String>(0)?,)))
+        .expect("query_map")
+        .filter_map(|r| r.ok())
+        .collect();
+    assert!(drift.is_empty(), "FTS5 integrity-check must report no drift, got: {drift:?}");
+}
