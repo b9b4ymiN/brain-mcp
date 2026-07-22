@@ -734,3 +734,29 @@ fn fresh_store_is_at_v4_without_domain_column() {
         .any(|col: String| col == "domain");
     assert!(!has_domain_column, "fresh v4 store must not have entities.domain");
 }
+
+// =============================================================================
+// FTS5 Task 1 — v4→v5 upgrade-path predicate
+// =============================================================================
+
+/// FTS5 Task 1: the v4→v5 upgrade path is recognized as a known migration
+/// route. Precondition for every subsequent migration step —
+/// `plan_schema_upgrade(4, 5)` must succeed. Today it fails with "unsupported
+/// schema upgrade path" because only (2,3) and (3,4) are in the match.
+#[test]
+fn v4_to_v5_upgrade_path_is_known() {
+    use llm_wiki::semantic::{SemanticConfig, SemanticStore};
+    let parent = tempfile::tempdir().expect("fixture parent");
+    let root = parent.path().join("semantic-store");
+    let (store, _admin) =
+        SemanticStore::create(&root, SemanticConfig::enabled_for(parent.path()))
+            .expect("create");
+    // A fresh store is at CURRENT_DISK_SCHEMA_VERSION (4 today, 5 after Task 6).
+    // The plan call must succeed, not return the "unsupported path" error.
+    // We use from=4 explicitly to lock the predicate arm.
+    let plan = store.plan_schema_upgrade(4, 5);
+    assert!(
+        plan.is_ok(),
+        "v4→v5 upgrade path must be recognized, got: {plan:?}"
+    );
+}

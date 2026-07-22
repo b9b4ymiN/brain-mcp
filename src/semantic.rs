@@ -2151,7 +2151,7 @@ impl SemanticStore {
     ) -> Result<crate::recovery::SchemaUpgradePlan> {
         if !schema_upgrade_path_exists(from, to) {
             return Err(SemanticError::CorruptLedger(format!(
-                "unsupported schema upgrade path: {from} → {to} (supported paths: 2→3, 3→4)"
+                "unsupported schema upgrade path: {from} → {to} (supported paths: 2→3, 3→4, 4→5)"
             )));
         }
         // Sanity: the plan's `from` must equal the live marker version, since
@@ -6706,7 +6706,7 @@ enum GateBehavior {
 /// "genuinely unsupported version" (no path) — both still fail closed, but
 /// the error message differs so an operator sees the actionable next step.
 fn schema_upgrade_path_exists(from: u8, to: u8) -> bool {
-    matches!((from, to), (2, 3) | (3, 4))
+    matches!((from, to), (2, 3) | (3, 4) | (4, 5))
 }
 
 /// Transitive reachability: can `from` eventually reach `to` via a chain of
