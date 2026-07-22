@@ -544,3 +544,76 @@ fn v3_to_v4_forward_consolidates_fragmented_entities() {
         .expect("count claims");
     assert_eq!(claim_count, 2, "both claims must attach to the survivor");
 }
+
+/// Phase Reform Task 4: after the v3→v4 migration, the entities table no
+/// longer has a `domain` column (it was dropped along with the composite
+/// UNIQUE constraint). The new UNIQUE is on canonical_subject alone, and
+/// entity_aliases PK no longer includes domain.
+#[test]
+fn v3_to_v4_forward_drops_domain_from_entity_key() {
+    use rusqlite::Connection;
+
+    let (_parent, root) = fixture_at_v3();
+    let db_path = root.join("semantic.sqlite3");
+    let conn = Connection::open(&db_path).expect("open db");
+    // One entity, one canonical_subject, one claim — no fragmentation to
+    // consolidate, but we still want the constraint change to run.
+    conn.execute(
+        "INSERT INTO entities(entity_id, domain, canonical_subject, created_at) \
+         VALUES ('bbbbbbbb-0000-7000-8000-000000000001', 'stocks', 'GULF', '2026-07-01T00:00:00Z')",
+        [],
+    ).expect("insert entity");
+    conn.execute(
+        "INSERT INTO entity_aliases(domain, alias, entity_id, kind, aliased_at_event_seq) \
+         VALUES ('stocks', 'GULF', 'bbbbbbbb-0000-7000-8000-000000000001', 'canonical', 0)",
+        [],
+    ).expect("insert alias");
+    drop(conn);
+
+    let store = SemanticStore::open_for_upgrade(&root, enabled(_parent.path()))
+        .expect("open for upgrade");
+    let plan = store.plan_schema_upgrade(3, 4).expect("plan");
+    store.execute_schema_upgrade(&plan).expect("execute upgrade");
+
+    let conn = Connection::open(&db_path).expect("reopen");
+
+    // The entities table no longer has a `domain` column.
+    let has_domain_column: bool = conn
+        .prepare("PRAGMA table_info(entities)")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|col: String| col == "domain");
+    assert!(
+        !has_domain_column,
+        "entities.domain must be dropped after v3→v4"
+    );
+
+    // canonical_subject is now UNIQUE on its own.
+    let dup_attempt = conn.execute(
+        "INSERT INTO entities(entity_id, canonical_subject, created_at) \
+         VALUES ('bbbbbbbb-0000-7000-8000-000000000099', 'GULF', '2026-07-01T00:00:00Z')",
+        [],
+    );
+    assert!(
+        dup_attempt.is_err(),
+        "canonical_subject must be UNIQUE after v3→v4; insert unexpectedly succeeded"
+    );
+
+    // entity_aliases PK no longer includes domain.
+    let pk_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(entity_aliases)")
+        .unwrap()
+        .query_map([], |r| {
+            let name: String = r.get(1)?;
+            let pk: i64 = r.get(5)?;
+            Ok(if pk > 0 { Some(name) } else { None })
+        })
+        .unwrap()
+        .filter_map(Result::ok)
+        .flatten()
+        .collect();
+    assert_eq!(pk_cols, vec!["alias".to_string(), "entity_id".to_string()],
+        "entity_aliases PK after v3→v4 must be (alias, entity_id); got {pk_cols:?}");
+}

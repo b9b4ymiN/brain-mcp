@@ -6728,9 +6728,12 @@ fn run_upgrade_step_forward(
 ///   3. Fold losing entities' aliases onto their target as `former_subject`.
 ///   4. Delete the losing entities.
 ///
-/// The constraint change (dropping `domain` from the entities UNIQUE and the
-/// entity_aliases PK) is performed in Task 4, immediately after this returns,
-/// inside the same transaction.
+/// Steps 2–4 run only when there are losers (no fragmentation → they no-op).
+/// The constraint change (Task 4) ALWAYS runs, even with no fragmentation: it
+/// recreates `entities` with `UNIQUE(canonical_subject)` and `entity_aliases`
+/// with `PRIMARY KEY(alias, entity_id)`, dropping the `domain` column from
+/// both keys. Collisions introduced by dropping `domain` from the alias PK are
+/// resolved by keeping `canonical` over other `kind` values.
 fn run_entity_identity_reform_forward(transaction: &Transaction) -> Result<()> {
     // Step 1: pick the canonical target per canonical_subject.
     let mut stmt = transaction
@@ -6790,72 +6793,156 @@ fn run_entity_identity_reform_forward(transaction: &Transaction) -> Result<()> {
         }
     }
 
-    if losers.is_empty() {
-        return Ok(()); // nothing to consolidate; Task 4's constraint step still runs.
-    }
-
-    // Step 2: rewrite claim_status.entity_id from each loser onto its target.
-    let subject_of: std::collections::HashMap<String, String> = rows
-        .iter()
-        .cloned()
-        .collect(); // entity_id → canonical_subject
-    let target_of_subject: std::collections::HashMap<&str, &str> = targets
-        .iter()
-        .map(|(s, t)| (s.as_str(), t.as_str()))
-        .collect();
-    for loser in &losers {
-        let subject = subject_of.get(loser).expect("loser subject");
-        let target = target_of_subject
-            .get(subject.as_str())
-            .copied()
-            .expect("target for subject");
-        transaction
-            .execute(
-                "UPDATE claim_status SET entity_id=?1 WHERE entity_id=?2",
-                params![target, loser],
-            )
-            .map_err(database_error)?;
-    }
-
-    // Step 3: fold aliases from losers onto their targets as former_subject.
-    for loser in &losers {
-        let subject = subject_of.get(loser).expect("loser subject");
-        let target = target_of_subject
-            .get(subject.as_str())
-            .copied()
-            .expect("target");
-        let mut stmt = transaction
-            .prepare("SELECT alias FROM entity_aliases WHERE entity_id=?1")
-            .map_err(database_error)?;
-        let aliases: Vec<String> = stmt
-            .query_map([loser], |row| row.get::<_, String>(0))
-            .map_err(database_error)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(database_error)?;
-        drop(stmt);
-        for alias in aliases {
+    // Note: even when losers is empty (no fragmentation), the constraint
+    // change below MUST still run — a v3 store with no duplicates still
+    // needs its UNIQUE(domain, canonical_subject) → UNIQUE(canonical_subject)
+    // and PK changes. So we do NOT early-return here.
+    if !losers.is_empty() {
+        // Step 2: rewrite claim_status.entity_id from each loser onto its target.
+        let subject_of: std::collections::HashMap<String, String> = rows
+            .iter()
+            .cloned()
+            .collect(); // entity_id → canonical_subject
+        let target_of_subject: std::collections::HashMap<&str, &str> = targets
+            .iter()
+            .map(|(s, t)| (s.as_str(), t.as_str()))
+            .collect();
+        for loser in &losers {
+            let subject = subject_of.get(loser).expect("loser subject");
+            let target = target_of_subject
+                .get(subject.as_str())
+                .copied()
+                .expect("target for subject");
             transaction
                 .execute(
-                    "INSERT OR IGNORE INTO entity_aliases(domain, alias, entity_id, kind, aliased_at_event_seq) \
-                     VALUES (?1, ?2, ?3, 'former_subject', 0)",
-                    params![subject, alias, target],
+                    "UPDATE claim_status SET entity_id=?1 WHERE entity_id=?2",
+                    params![target, loser],
                 )
+                .map_err(database_error)?;
+        }
+
+        // Step 3: fold aliases from losers onto their targets as former_subject.
+        for loser in &losers {
+            let subject = subject_of.get(loser).expect("loser subject");
+            let target = target_of_subject
+                .get(subject.as_str())
+                .copied()
+                .expect("target");
+            let mut stmt = transaction
+                .prepare("SELECT alias FROM entity_aliases WHERE entity_id=?1")
+                .map_err(database_error)?;
+            let aliases: Vec<String> = stmt
+                .query_map([loser], |row| row.get::<_, String>(0))
+                .map_err(database_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(database_error)?;
+            drop(stmt);
+            for alias in aliases {
+                transaction
+                    .execute(
+                        "INSERT OR IGNORE INTO entity_aliases(domain, alias, entity_id, kind, aliased_at_event_seq) \
+                         VALUES (?1, ?2, ?3, 'former_subject', 0)",
+                        params![subject, alias, target],
+                    )
+                    .map_err(database_error)?;
+            }
+        }
+
+        // Step 4: delete the losing entities + their alias rows.
+        for loser in &losers {
+            transaction
+                .execute(
+                    "DELETE FROM entity_aliases WHERE entity_id=?1",
+                    [loser],
+                )
+                .map_err(database_error)?;
+            transaction
+                .execute("DELETE FROM entities WHERE entity_id=?1", [loser])
                 .map_err(database_error)?;
         }
     }
 
-    // Step 4: delete the losing entities + their alias rows.
-    for loser in &losers {
-        transaction
-            .execute(
-                "DELETE FROM entity_aliases WHERE entity_id=?1",
-                [loser],
-            )
-            .map_err(database_error)?;
-        transaction
-            .execute("DELETE FROM entities WHERE entity_id=?1", [loser])
-            .map_err(database_error)?;
-    }
+    // Task 4: constraint change. After consolidation, no two entities share a
+    // canonical_subject, so the new UNIQUE(canonical_subject) is safe. We
+    // recreate both tables (SQLite cannot drop a column from a UNIQUE
+    // constraint in place) inside this transaction.
+    //
+    // entities: drop `domain` column; UNIQUE(canonical_subject).
+    // entity_aliases: drop `domain` column from PK; new PK(alias, entity_id).
+    transaction
+        .execute(
+            "CREATE TABLE entities_reform(\
+               entity_id TEXT PRIMARY KEY,\
+               canonical_subject TEXT NOT NULL,\
+               created_at TEXT NOT NULL,\
+               UNIQUE(canonical_subject)\
+             )",
+            [],
+        )
+        .map_err(database_error)?;
+    transaction
+        .execute(
+            "INSERT INTO entities_reform(entity_id, canonical_subject, created_at) \
+             SELECT entity_id, canonical_subject, created_at FROM entities",
+            [],
+        )
+        .map_err(database_error)?;
+    transaction
+        .execute("DROP TABLE entities", [])
+        .map_err(database_error)?;
+    transaction
+        .execute(
+            "ALTER TABLE entities_reform RENAME TO entities",
+            [],
+        )
+        .map_err(database_error)?;
+
+    transaction
+        .execute(
+            "CREATE TABLE entity_aliases_reform(\
+               alias TEXT NOT NULL,\
+               entity_id TEXT NOT NULL,\
+               kind TEXT NOT NULL,\
+               aliased_at_event_seq INTEGER NOT NULL,\
+               PRIMARY KEY(alias, entity_id)\
+             )",
+            [],
+        )
+        .map_err(database_error)?;
+    transaction
+        .execute(
+            // After consolidation, two rows may share (alias, entity_id) once
+            // `domain` is dropped from the key: the target's own `canonical`
+            // alias and a `former_subject` alias folded from a loser that
+            // shared the same subject (see Step 3). Under the new
+            // PRIMARY KEY(alias, entity_id) these collide, so we must dedup.
+            // Rule: keep `canonical` over any other kind (it is the entity's
+            // own primary name); otherwise the lexicographically smallest kind;
+            // ties broken by the earliest aliased_at_event_seq. Implemented as
+            // a window-function pick so the result is deterministic.
+            "INSERT INTO entity_aliases_reform(alias, entity_id, kind, aliased_at_event_seq) \
+             SELECT alias, entity_id, kind, aliased_at_event_seq FROM ( \
+               SELECT alias, entity_id, kind, aliased_at_event_seq, \
+                      ROW_NUMBER() OVER ( \
+                        PARTITION BY alias, entity_id \
+                        ORDER BY CASE WHEN kind='canonical' THEN 0 ELSE 1 END, \
+                                 kind ASC, \
+                                 aliased_at_event_seq ASC \
+                      ) AS rn \
+                 FROM entity_aliases \
+             ) WHERE rn = 1",
+            [],
+        )
+        .map_err(database_error)?;
+    transaction
+        .execute("DROP TABLE entity_aliases", [])
+        .map_err(database_error)?;
+    transaction
+        .execute(
+            "ALTER TABLE entity_aliases_reform RENAME TO entity_aliases",
+            [],
+        )
+        .map_err(database_error)?;
 
     Ok(())
 }
