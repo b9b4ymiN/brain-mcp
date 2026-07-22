@@ -2288,11 +2288,22 @@ impl SemanticStore {
         // leaves it in). If it is not, the operator is calling rollback
         // against the wrong state — fail closed rather than rewind to an
         // unexpected from_version.
-        if plan.to_version != self.marker.schema_version {
+        //
+        // We read the on-disk marker rather than the in-memory copy because
+        // `execute_schema_upgrade` rewrites the marker FILE but does not mutate
+        // `self.marker` (the handle is `&self`). The on-disk marker is the
+        // authoritative post-upgrade version; reading it here lets a rollback
+        // be driven from the SAME store handle that ran execute (Task 5's
+        // rollback rehearsal does exactly this), and is also what a freshly-
+        // opened handle would observe.
+        let live_version = read_marker(&self.root)
+            .map(|m| m.schema_version)
+            .unwrap_or(self.marker.schema_version);
+        if plan.to_version != live_version {
             return Err(SemanticError::CorruptLedger(format!(
                 "plan to_version={} does not match live marker schema_version={}; rollback \
                  expects the store to be at the post-upgrade version",
-                plan.to_version, self.marker.schema_version
+                plan.to_version, live_version
             )));
         }
         if plan.from_version == plan.to_version {
@@ -6947,6 +6958,87 @@ fn run_entity_identity_reform_forward(transaction: &Transaction) -> Result<()> {
     Ok(())
 }
 
+/// Reverse of `run_entity_identity_reform_forward`. Restores the `domain`
+/// column on `entities` (synthesized from claim_status where possible) and
+/// `entity_aliases`, and the v3 composite keys. Does NOT resurrect deleted
+/// (consolidated) entity rows — that is documented as irreversible.
+///
+/// Ordering: `entities` is recreated WITH `domain` FIRST, then
+/// `entity_aliases` is recreated by reading the just-restored
+/// `entities.domain` (best-effort: the entity it points at, else ''). This
+/// ordering is load-bearing — flipping it would leave the aliases subquery
+/// with no `entities.domain` column to read.
+fn run_entity_identity_reform_reverse(transaction: &Transaction) -> Result<()> {
+    // entities: re-add domain (best-effort: from any claim on that entity).
+    transaction
+        .execute(
+            "CREATE TABLE entities_rollback(\
+               entity_id TEXT PRIMARY KEY,\
+               domain TEXT NOT NULL DEFAULT '',\
+               canonical_subject TEXT NOT NULL,\
+               created_at TEXT NOT NULL,\
+               UNIQUE(domain, canonical_subject)\
+             )",
+            [],
+        )
+        .map_err(database_error)?;
+    transaction
+        .execute(
+            "INSERT INTO entities_rollback(entity_id, domain, canonical_subject, created_at) \
+             SELECT e.entity_id, \
+                    COALESCE((SELECT cs.domain FROM claim_status cs \
+                              WHERE cs.entity_id = e.entity_id \
+                              ORDER BY cs.confirmed_event_seq ASC LIMIT 1), ''), \
+                    e.canonical_subject, e.created_at \
+             FROM entities e",
+            [],
+        )
+        .map_err(database_error)?;
+    transaction
+        .execute("DROP TABLE entities", [])
+        .map_err(database_error)?;
+    transaction
+        .execute(
+            "ALTER TABLE entities_rollback RENAME TO entities",
+            [],
+        )
+        .map_err(database_error)?;
+
+    // entity_aliases: re-add domain (best-effort: from the entity it points at).
+    transaction
+        .execute(
+            "CREATE TABLE entity_aliases_rollback(\
+               domain TEXT NOT NULL DEFAULT '',\
+               alias TEXT NOT NULL,\
+               entity_id TEXT NOT NULL,\
+               kind TEXT NOT NULL,\
+               aliased_at_event_seq INTEGER NOT NULL,\
+               PRIMARY KEY(domain, alias, entity_id)\
+             )",
+            [],
+        )
+        .map_err(database_error)?;
+    transaction
+        .execute(
+            "INSERT INTO entity_aliases_rollback(domain, alias, entity_id, kind, aliased_at_event_seq) \
+             SELECT COALESCE((SELECT e.domain FROM entities e WHERE e.entity_id = ea.entity_id), ''), \
+                    ea.alias, ea.entity_id, ea.kind, ea.aliased_at_event_seq \
+             FROM entity_aliases ea",
+            [],
+        )
+        .map_err(database_error)?;
+    transaction
+        .execute("DROP TABLE entity_aliases", [])
+        .map_err(database_error)?;
+    transaction
+        .execute(
+            "ALTER TABLE entity_aliases_rollback RENAME TO entity_aliases",
+            [],
+        )
+        .map_err(database_error)?;
+    Ok(())
+}
+
 /// Runs one `UpgradeStep`'s reverse action inside an open transaction. The
 /// v2→v3 noop reverse is also a noop for the data layer, but it DOES wipe
 /// the per-step audit row written by `run_upgrade_step_forward` so the
@@ -6961,6 +7053,18 @@ fn run_upgrade_step_reverse(
     forward_index: usize,
     _step: &crate::recovery::UpgradeStep,
 ) -> Result<()> {
+    // Phase Reform Task 5: reverse the v3→v4 constraint change. Restores the
+    // `domain` column on both tables and the v3 composite keys. NOTE: this
+    // cannot un-merge consolidated entities — deleted rows are gone. Rollback
+    // is for "the schema shape changed in a way we cannot serve under"; a
+    // re-run of forward is the documented way to re-assert consolidation.
+    // Domain values are best-effort: we synthesize them from claim_status
+    // (each surviving entity's domain is the domain of any of its claims),
+    // defaulting to "" when no claim exists.
+    if (from_version, to_version) == (3, 4) && forward_index == 0 {
+        run_entity_identity_reform_reverse(transaction)?;
+    }
+
     let audit_key = format!("upgrade_step_{forward_index}_to_v{to_version}");
     transaction
         .execute("DELETE FROM meta WHERE key=?1", params![audit_key])

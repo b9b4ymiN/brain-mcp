@@ -617,3 +617,63 @@ fn v3_to_v4_forward_drops_domain_from_entity_key() {
     assert_eq!(pk_cols, vec!["alias".to_string(), "entity_id".to_string()],
         "entity_aliases PK after v3→v4 must be (alias, entity_id); got {pk_cols:?}");
 }
+
+/// Phase Reform Task 5: rollback v3→v4 restores the `domain` column on both
+/// entities and entity_aliases, returning the schema to the v3 shape. We do
+/// not assert that merged entities are un-merged (rollback cannot resurrect
+/// deleted rows — documented); we only assert the schema shape is restored,
+/// which is the reversibility contract execute_schema_upgrade enforces.
+#[test]
+fn v3_to_v4_rollback_restores_domain_column() {
+    use rusqlite::Connection;
+
+    let (_parent, root) = fixture_at_v3();
+    let db_path = root.join("semantic.sqlite3");
+    let conn = Connection::open(&db_path).expect("open db");
+    conn.execute(
+        "INSERT INTO entities(entity_id, domain, canonical_subject, created_at) \
+         VALUES ('cccccccc-0000-7000-8000-000000000001', 'stocks', 'GULF', '2026-07-01T00:00:00Z')",
+        [],
+    ).expect("insert entity");
+    conn.execute(
+        "INSERT INTO entity_aliases(domain, alias, entity_id, kind, aliased_at_event_seq) \
+         VALUES ('stocks', 'GULF', 'cccccccc-0000-7000-8000-000000000001', 'canonical', 0)",
+        [],
+    ).expect("insert alias");
+    drop(conn);
+
+    // Forward to v4, then rollback to v3. Both run against the same handle:
+    // execute rewrites the marker FILE; rollback's version guard re-reads the
+    // marker from disk (the authoritative post-upgrade version) so it does not
+    // need a freshly-opened handle.
+    let store = SemanticStore::open_for_upgrade(&root, enabled(_parent.path()))
+        .expect("open");
+    let plan = store.plan_schema_upgrade(3, 4).expect("plan");
+    store.execute_schema_upgrade(&plan).expect("forward");
+    store.rollback_schema_upgrade(&plan).expect("rollback");
+
+    let conn = Connection::open(&db_path).expect("reopen");
+    let entities_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(entities)")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        entities_cols.iter().any(|c| c == "domain"),
+        "entities.domain must be restored after rollback; cols = {entities_cols:?}"
+    );
+
+    let aliases_cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(entity_aliases)")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        aliases_cols.iter().any(|c| c == "domain"),
+        "entity_aliases.domain must be restored after rollback; cols = {aliases_cols:?}"
+    );
+}
