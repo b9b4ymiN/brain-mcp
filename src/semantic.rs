@@ -6690,6 +6690,12 @@ fn run_upgrade_step_forward(
     step: &crate::recovery::UpgradeStep,
     now: DateTime<Utc>,
 ) -> Result<()> {
+    // Phase Reform Task 3/4: the genuine v3→v4 migration. Runs entirely
+    // inside this transaction — any failure rolls back via `?`.
+    if (from_version, to_version) == (3, 4) && forward_index == 0 {
+        run_entity_identity_reform_forward(transaction)?;
+    }
+
     // Audit-trail row: records which step ran, against which version pair,
     // and whether the step advertises itself reversible. The value is the
     // step description (operator-readable in `SELECT key,value FROM meta`).
@@ -6708,6 +6714,149 @@ fn run_upgrade_step_forward(
             ],
         )
         .map_err(database_error)?;
+    Ok(())
+}
+
+/// Entity Identity Reform forward migration (v3 → v4). Executes the four
+/// consolidation steps from the design doc §7.1, all inside the caller's
+/// transaction:
+///
+///   1. Pick a canonical target per `canonical_subject` (most active claims wins;
+///      ties broken by lexicographically smallest entity_id for determinism).
+///   2. Rewrite every `claim_status.entity_id` from a losing entity onto its
+///      target.
+///   3. Fold losing entities' aliases onto their target as `former_subject`.
+///   4. Delete the losing entities.
+///
+/// The constraint change (dropping `domain` from the entities UNIQUE and the
+/// entity_aliases PK) is performed in Task 4, immediately after this returns,
+/// inside the same transaction.
+fn run_entity_identity_reform_forward(transaction: &Transaction) -> Result<()> {
+    // Step 1: pick the canonical target per canonical_subject.
+    let mut stmt = transaction
+        .prepare(
+            "SELECT entity_id, canonical_subject FROM entities ORDER BY canonical_subject ASC, entity_id ASC",
+        )
+        .map_err(database_error)?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(database_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(database_error)?;
+    drop(stmt);
+
+    // Active-claim count per entity (superseded/retracted claims do not count
+    // toward "most claims wins" — only the live ones do).
+    let mut claim_counts: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
+    {
+        let mut stmt = transaction
+            .prepare(
+                "SELECT entity_id, COUNT(*) FROM claim_status \
+                 WHERE superseded_by_event_seq IS NULL AND retracted_at_event_seq IS NULL \
+                 GROUP BY entity_id",
+            )
+            .map_err(database_error)?;
+        let counts = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(database_error)?;
+        for c in counts {
+            let (eid, n) = c.map_err(database_error)?;
+            claim_counts.insert(eid, n);
+        }
+    }
+
+    // Group by canonical_subject; pick target = most claims, ties → smallest entity_id.
+    let mut groups: std::collections::HashMap<String, Vec<(String, i64)>> =
+        std::collections::HashMap::new();
+    for (eid, subject) in &rows {
+        groups
+            .entry(subject.clone())
+            .or_default()
+            .push((eid.clone(), *claim_counts.get(eid).unwrap_or(&0)));
+    }
+    let mut targets: Vec<(String, String)> = Vec::new(); // (canonical_subject, target_entity_id)
+    let mut losers: Vec<String> = Vec::new(); // entity_ids to delete
+    for (subject, mut members) in groups {
+        // Sort: most claims first. The rows were pre-sorted by entity_id ASC,
+        // so a stable sort preserves entity_id as the tiebreak.
+        members.sort_by(|a, b| b.1.cmp(&a.1));
+        let target = members[0].0.clone();
+        targets.push((subject, target));
+        for (eid, _) in &members[1..] {
+            losers.push(eid.clone());
+        }
+    }
+
+    if losers.is_empty() {
+        return Ok(()); // nothing to consolidate; Task 4's constraint step still runs.
+    }
+
+    // Step 2: rewrite claim_status.entity_id from each loser onto its target.
+    let subject_of: std::collections::HashMap<String, String> = rows
+        .iter()
+        .cloned()
+        .collect(); // entity_id → canonical_subject
+    let target_of_subject: std::collections::HashMap<&str, &str> = targets
+        .iter()
+        .map(|(s, t)| (s.as_str(), t.as_str()))
+        .collect();
+    for loser in &losers {
+        let subject = subject_of.get(loser).expect("loser subject");
+        let target = target_of_subject
+            .get(subject.as_str())
+            .copied()
+            .expect("target for subject");
+        transaction
+            .execute(
+                "UPDATE claim_status SET entity_id=?1 WHERE entity_id=?2",
+                params![target, loser],
+            )
+            .map_err(database_error)?;
+    }
+
+    // Step 3: fold aliases from losers onto their targets as former_subject.
+    for loser in &losers {
+        let subject = subject_of.get(loser).expect("loser subject");
+        let target = target_of_subject
+            .get(subject.as_str())
+            .copied()
+            .expect("target");
+        let mut stmt = transaction
+            .prepare("SELECT alias FROM entity_aliases WHERE entity_id=?1")
+            .map_err(database_error)?;
+        let aliases: Vec<String> = stmt
+            .query_map([loser], |row| row.get::<_, String>(0))
+            .map_err(database_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(database_error)?;
+        drop(stmt);
+        for alias in aliases {
+            transaction
+                .execute(
+                    "INSERT OR IGNORE INTO entity_aliases(domain, alias, entity_id, kind, aliased_at_event_seq) \
+                     VALUES (?1, ?2, ?3, 'former_subject', 0)",
+                    params![subject, alias, target],
+                )
+                .map_err(database_error)?;
+        }
+    }
+
+    // Step 4: delete the losing entities + their alias rows.
+    for loser in &losers {
+        transaction
+            .execute(
+                "DELETE FROM entity_aliases WHERE entity_id=?1",
+                [loser],
+            )
+            .map_err(database_error)?;
+        transaction
+            .execute("DELETE FROM entities WHERE entity_id=?1", [loser])
+            .map_err(database_error)?;
+    }
+
     Ok(())
 }
 

@@ -456,3 +456,91 @@ fn v3_to_v4_plan_is_reversible_and_names_consolidation() {
     assert_eq!(plan.from_version, 3);
     assert_eq!(plan.to_version, 4);
 }
+
+/// Phase Reform Task 3: forward v3→v4 migration collapses two entities that
+/// share a canonical_subject onto one (most-claims-wins target). We construct
+/// the legacy fragmented state by hand (insert two rows with the same
+/// canonical_subject but different domains), run execute_schema_upgrade, and
+/// assert they collapse to one.
+#[test]
+fn v3_to_v4_forward_consolidates_fragmented_entities() {
+    use rusqlite::Connection;
+
+    let (_parent, root) = fixture_at_v3();
+    // Construct legacy fragmentation directly: two entities with the same
+    // canonical_subject but different domains (the pre-reform invariant).
+    // We use a second connection to the same SQLite file. The store's own
+    // connection must be dropped first to avoid locking — fixture_at_v3
+    // already drops the store before returning, so the file is free.
+    let db_path = root.join("semantic.sqlite3");
+    let conn = Connection::open(&db_path).expect("open db");
+    conn.execute(
+        "INSERT INTO entities(entity_id, domain, canonical_subject, created_at) \
+         VALUES ('aaaaaaaa-0000-7000-8000-000000000001', 'business', 'CATL', '2026-07-01T00:00:00Z')",
+        [],
+    ).expect("insert dup entity 1");
+    conn.execute(
+        "INSERT INTO entities(entity_id, domain, canonical_subject, created_at) \
+         VALUES ('aaaaaaaa-0000-7000-8000-000000000002', 'financial', 'CATL', '2026-07-01T00:00:00Z')",
+        [],
+    ).expect("insert dup entity 2");
+    conn.execute(
+        "INSERT INTO claim_status(claim_id, domain, subject, predicate, confirmed_event_seq, \
+         superseded_by_event_seq, retracted_at_event_seq, entity_id) \
+         VALUES ('c0000000-0000-7000-8000-0000000000a1', 'business', 'CATL', 'p', 1, NULL, NULL, \
+         'aaaaaaaa-0000-7000-8000-000000000001')",
+        [],
+    ).expect("insert claim on entity 1");
+    conn.execute(
+        "INSERT INTO claim_status(claim_id, domain, subject, predicate, confirmed_event_seq, \
+         superseded_by_event_seq, retracted_at_event_seq, entity_id) \
+         VALUES ('c0000000-0000-7000-8000-0000000000a2', 'financial', 'CATL', 'p', 1, NULL, NULL, \
+         'aaaaaaaa-0000-7000-8000-000000000002')",
+        [],
+    ).expect("insert claim on entity 2");
+    conn.execute(
+        "INSERT INTO entity_aliases(domain, alias, entity_id, kind, aliased_at_event_seq) \
+         VALUES ('business', 'CATL', 'aaaaaaaa-0000-7000-8000-000000000001', 'canonical', 0)",
+        [],
+    ).expect("insert alias 1");
+    conn.execute(
+        "INSERT INTO entity_aliases(domain, alias, entity_id, kind, aliased_at_event_seq) \
+         VALUES ('financial', 'CATL', 'aaaaaaaa-0000-7000-8000-000000000002', 'canonical', 0)",
+        [],
+    ).expect("insert alias 2");
+    drop(conn);
+
+    // Reopen for upgrade and run it.
+    let store = SemanticStore::open_for_upgrade(&root, enabled(_parent.path()))
+        .expect("open for upgrade");
+    let plan = store.plan_schema_upgrade(3, 4).expect("plan");
+    store.execute_schema_upgrade(&plan).expect("execute upgrade");
+
+    // Assert consolidation: exactly one CATL entity remains.
+    let conn = Connection::open(&db_path).expect("reopen");
+    let entity_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM entities WHERE canonical_subject='CATL'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(entity_count, 1, "CATL must consolidate to one entity");
+
+    // Both claims now attach to the surviving entity.
+    let surviving: String = conn
+        .query_row(
+            "SELECT entity_id FROM entities WHERE canonical_subject='CATL'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("surviving entity");
+    let claim_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM claim_status WHERE entity_id=?1",
+            [&surviving],
+            |row| row.get(0),
+        )
+        .expect("count claims");
+    assert_eq!(claim_count, 2, "both claims must attach to the survivor");
+}
