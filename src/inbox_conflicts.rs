@@ -7,17 +7,23 @@
 //!
 //! # Conflict kinds (Phase 1.6)
 //!
-//! - **C1 Hard value conflict**: same `(domain, subject, predicate)`, different
+//! - **C1 Hard value conflict**: same `(subject, predicate)`, different
 //!   scalar value, relative difference > 0.1%. Maps to QualitySeverity::Warning.
-//! - **C2 Duplicate**: same `(domain, subject, predicate)`, same value.
+//! - **C2 Duplicate**: same `(subject, predicate)`, same value.
 //!   Maps to QualitySeverity::Info.
+//!
+//! Entity Identity Reform: the bucket key dropped `domain` — two claims with
+//! the same subject + predicate but different domain tags are now correctly
+//! detected as conflicts. This closes the pre-reform blind spot where the
+//! same fact in different domain variants (e.g. "business/WACC" vs
+//! "Finance/WACC") was invisible to conflict detection.
 //!
 //! Kinds C3-C6 (type mismatch, cross-predicate tension, semantic, temporal)
 //! are deferred to later phases — see spec §6.
 //!
 //! # Algorithm
 //!
-//! O(M·K) bucket-and-pair: bucket all claims by (domain, subject, predicate),
+//! O(M·K) bucket-and-pair: bucket all claims by (subject, predicate),
 //! pairwise compare within each bucket. With 182 pending + few confirmed and
 //! average bucket size K≈2, this is ~91 comparisons — trivially cheap.
 
@@ -69,7 +75,6 @@ pub fn detect_conflicts(
     struct Entry {
         id: Uuid,
         status: PeerStatus,
-        domain: String,
         subject: String,
         predicate: String,
         value: serde_json::Value,
@@ -81,10 +86,6 @@ pub fn detect_conflicts(
         all.push(Entry {
             id: p.proposal_id,
             status: PeerStatus::Pending,
-            // Entity Identity Reform: ProposalSummary.domain is now Option<String>;
-            // the per-entry domain tag on Entry stays String (display context).
-            // Task 21 will revise the bucket key itself.
-            domain: p.domain.clone().unwrap_or_default(),
             subject: p.subject.clone(),
             predicate: p.predicate.clone(),
             value: p.value.clone(),
@@ -95,7 +96,6 @@ pub fn detect_conflicts(
         all.push(Entry {
             id: c.claim_id,
             status: PeerStatus::Confirmed,
-            domain: c.domain.clone(),
             subject: c.subject.clone(),
             predicate: c.predicate.clone(),
             value: c.value.clone(),
@@ -105,11 +105,15 @@ pub fn detect_conflicts(
         });
     }
 
-    // Bucket by (domain, subject, predicate).
-    let mut buckets: HashMap<(String, String, String), Vec<usize>> = HashMap::new();
+    // Bucket by (subject, predicate). Entity Identity Reform: domain is no
+    // longer part of the bucket key — two claims with the same subject +
+    // predicate but different domain tags are now correctly detected as
+    // conflicts (this closes the §2.2 "same fact, different fragments" blind
+    // spot). The domain field stays on Entry/ConflictPeer as display context.
+    let mut buckets: HashMap<(String, String), Vec<usize>> = HashMap::new();
     for (i, e) in all.iter().enumerate() {
         buckets
-            .entry((e.domain.clone(), e.subject.clone(), e.predicate.clone()))
+            .entry((e.subject.clone(), e.predicate.clone()))
             .or_default()
             .push(i);
     }
