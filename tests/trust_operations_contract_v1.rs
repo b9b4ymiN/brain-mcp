@@ -773,35 +773,34 @@ fn split_entities_is_idempotent_on_operation_id() {
     );
 }
 
-/// Splitting an entity across domains is rejected (mirror of merge_entities'
-/// cross-domain guard).
+/// Entity Identity Reform: splitting an entity onto any other entity now
+/// SUCCEEDS — the cross-domain guard was removed because domain is no longer
+/// part of entity identity. This test was `split_entities_rejects_cross_domain`
+/// before the reform; it is inverted to assert the new behavior.
 #[test]
-fn split_entities_rejects_cross_domain() {
+fn split_entities_allows_any_target() {
     let (_parent, store, context) = fixture();
-    let stocks_source = store
+    let source = store
         .resolve_or_create_entity(&context, "GULF-x")
         .expect("source");
-    let projects_target = store
+    let target = store
         .resolve_or_create_entity(&context, "GULF-x-prj")
         .expect("target");
 
-    let err = store
+    // Post-reform: any two entities can split. The cross-domain guard is gone.
+    store
         .split_entities(
             &context,
             SplitCommand {
                 operation_id: "split-x".to_owned(),
-                source_entity_id: stocks_source,
+                source_entity_id: source,
                 assignments: vec![PredicateAssignment {
                     predicate: "target_price".to_owned(),
-                    target_entity_id: projects_target,
+                    target_entity_id: target,
                 }],
             },
         )
-        .expect_err("cross-domain split must fail");
-    assert!(
-        matches!(err, llm_wiki::semantic::SemanticError::InvalidTransition(_)),
-        "expected InvalidTransition, got {err:?}"
-    );
+        .expect("split onto any target must succeed post-reform");
 }
 
 /// Two `PredicateAssignment`s with the SAME predicate but DIFFERENT targets is

@@ -289,11 +289,17 @@ fn evidence_backed_claim_origin_is_agent_proposed() {
 // Entity model — stable IDs, rename, merge, backlinks (DoD bullet 3)
 // =============================================================================
 
-/// `resolve_or_create_entity` is idempotent for the same (domain, subject):
-/// the first call mints a UUIDv7 entity_id, the second returns the same id.
-/// This is the "stable ID" invariant from ADR Decision 3.
+/// `resolve_or_create_entity` is idempotent for the same subject: the first
+/// call mints a UUIDv7 entity_id, the second returns the same id. This is the
+/// "stable ID" invariant from ADR Decision 3.
+///
+/// Entity Identity Reform: domain is no longer part of the entity scope key
+/// (Wikidata pattern). Two claims with the same subject but different domain
+/// tags resolve to the SAME entity_id. This test was previously named
+/// `..._per_domain_subject` and asserted cross-domain separation; post-reform
+/// it asserts the opposite — same subject always = one entity.
 #[test]
-fn resolve_or_create_entity_is_idempotent_per_domain_subject() {
+fn resolve_or_create_entity_is_idempotent_per_subject() {
     let (_parent, _root, store, context) = fixture();
 
     let first = store
@@ -304,21 +310,26 @@ fn resolve_or_create_entity_is_idempotent_per_domain_subject() {
         .expect("second resolve");
     assert_eq!(
         first, second,
-        "same (domain, subject) must resolve to one entity"
+        "same subject must resolve to one entity (idempotent)"
     );
 
-    // A different subject in the same domain is a different entity.
+    // A different subject is a different entity.
     let other = store
         .resolve_or_create_entity(&context, "PTT")
         .expect("other resolve");
     assert_ne!(first, other);
 
-    // Same subject string in a DIFFERENT domain is also a different entity —
-    // domain is part of the entity scope key.
+    // Entity Identity Reform: domain is NOT part of identity. A claim with a
+    // different domain tag on the same subject resolves to the SAME entity.
+    // (Pre-reform this would have created a separate entity; the reform's
+    // core invariant is that it does not.)
     let cross = store
         .resolve_or_create_entity(&context, "GULF")
-        .expect("cross-domain resolve");
-    assert_ne!(first, cross);
+        .expect("resolve same subject again");
+    assert_eq!(
+        first, cross,
+        "same subject resolves to one entity regardless of how many times it is called"
+    );
 }
 
 /// `rename_entity` updates the canonical subject but preserves the entity_id.
@@ -443,6 +454,72 @@ fn merge_entities_moves_claims_and_keeps_aliases_as_backlinks() {
         source_claims.is_empty(),
         "source entity must hold no claims after merge"
     );
+}
+
+/// Entity Identity Reform: merging two entities that originated from
+/// different (former) domains now succeeds. Pre-reform this was rejected by
+/// the cross-domain guard; post-reform domain is not part of identity.
+#[test]
+fn merge_entities_allows_cross_domain() {
+    let (_parent, _root, store, context) = fixture();
+
+    // Two entities with different subjects are two distinct entities.
+    let source = store
+        .resolve_or_create_entity(&context, "GULF-dup")
+        .expect("source entity");
+    let target = store
+        .resolve_or_create_entity(&context, "GULF")
+        .expect("target entity");
+    assert_ne!(source, target, "two distinct subjects must be two entities");
+
+    // Put one claim on the source, tagged with a domain (proving claims carry
+    // their own domain even though entities do not).
+    store
+        .propose_user_assertion(
+            &context,
+            llm_wiki::semantic::ProposeUserAssertionCommand {
+                operation_id: "assert-source-x".to_owned(),
+                utterance: b"source claim".to_vec(),
+                draft: ClaimDraft {
+                    subject: "GULF-dup".to_owned(),
+                    predicate: "target_price".to_owned(),
+                    value: json!(58),
+                    claim_kind: "user_assertion".to_owned(),
+                    domain: Some("stocks".to_owned()),
+                    confidence_basis_points: 9_000,
+                    privacy_label: PrivacyLabel::LocalOnly,
+                    valid_from: None,
+                    valid_to: None,
+                },
+            },
+        )
+        .expect("propose source");
+    store
+        .confirm(
+            &context,
+            ConfirmCommand {
+                operation_id: "confirm-source-x".to_owned(),
+                proposal_operation_id: "assert-source-x".to_owned(),
+            },
+        )
+        .expect("confirm source");
+
+    store
+        .merge_entities(
+            &context,
+            llm_wiki::semantic::MergeEntitiesCommand {
+                operation_id: "merge-x".to_owned(),
+                source_entity_id: source,
+                target_entity_id: target,
+            },
+        )
+        .expect("cross-domain merge must succeed post-reform");
+
+    // The source subject now resolves to the target.
+    let resolved = store
+        .resolve_entity(&context, "GULF-dup")
+        .expect("resolve merged-away subject");
+    assert_eq!(resolved, target);
 }
 
 /// Merging an entity into itself is a no-op error, not a silent success — it
