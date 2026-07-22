@@ -2123,16 +2123,17 @@ impl SemanticStore {
 
     /// Plans a schema upgrade from `from` to `to`. Supported paths today are
     /// `from=2, to=3` (Task F3.3 noop placeholder) and `from=3, to=4`
-    /// (Entity Identity Reform — noop plan body for now; Task 2 swaps in the
-    /// genuine migration step). Any other combination returns
-    /// `Err(SemanticError::CorruptLedger(...))` with a message naming the
-    /// unsupported pair — `plan_schema_upgrade` is the single source of truth
-    /// for "which paths exist", so the schema-version gate in
+    /// (Entity Identity Reform — the step *description* now names the entity
+    /// consolidation + UNIQUE/PRIMARY KEY constraint change; the step's
+    /// forward/reverse *bodies* land in Tasks 3–5). Any other combination
+    /// returns `Err(SemanticError::CorruptLedger(...))` with a message naming
+    /// the unsupported pair — `plan_schema_upgrade` is the single source of
+    /// truth for "which paths exist", so the schema-version gate in
     /// `validate_database_identity` mirrors it via `schema_upgrade_path_exists`.
     ///
-    /// The plan always carries exactly one reversible step (`"noop placeholder
-    /// migration to prove upgrade path"`), so `is_reversible()` is true and
-    /// `execute_schema_upgrade` will accept it.
+    /// Each plan carries exactly one reversible step (the v2→v3 step is a noop
+    /// placeholder; the v3→v4 step describes the consolidation), so
+    /// `is_reversible()` is true and `execute_schema_upgrade` will accept it.
     pub fn plan_schema_upgrade(
         &self,
         from: u8,
@@ -2156,10 +2157,22 @@ impl SemanticStore {
             )));
         }
         Ok(crate::recovery::SchemaUpgradePlan {
-            steps: vec![crate::recovery::UpgradeStep {
-                description: "noop placeholder migration to prove upgrade path".to_owned(),
-                reversible: true,
-            }],
+            steps: match (from, to) {
+                (2, 3) => vec![crate::recovery::UpgradeStep {
+                    description: "noop placeholder migration to prove upgrade path".to_owned(),
+                    reversible: true,
+                }],
+                (3, 4) => vec![crate::recovery::UpgradeStep {
+                    description: (
+                        "Entity Identity Reform: consolidate fragmented entities onto one \
+                         canonical_subject, then drop domain from the entities UNIQUE key \
+                         and the entity_aliases PRIMARY KEY (Wikidata pattern)."
+                    )
+                        .to_owned(),
+                    reversible: true,
+                }],
+                _ => unreachable!("schema_upgrade_path_exists gates this match"),
+            },
             from_version: from,
             to_version: to,
         })

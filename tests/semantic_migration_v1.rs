@@ -435,3 +435,24 @@ fn v3_to_v4_upgrade_path_is_known() {
     assert_eq!(plan.to_version, 4);
     assert_eq!(plan.steps.len(), 1, "v3→v4 is one step");
 }
+
+/// Phase Reform Task 2: planning a v3→v4 upgrade yields a reversible plan
+/// whose step description names the entity consolidation. The plan is the
+/// audit-trail contract an operator reads before `execute_schema_upgrade`;
+/// it must advertise reversibility or `execute_schema_upgrade` will refuse it.
+#[test]
+fn v3_to_v4_plan_is_reversible_and_names_consolidation() {
+    let (_parent, root) = fixture_at_v3();
+    let store =
+        SemanticStore::open_for_upgrade(&root, enabled(_parent.path())).expect("open staged v3");
+    let plan = store.plan_schema_upgrade(3, 4).expect("plan v3→v4");
+    assert!(plan.is_reversible(), "v3→v4 plan must be reversible");
+    assert!(
+        plan.steps.iter().any(|s| s.description.contains("entity")
+            && s.description.contains("consolidat")),
+        "plan must describe the entity consolidation; got steps: {:?}",
+        plan.steps
+    );
+    assert_eq!(plan.from_version, 3);
+    assert_eq!(plan.to_version, 4);
+}
