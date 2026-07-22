@@ -46,13 +46,25 @@
   // Group claims by predicate (a subject may have many predicates). Each
   // entry renders as "predicate = value" so the panel answers "what do we
   // know about X?" without requiring the user to expand the table rows.
-  let whats = $derived(
-    claims.map((c) => ({
-      predicate: c.predicate,
-      value: c.value,
-      confidence: c.confidence,
-    })),
-  )
+  //
+  // Entity Identity Reform: after consolidation, a subject may carry the
+  // SAME predicate under different domain tags (e.g. CATL has "customers" in
+  // business, Business, and Finance). We dedup by predicate — keeping the
+  // highest-confidence claim — so the {#each ... (w.predicate)} key is unique.
+  let whats = $derived.by(() => {
+    const byPred = new Map<string, { predicate: string; value: unknown; confidence: number }>()
+    for (const c of claims) {
+      const existing = byPred.get(c.predicate)
+      if (!existing || c.confidence > existing.confidence) {
+        byPred.set(c.predicate, {
+          predicate: c.predicate,
+          value: c.value,
+          confidence: c.confidence,
+        })
+      }
+    }
+    return Array.from(byPred.values())
+  })
 
   // ── Source ──────────────────────────────────────────────────────────────
   // Distinct provenance kinds across the claims. The "From: <kind>" line is
@@ -73,17 +85,20 @@
     valid_to: string | null
   }
   let whens = $derived.by<WhenRow[]>(() => {
-    const rows: WhenRow[] = []
+    // Entity Identity Reform: dedup by predicate — same predicate under
+    // different domain tags collapses to one row (matching `whats` above).
+    const byPred = new Map<string, WhenRow>()
     for (const claim of claims) {
+      if (byPred.has(claim.predicate)) continue
       const entries = timelineByPredicate[claim.predicate] ?? []
       const confirmed = entries.find((e) => e.status === 'confirmed')
-      rows.push({
+      byPred.set(claim.predicate, {
         predicate: claim.predicate,
         valid_from: confirmed?.valid_from ?? null,
         valid_to: confirmed?.valid_to ?? null,
       })
     }
-    return rows
+    return Array.from(byPred.values())
   })
 
   // ── Connections + client that edited ────────────────────────────────────

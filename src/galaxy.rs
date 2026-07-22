@@ -413,6 +413,13 @@ impl GalaxyGraph {
         }
 
         // (2) same-subject co-occurrence across distinct entities.
+        //
+        // Entity Identity Reform note: pre-reform, the same subject string
+        // could appear on multiple entities (one per domain variant), so this
+        // heuristic was the primary edge source. Post-reform, subject =
+        // entity identity, so same-subject claims collapse onto ONE entity —
+        // this heuristic now rarely fires. The shared-domain heuristic in (3)
+        // compensates by linking entities that share a domain tag.
         let mut subject_to_entities: HashMap<&str, Vec<Uuid>> = HashMap::new();
         for (entity_id, entity_claims) in &by_entity {
             if !allowed.contains_key(entity_id) {
@@ -436,6 +443,60 @@ impl GalaxyGraph {
                     if unique[i] == unique[j] {
                         continue;
                     }
+                    if !allowed.contains_key(&unique[i]) || !allowed.contains_key(&unique[j]) {
+                        continue;
+                    }
+                    push_dedup_edge(
+                        &mut graph,
+                        &mut seen_edges,
+                        unique[i].to_string(),
+                        unique[j].to_string(),
+                        EdgeKind::Related,
+                    );
+                }
+            }
+        }
+
+        // (3) shared-domain co-occurrence (Entity Identity Reform).
+        //
+        // Two entities that carry claims in the SAME domain tag are likely
+        // related (e.g. CATL + BYD both have claims in "business" and
+        // "financial"). This heuristic replaces the lost same-subject edges
+        // post-reform: domain is now a categorization tag, so shared-domain
+        // is the natural "these entities belong to the same knowledge area"
+        // signal. We cap the edges per domain to avoid cliques (top-N most
+        // connected entities per domain get linked; the rest are implied
+        // transitively).
+        let mut domain_to_entities: HashMap<&str, Vec<Uuid>> = HashMap::new();
+        for (entity_id, entity_claims) in &by_entity {
+            if !allowed.contains_key(entity_id) {
+                continue;
+            }
+            for claim in entity_claims {
+                let d = claim.domain.as_str();
+                if d.is_empty() {
+                    continue;
+                }
+                let list = domain_to_entities.entry(d).or_default();
+                if !list.contains(entity_id) {
+                    list.push(*entity_id);
+                }
+            }
+        }
+        for entities in domain_to_entities.values() {
+            // Only link entities within a domain if the group is small enough
+            // to be meaningful (≤8). Large domains (e.g. "financial" covering
+            // every stock) would create a dense clique that adds noise; the
+            // cap keeps the graph readable. Entities within the cap are
+            // pairwise-linked.
+            if entities.len() < 2 || entities.len() > 8 {
+                continue;
+            }
+            let mut unique: Vec<Uuid> = entities.to_vec();
+            unique.sort();
+            unique.dedup();
+            for i in 0..unique.len() {
+                for j in (i + 1)..unique.len() {
                     if !allowed.contains_key(&unique[i]) || !allowed.contains_key(&unique[j]) {
                         continue;
                     }
