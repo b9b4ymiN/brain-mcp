@@ -991,9 +991,14 @@ fn upgrade_v2_to_v3_noop_succeeds() {
     // data-intact via ledger_head + purge_epoch directly, NOT via raw
     // checksum equality across the bump.
     //
-    // Re-open to pick up the rewritten marker; the upgraded store serves
-    // normally because marker.schema_version == CURRENT_DISK_SCHEMA_VERSION.
-    let upgraded = SemanticStore::open(&root, enabled(_parent.path())).expect("open at v3");
+    // Re-open to pick up the rewritten marker. NOTE: since
+    // CURRENT_DISK_SCHEMA_VERSION moved to 4 (Entity Identity Reform), a v3
+    // store is no longer servable via plain `open` — it is "older than
+    // binary." We use `open_for_upgrade` (which tolerates known-path older
+    // versions) to re-open and verify data integrity. The store is genuinely
+    // at v3 (marker + tables); it just needs another upgrade run to reach v4.
+    let upgraded =
+        SemanticStore::open_for_upgrade(&root, enabled(_parent.path())).expect("reopen at v3");
     assert_eq!(upgraded.schema_version(), 3, "upgraded store reports v3");
     // ledger_head + purge_epoch are read via composite_checksum's internals
     // (those fields are not exposed as public methods), but the noop
@@ -1021,8 +1026,11 @@ fn rollback_v3_to_v2_noop_succeeds() {
     store.execute_schema_upgrade(&plan).expect("execute v2→v3");
     assert_eq!(read_marker_schema_version(&root), 3, "marker at v3");
 
-    // Step 2: open the now-v3 store (normal open, since marker == CURRENT).
-    let upgraded = SemanticStore::open(&root, enabled(_parent.path())).expect("open at v3");
+    // Step 2: open the now-v3 store. Since CURRENT_DISK_SCHEMA_VERSION is 4
+    // (Entity Identity Reform), a v3 store is "older than binary" — use
+    // open_for_upgrade (tolerates known-path older versions) instead of open.
+    let upgraded =
+        SemanticStore::open_for_upgrade(&root, enabled(_parent.path())).expect("reopen at v3");
     let rollback_plan = upgraded
         .plan_schema_upgrade(2, 3)
         .expect_err("plan_schema_upgrade against v3 marker with from=2 must fail (live is v3)");
@@ -1158,11 +1166,13 @@ fn upgrade_rehearsal_round_trip() {
     );
     drop(upgraded);
 
-    // 4. Re-open at v3 (normal open now accepts the upgraded marker) and
-    //    run the restore drill against the v3-era backup. composite_checksum
-    //    recomputed against the restored v3 snapshot must match the
-    //    manifest's v3 checksum → drill passes.
-    let reopened = SemanticStore::open(&root, enabled(parent.path())).expect("open at v3");
+    // 4. Re-open at v3 and run the restore drill. Since
+    // CURRENT_DISK_SCHEMA_VERSION is 4 (Entity Identity Reform), a v3 store
+    // is "older than binary" — use open_for_upgrade (tolerates known-path
+    // older versions). composite_checksum recomputed against the restored v3
+    // snapshot must match the manifest's v3 checksum → drill passes.
+    let reopened =
+        SemanticStore::open_for_upgrade(&root, enabled(parent.path())).expect("reopen at v3");
     let result = reopened
         .run_restore_drill(&backup_dir, &key)
         .expect("drill after upgrade");

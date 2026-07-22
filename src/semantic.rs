@@ -73,29 +73,28 @@ const BOOTSTRAP_CLIENT_LABEL: &str = "__bootstrap__";
 const DEFAULT_CLIENT_CAPABILITIES: &[&str] = &["confirm", "purge", "propose"];
 const VALID_CLIENT_CAPABILITIES: &[&str] = &["confirm", "purge", "propose"];
 
-/// On-disk schema version. Bumped 1 → 2 in Task 2.2 when the entity tables
-/// (`entities`, `entity_aliases`) and the `claim_status.entity_id` column
-/// were added. Bumped 2 → 3 in Task F3.3 — the bump is the proof-of-path for
-/// the schema upgrade runner (`plan_schema_upgrade` +
-/// `execute_schema_upgrade` + `rollback_schema_upgrade`); the v2→v3 migration
-/// itself is a noop placeholder (every step is a reversible noop), so a
-/// store upgraded from 2 → 3 has identical ledger_head + purge_epoch (the
-/// composite_checksum's third input — `schema_version` — DOES change, so the
-/// checksum value differs across the bump; tests assert data-intact via
-/// ledger_head + purge_epoch equality, not raw checksum equality).
+/// On-disk DDL schema version stamped into the marker and the `meta` table.
+///
+/// Version history:
+///   * 1 — Task 2.2 baseline (entity table introduction).
+///   * 2 — Task 2.2 second revision (entity_aliases).
+///   * 3 — Task F3.3 placeholder (every step reversible noop).
+///   * 4 — Entity Identity Reform (drop `domain` from entities UNIQUE and
+///         entity_aliases PK; consolidate fragmented subjects). The v3→v4
+///         migration is the first NON-noop upgrade: it both rewrites data
+///         (consolidation) and changes constraints (table recreation).
 ///
 /// A store created under an older schema_version that has a known migration
-/// path (today only 2 → 3) refuses to serve until an operator runs
+/// path (today: 2 → 3, 3 → 4) refuses to serve until an operator runs
 /// `llm-wiki recovery upgrade`; an older version with NO migration path
 /// still fails closed (see `validate_database_identity`).
 ///
 /// NOTE: this is the *on-disk DDL* version, distinct from the *event wire*
 /// version stamped on each `EventEnvelope.schema_version`. The wire format
-/// of an event has not changed in Task 2.2 (same `EventEnvelope` JSON
-/// shape), so events keep `schema_version: 1` to stay valid against the
-/// hash-locked `event-schema-v1.json` contract. Only the on-disk schema
-/// (marker + DDL) moved to 3.
-pub const CURRENT_DISK_SCHEMA_VERSION: u8 = 3;
+/// of an event has not changed (same `EventEnvelope` JSON shape), so events
+/// keep `schema_version: 1` to stay valid against the hash-locked
+/// `event-schema-v1.json` contract.
+pub const CURRENT_DISK_SCHEMA_VERSION: u8 = 4;
 /// Event wire-format version (unchanged since the schema was hash-locked in
 /// Task 0.2). Kept as a named constant rather than a literal so the next
 /// genuine wire break is a one-line change with a clear audit trail.
@@ -521,11 +520,13 @@ pub struct JobRecord {
 }
 
 /// One row of the `entities` table (Task 2.2). Stable UUIDv7 identity that
-/// survives rename/merge; `canonical_subject` is the current display name.
+/// never encodes the subject string. `canonical_subject` is the display
+/// name (mutable via `rename_entity`); `domain` is no longer carried here
+/// after the Entity Identity Reform (domain is a per-claim tag, see
+/// `claim_status.domain`).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EntityRecord {
     pub entity_id: Uuid,
-    pub domain: String,
     pub canonical_subject: String,
     pub created_at: DateTime<Utc>,
 }
@@ -3087,14 +3088,13 @@ impl SemanticStore {
 
     // ── Task 2.2: entity model public read/resolve API ──────────────────────
 
-    /// Resolve `(domain, subject)` to a stable entity_id, minting a new
-    /// UUIDv7 entity if none exists yet. Idempotent: the same tuple always
-    /// resolves to the same id. Resolution checks aliases first, so former
-    /// subjects (post-rename/merge) keep resolving. ADR Decision 3.
+    /// Resolve `subject` to a stable entity_id, minting a new entity (and a
+    /// `canonical` alias) if none exists yet. Domain-independent since the
+    /// Entity Identity Reform (Wikidata pattern): two claims with the same
+    /// subject but different domains resolve to the same entity_id.
     pub fn resolve_or_create_entity(
         &self,
         context: &TrustedContext,
-        domain: &str,
         subject: &str,
     ) -> Result<Uuid> {
         validate_context(&self.marker, context)?;
@@ -3109,7 +3109,6 @@ impl SemanticStore {
             .map_err(database_error)?;
         let entity_id = resolve_or_create_entity_in_tx(
             &transaction,
-            domain,
             subject,
             next_event_seq(&transaction, context.owner_id)?,
         )?;
@@ -3117,20 +3116,20 @@ impl SemanticStore {
         Ok(entity_id)
     }
 
-    /// Resolve `(domain, alias)` to an entity_id without creating one. Returns
+    /// Resolve `alias` to an entity_id without creating one. Returns
     /// `Err(MissingDependency)` if no entity has ever held this alias — callers
     /// that need create-on-demand semantics use [`Self::resolve_or_create_entity`].
+    /// Domain-independent since the Entity Identity Reform.
     pub fn resolve_entity(
         &self,
         context: &TrustedContext,
-        domain: &str,
         alias: &str,
     ) -> Result<Uuid> {
         validate_context(&self.marker, context)?;
         let _maintenance = self.coordinator.maintenance.read();
         let connection = open_connection(&self.root)?;
-        resolve_entity_in_tx(&connection, domain, alias)?
-            .ok_or_else(|| SemanticError::MissingDependency(format!("entity {domain}/{alias}")))
+        resolve_entity_in_tx(&connection, alias)?
+            .ok_or_else(|| SemanticError::MissingDependency(format!("entity {alias}")))
     }
 
     /// Read the canonical subject + identity of an entity by its stable id.
@@ -3138,30 +3137,21 @@ impl SemanticStore {
         validate_context(&self.marker, context)?;
         let _maintenance = self.coordinator.maintenance.read();
         let connection = open_connection(&self.root)?;
-        let row: Option<(String, String, String)> = connection
+        let row: Option<(String, String)> = connection
             .query_row(
-                "SELECT entity_id, canonical_subject, created_at FROM entities WHERE entity_id=?1",
+                "SELECT canonical_subject, created_at FROM entities WHERE entity_id=?1",
                 [entity_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(database_error)?;
-        let (_, canonical_subject, created_at) =
+        let (canonical_subject, created_at) =
             row.ok_or_else(|| SemanticError::MissingDependency(format!("entity {entity_id}")))?;
         let parsed_created = created_at.parse().map_err(|_| {
             SemanticError::CorruptLedger("entity created_at is not RFC 3339".to_owned())
         })?;
-        // Recover the domain via the canonical alias row.
-        let domain: String = connection
-            .query_row(
-                "SELECT domain FROM entity_aliases WHERE entity_id=?1 AND kind='canonical' ORDER BY aliased_at_event_seq DESC LIMIT 1",
-                [entity_id.to_string()],
-                |row| row.get(0),
-            )
-            .map_err(database_error)?;
         Ok(EntityRecord {
             entity_id,
-            domain,
             canonical_subject,
             created_at: parsed_created,
         })
@@ -3171,7 +3161,8 @@ impl SemanticStore {
     /// `entity_renamed` event, updates `entities.canonical_subject`, and
     /// records the OLD subject as a `former_subject` alias so existing
     /// references keep resolving (backlink preservation). The new subject must
-    /// not collide with another entity in the same domain — that is a merge.
+    /// not collide with another entity's canonical_subject — that is a merge.
+    /// Domain-independent since the Entity Identity Reform.
     pub fn rename_entity(
         &self,
         context: &TrustedContext,
@@ -3187,15 +3178,15 @@ impl SemanticStore {
             Some("confirm"),
             move |transaction, identity| {
                 // Load current canonical row.
-                let row: Option<(String, String)> = transaction
+                let row: Option<String> = transaction
                     .query_row(
-                        "SELECT domain, canonical_subject FROM entities WHERE entity_id=?1",
+                        "SELECT canonical_subject FROM entities WHERE entity_id=?1",
                         [entity_id.to_string()],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
+                        |row| row.get(0),
                     )
                     .optional()
                     .map_err(database_error)?;
-                let (domain, old_subject) = row.ok_or_else(|| {
+                let old_subject = row.ok_or_else(|| {
                     SemanticError::MissingDependency(format!("entity {entity_id}"))
                 })?;
                 if old_subject == new_subject {
@@ -3204,17 +3195,18 @@ impl SemanticStore {
                     )));
                 }
                 // Collision check: a *different* entity already owns this subject.
+                // Domain-independent since the reform.
                 let collision: Option<String> = transaction
                     .query_row(
-                        "SELECT entity_id FROM entities WHERE domain=?1 AND canonical_subject=?2 AND entity_id<>?3",
-                        params![domain, new_subject, entity_id.to_string()],
+                        "SELECT entity_id FROM entities WHERE canonical_subject=?1 AND entity_id<>?2",
+                        params![new_subject, entity_id.to_string()],
                         |row| row.get(0),
                     )
                     .optional()
                     .map_err(database_error)?;
                 if collision.is_some() {
                     return Err(SemanticError::InvalidTransition(format!(
-                        "subject {new_subject} in domain {domain} is already canonical for a different entity; use merge instead"
+                        "subject {new_subject} is already canonical for a different entity; use merge instead"
                     )));
                 }
                 transaction
@@ -3225,12 +3217,11 @@ impl SemanticStore {
                     .map_err(database_error)?;
                 // Record the old subject as a former_subject alias (backlink)
                 // and the new subject as canonical.
-                insert_alias(transaction, &domain, &old_subject, entity_id, "former_subject", identity.event_seq)?;
-                insert_alias(transaction, &domain, &new_subject, entity_id, "canonical", identity.event_seq)?;
+                insert_alias(transaction, &old_subject, entity_id, "former_subject", identity.event_seq)?;
+                insert_alias(transaction, &new_subject, entity_id, "canonical", identity.event_seq)?;
                 let payload = serde_json::json!({
                     "kind": "entity_renamed",
                     "entity_id": entity_id,
-                    "domain": domain,
                     "old_subject": old_subject,
                     "new_subject": new_subject,
                 });
@@ -3249,6 +3240,9 @@ impl SemanticStore {
     /// source onto target, and turns the source's canonical subject (plus its
     /// prior aliases) into backlinks pointing at the target. No claim loses
     /// its entity reference; no alias is deleted.
+    ///
+    /// Entity Identity Reform: the cross-domain guard is removed. Domain is
+    /// no longer part of entity identity, so any two entities can merge.
     pub fn merge_entities(
         &self,
         context: &TrustedContext,
@@ -3269,33 +3263,28 @@ impl SemanticStore {
             &request_hash,
             Some("confirm"),
             move |transaction, identity| {
-                let source_row: Option<(String, String)> = transaction
+                let source_row: Option<String> = transaction
                     .query_row(
-                        "SELECT domain, canonical_subject FROM entities WHERE entity_id=?1",
+                        "SELECT canonical_subject FROM entities WHERE entity_id=?1",
                         [source.to_string()],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
+                        |row| row.get(0),
                     )
                     .optional()
                     .map_err(database_error)?;
-                let (source_domain, source_subject) = source_row.ok_or_else(|| {
+                let source_subject = source_row.ok_or_else(|| {
                     SemanticError::MissingDependency(format!("entity {source}"))
                 })?;
-                let target_row: Option<(String, String)> = transaction
+                let target_row: Option<()> = transaction
                     .query_row(
-                        "SELECT domain, canonical_subject FROM entities WHERE entity_id=?1",
+                        "SELECT 1 FROM entities WHERE entity_id=?1",
                         [target.to_string()],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
+                        |_| Ok(()),
                     )
                     .optional()
                     .map_err(database_error)?;
-                let (target_domain, _target_subject) = target_row.ok_or_else(|| {
+                target_row.ok_or_else(|| {
                     SemanticError::MissingDependency(format!("entity {target}"))
                 })?;
-                if source_domain != target_domain {
-                    return Err(SemanticError::InvalidTransition(format!(
-                        "cannot merge across domains: source={source_domain}, target={target_domain}"
-                    )));
-                }
                 // Rewrite every claim attached to the source onto the target.
                 let moved = transaction
                     .execute(
@@ -3318,7 +3307,7 @@ impl SemanticStore {
                 drop(alias_statement);
                 aliases.push(source_subject.clone());
                 for alias in &aliases {
-                    insert_alias(transaction, &source_domain, alias, target, "former_subject", identity.event_seq)?;
+                    insert_alias(transaction, alias, target, "former_subject", identity.event_seq)?;
                 }
                 // Remove the source's canonical row: its claims were already
                 // rewritten onto the target, and every alias (including its
@@ -3329,13 +3318,18 @@ impl SemanticStore {
                 // captured in the event payload below.
                 transaction
                     .execute(
+                        "DELETE FROM entity_aliases WHERE entity_id=?1",
+                        [source.to_string()],
+                    )
+                    .map_err(database_error)?;
+                transaction
+                    .execute(
                         "DELETE FROM entities WHERE entity_id=?1",
                         [source.to_string()],
                     )
                     .map_err(database_error)?;
                 let payload = serde_json::json!({
                     "kind": "entity_merged",
-                    "domain": source_domain,
                     "source_entity_id": source,
                     "target_entity_id": target,
                     "claims_moved": moved,
@@ -3530,7 +3524,7 @@ impl SemanticStore {
             // which entity an orphan row should bind to). Real confirmed
             // claims always have a matching entity because Task 2.2's
             // confirm path created one; only corrupt/orphan rows fail here.
-            match resolve_entity_in_tx(&transaction, &domain, &subject)? {
+            match resolve_entity_in_tx(&transaction, &subject)? {
                 Some(entity_id) => {
                     if !dry_run {
                         transaction
@@ -5738,47 +5732,42 @@ impl SemanticStore {
             &request_hash,
             Some("confirm"),
             move |transaction, _identity| {
-                // Load source row to confirm it exists and capture its domain.
-                let source_row: Option<(String, String)> = transaction
+                // Load source row to confirm it exists and capture its canonical_subject.
+                let source_row: Option<String> = transaction
                     .query_row(
-                        "SELECT domain, canonical_subject FROM entities WHERE entity_id=?1",
+                        "SELECT canonical_subject FROM entities WHERE entity_id=?1",
                         [source.to_string()],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
+                        |row| row.get(0),
                     )
                     .optional()
                     .map_err(database_error)?;
-                let (source_domain, _source_subject) = source_row.ok_or_else(|| {
+                let _source_subject = source_row.ok_or_else(|| {
                     SemanticError::MissingDependency(format!("entity {source}"))
                 })?;
 
-                // Validate every target exists AND lives in the same domain as
-                // the source — cross-domain split is rejected just like
-                // cross-domain merge.
-                let mut target_domains: HashMap<Uuid, String> = HashMap::new();
+                // Validate every target exists. Entity Identity Reform: the
+                // cross-domain check is removed — domain is no longer part of
+                // entity identity, so any two entities can split.
+                let mut seen_targets: std::collections::HashSet<Uuid> =
+                    std::collections::HashSet::new();
                 for assignment in &assignments {
-                    if let std::collections::hash_map::Entry::Vacant(entry) =
-                        target_domains.entry(assignment.target_entity_id)
-                    {
-                        let target_domain: String = transaction
-                            .query_row(
-                                "SELECT domain FROM entities WHERE entity_id=?1",
-                                [assignment.target_entity_id.to_string()],
-                                |row| row.get(0),
-                            )
-                            .optional()
-                            .map_err(database_error)?
-                            .ok_or_else(|| {
-                                SemanticError::MissingDependency(format!(
-                                    "entity {}",
-                                    assignment.target_entity_id
-                                ))
-                            })?;
-                        if target_domain != source_domain {
-                            return Err(SemanticError::InvalidTransition(format!(
-                                "cannot split across domains: source={source_domain}, target={target_domain}"
-                            )));
-                        }
-                        entry.insert(target_domain);
+                    if !seen_targets.insert(assignment.target_entity_id) {
+                        // Already validated; skip the duplicate SELECT.
+                        continue;
+                    }
+                    let exists: Option<()> = transaction
+                        .query_row(
+                            "SELECT 1 FROM entities WHERE entity_id=?1",
+                            [assignment.target_entity_id.to_string()],
+                            |_| Ok(()),
+                        )
+                        .optional()
+                        .map_err(database_error)?;
+                    if exists.is_none() {
+                        return Err(SemanticError::MissingDependency(format!(
+                            "entity {}",
+                            assignment.target_entity_id
+                        )));
                     }
                 }
 
@@ -5844,7 +5833,6 @@ impl SemanticStore {
 
                 let payload = serde_json::json!({
                     "kind": "entity_split",
-                    "domain": source_domain,
                     "source_entity_id": source,
                     "assignments": assignments.iter().map(|a| serde_json::json!({
                         "predicate": a.predicate,
@@ -6454,28 +6442,32 @@ fn initialize_schema(
                -- stores (none in production — Task 2.3 territory).
                entity_id TEXT
              );
-             -- Task 2.2 entity model (ADR Decision 3). One stable UUIDv7 per
-             -- (domain, canonical_subject). Rename updates canonical_subject
-             -- but keeps entity_id; merge rewrites claim_status.entity_id and
-             -- turns the source subject into an alias row.
+             -- Task 2.2 entity model (ADR Decision 3, Entity Identity Reform
+             -- v4). One stable UUIDv7 per canonical_subject — domain is no
+             -- longer part of entity identity (Wikidata pattern). Rename
+             -- updates canonical_subject but keeps entity_id; merge rewrites
+             -- claim_status.entity_id and turns the source subject into an
+             -- alias row. Multiple domains per entity live as tags on the
+             -- individual claim_status rows, not on the entity itself.
              CREATE TABLE entities(
                entity_id TEXT PRIMARY KEY,
-               domain TEXT NOT NULL,
                canonical_subject TEXT NOT NULL,
                created_at TEXT NOT NULL,
-               UNIQUE(domain, canonical_subject)
+               UNIQUE(canonical_subject)
              );
              -- Every subject string (or external id) that has ever resolved to
              -- an entity. kind='canonical' mirrors the current
              -- canonical_subject; kind='former_subject' is a rename/merge
              -- backlink; kind='external' is a provider id alias (Decision 3).
+             -- PK excludes domain since the Entity Identity Reform: the same
+             -- alias string resolving to the same entity is one row, not one
+             -- row per (former) domain.
              CREATE TABLE entity_aliases(
-               domain TEXT NOT NULL,
                alias TEXT NOT NULL,
                entity_id TEXT NOT NULL,
                kind TEXT NOT NULL,
                aliased_at_event_seq INTEGER NOT NULL,
-               PRIMARY KEY(domain, alias, entity_id)
+               PRIMARY KEY(alias, entity_id)
              );
              -- epoch_keys holds the owner's key-encryption-key (KEK) history.
              -- wrapped_keys holds each object's random data-encryption-key
@@ -6630,7 +6622,7 @@ fn validate_database_identity(
     // This compares the on-disk DDL version, not the event wire version.
     if marker.schema_version != CURRENT_DISK_SCHEMA_VERSION {
         let has_path =
-            schema_upgrade_path_exists(marker.schema_version, CURRENT_DISK_SCHEMA_VERSION);
+            schema_upgrade_reachable(marker.schema_version, CURRENT_DISK_SCHEMA_VERSION);
         if matches!(gate, GateBehavior::UpgradeOnly) && has_path {
             // The upgrade CLI is explicitly running against an older store
             // whose migration path is known — allow the open so the upgrade
@@ -6678,6 +6670,32 @@ enum GateBehavior {
 /// the error message differs so an operator sees the actionable next step.
 fn schema_upgrade_path_exists(from: u8, to: u8) -> bool {
     matches!((from, to), (2, 3) | (3, 4))
+}
+
+/// Transitive reachability: can `from` eventually reach `to` via a chain of
+/// known single-step upgrade paths? Used by the schema-version gate in
+/// `validate_database_identity` to decide whether an older store can be
+/// served by this binary after one or more `recovery upgrade` runs. This is
+/// distinct from `schema_upgrade_path_exists` (single-step), which
+/// `plan_schema_upgrade` uses to reject multi-hop plans in one call.
+///
+/// Example: with paths (2→3) and (3→4) known, `schema_upgrade_reachable(2, 4)`
+/// is true (the store can go 2→3→4 in two upgrade runs), even though
+/// `schema_upgrade_path_exists(2, 4)` is false (no direct single-step plan).
+fn schema_upgrade_reachable(from: u8, to: u8) -> bool {
+    if from >= to {
+        return from == to;
+    }
+    // Walk the chain: every intermediate single step must be a known path.
+    let mut current = from;
+    while current < to {
+        if schema_upgrade_path_exists(current, current + 1) {
+            current += 1;
+        } else {
+            return false;
+        }
+    }
+    true
 }
 
 /// Runs one `UpgradeStep`'s forward action inside an open transaction
@@ -7502,9 +7520,11 @@ fn build_confirmation_material(
     // Resolve (or lazily create) the entity this claim attaches to, inside the
     // same confirm transaction so the claim_status row is never written
     // without an entity_id. This is the point where a confirmed claim becomes
-    // bound to a stable UUIDv7 identity (ADR Decision 3, Task 2.2).
+    // bound to a stable UUIDv7 identity (ADR Decision 3, Task 2.2). Domain is
+    // no longer part of identity (Entity Identity Reform): two claims with the
+    // same subject but different domains bind to the same entity.
     let entity_id =
-        resolve_or_create_entity_in_tx(transaction, &domain, &subject, identity.event_seq)?;
+        resolve_or_create_entity_in_tx(transaction, &subject, identity.event_seq)?;
     let confirmation = ConfirmationObject {
         kind: "claim_confirmation".to_owned(),
         claim: ClaimRecord {
@@ -7634,49 +7654,45 @@ fn decrypt_text_span(
 // a former subject string or external id keeps resolving after a rename/merge.
 // =============================================================================
 
-/// Resolve `(domain, subject)` to an entity_id inside the given transaction,
-/// minting a new entity (and a `canonical` alias) if none exists yet. Used by
+/// Resolve `subject` to an entity_id inside the given transaction, minting a
+/// new entity (and a `canonical` alias) if none exists yet. Used by
 /// `finish_confirmation` so every confirmed claim is bound to a stable entity
 /// in the same transaction that writes its `claim_status` row.
+///
+/// Entity Identity Reform: domain is no longer part of identity (Wikidata
+/// pattern). Two claims with the same subject but different domains resolve
+/// to the same entity_id.
 fn resolve_or_create_entity_in_tx(
     connection: &Connection,
-    domain: &str,
     subject: &str,
     event_seq: u64,
 ) -> Result<Uuid> {
-    if let Some(entity_id) = resolve_entity_in_tx(connection, domain, subject)? {
+    if let Some(entity_id) = resolve_entity_in_tx(connection, subject)? {
         return Ok(entity_id);
     }
     let entity_id = Uuid::now_v7();
     connection
         .execute(
-            "INSERT INTO entities(entity_id,domain,canonical_subject,created_at) VALUES (?1,?2,?3,?4)",
-            params![entity_id.to_string(), domain, subject, now_rfc3339()],
+            "INSERT INTO entities(entity_id,canonical_subject,created_at) VALUES (?1,?2,?3)",
+            params![entity_id.to_string(), subject, now_rfc3339()],
         )
         .map_err(database_error)?;
-    insert_alias(
-        connection,
-        domain,
-        subject,
-        entity_id,
-        "canonical",
-        event_seq,
-    )?;
+    insert_alias(connection, subject, entity_id, "canonical", event_seq)?;
     Ok(entity_id)
 }
 
-/// Resolve `(domain, alias)` to an entity_id by checking both the canonical
-/// subject column and the `entity_aliases` table (former subjects + external
-/// ids). Returns `None` if no entity has ever held this string in this domain.
+/// Resolve `alias` to an entity_id by checking the `entity_aliases` table
+/// (former subjects + external ids + canonical). Returns `None` if no entity
+/// has ever held this string. Domain-independent since the Entity Identity
+/// Reform.
 fn resolve_entity_in_tx(
     connection: &Connection,
-    domain: &str,
     alias: &str,
 ) -> Result<Option<Uuid>> {
     let row: Option<(String,)> = connection
         .query_row(
-            "SELECT entity_id FROM entity_aliases WHERE domain=?1 AND alias=?2 ORDER BY aliased_at_event_seq DESC LIMIT 1",
-            params![domain, alias],
+            "SELECT entity_id FROM entity_aliases WHERE alias=?1 ORDER BY aliased_at_event_seq DESC LIMIT 1",
+            params![alias],
             |row| Ok((row.get::<_, String>(0)?,)),
         )
         .optional()
@@ -7689,7 +7705,6 @@ fn resolve_entity_in_tx(
 
 fn insert_alias(
     connection: &Connection,
-    domain: &str,
     alias: &str,
     entity_id: Uuid,
     kind: &str,
@@ -7697,8 +7712,8 @@ fn insert_alias(
 ) -> Result<()> {
     connection
         .execute(
-            "INSERT OR IGNORE INTO entity_aliases(domain,alias,entity_id,kind,aliased_at_event_seq) VALUES (?1,?2,?3,?4,?5)",
-            params![domain, alias, entity_id.to_string(), kind, event_seq as i64],
+            "INSERT OR IGNORE INTO entity_aliases(alias,entity_id,kind,aliased_at_event_seq) VALUES (?1,?2,?3,?4)",
+            params![alias, entity_id.to_string(), kind, event_seq as i64],
         )
         .map_err(database_error)?;
     Ok(())

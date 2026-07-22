@@ -394,20 +394,49 @@ fn rewrite_marker_schema_version(root: &Path, to: u8) {
 }
 
 /// Stage a v3 store: `fixture()` creates a fresh store (at whatever
-/// `CURRENT_DISK_SCHEMA_VERSION` is), close it, then rewrite its on-disk
-/// marker to schema_version=3. Returns the parent tempdir + the store root so
-/// the test can `open_for_upgrade()` against the staged v3 state. Pinning the
-/// marker to 3 here (rather than relying on the fresh-store version) keeps the
-/// v3→v4 tests truthful regardless of the constant's value.
+/// `CURRENT_DISK_SCHEMA_VERSION` is — v4 after Task 6), close it, then
+/// rewrite its on-disk marker to schema_version=3 AND recreate the
+/// `entities`/`entity_aliases` tables in their v3 shape (with the `domain`
+/// column and the old composite constraints). Returns the parent tempdir +
+/// the store root so the test can `open_for_upgrade()` against a GENUINE v3
+/// store — both the marker and the table shapes are v3. This is essential for
+/// the forward/reverse migration tests, which inject legacy rows that include
+/// the `domain` column.
 fn fixture_at_v3() -> (TempDir, std::path::PathBuf) {
     let parent = tempfile::tempdir().expect("fixture parent");
     let root = parent.path().join("semantic-store");
     let (_store, _admin) =
         SemanticStore::create(&root, enabled(parent.path())).expect("create");
-    // `_store` dropped here — closes the connection so the marker file is
-    // not contended when we rewrite it.
+    // `_store` dropped here — closes the connection so the SQLite file is
+    // not contended when we rewrite the marker + recreate tables.
     drop(_store);
     rewrite_marker_schema_version(&root, 3);
+    // Recreate the entities + entity_aliases tables in v3 shape. The fresh
+    // store's tables are v4 (no domain column); the migration tests need the
+    // v3 shape to inject legacy fragmented rows.
+    let conn = rusqlite::Connection::open(root.join("semantic.sqlite3"))
+        .expect("open for v3 table recreation");
+    conn.execute_batch(
+        "DROP TABLE entities;\
+         CREATE TABLE entities(\
+           entity_id TEXT PRIMARY KEY,\
+           domain TEXT NOT NULL,\
+           canonical_subject TEXT NOT NULL,\
+           created_at TEXT NOT NULL,\
+           UNIQUE(domain, canonical_subject)\
+         );\
+         DROP TABLE entity_aliases;\
+         CREATE TABLE entity_aliases(\
+           domain TEXT NOT NULL,\
+           alias TEXT NOT NULL,\
+           entity_id TEXT NOT NULL,\
+           kind TEXT NOT NULL,\
+           aliased_at_event_seq INTEGER NOT NULL,\
+           PRIMARY KEY(domain, alias, entity_id)\
+         );",
+    )
+    .expect("recreate v3-shaped tables");
+    drop(conn);
     assert_eq!(
         read_marker_schema_version(&root),
         3,
@@ -676,4 +705,32 @@ fn v3_to_v4_rollback_restores_domain_column() {
         aliases_cols.iter().any(|c| c == "domain"),
         "entity_aliases.domain must be restored after rollback; cols = {aliases_cols:?}"
     );
+}
+
+/// Phase Reform Task 6: a freshly-created store is at schema_version 4 and
+/// its entities table has no `domain` column.
+#[test]
+fn fresh_store_is_at_v4_without_domain_column() {
+    use llm_wiki::semantic::CURRENT_DISK_SCHEMA_VERSION;
+    use rusqlite::Connection;
+
+    let parent = tempfile::tempdir().expect("fixture parent");
+    let root = parent.path().join("semantic-store");
+    let (store, _admin) =
+        SemanticStore::create(&root, enabled(parent.path())).expect("create");
+
+    assert_eq!(CURRENT_DISK_SCHEMA_VERSION, 4);
+    assert_eq!(store.schema_version(), 4);
+
+    let db_path = root.join("semantic.sqlite3");
+    drop(store);
+    let conn = Connection::open(&db_path).expect("open");
+    let has_domain_column: bool = conn
+        .prepare("PRAGMA table_info(entities)")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|col: String| col == "domain");
+    assert!(!has_domain_column, "fresh v4 store must not have entities.domain");
 }
