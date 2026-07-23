@@ -876,3 +876,71 @@ fn v4_to_v5_forward_installs_fts5_and_backfills() {
         .collect();
     assert!(drift.is_empty(), "FTS5 integrity-check must report no drift, got: {drift:?}");
 }
+
+// =============================================================================
+// FTS5 Task 5 — reverse v5→v4 migration body
+// =============================================================================
+
+/// FTS5 Task 5: v4→v5→v4 round trip drops the FTS5 artifacts and the
+/// value_flat column cleanly, leaving a v4-shaped claim_status. Rehearses the
+/// operator rollback path documented in the spec §Migration Plan.
+#[test]
+fn v4_to_v5_to_v4_round_trip_drops_fts5_artifacts() {
+    use llm_wiki::semantic::{SemanticConfig, SemanticStore};
+    let parent = tempfile::tempdir().expect("fixture parent");
+    let root = parent.path().join("semantic-store");
+    let (store, _admin) =
+        SemanticStore::create(&root, SemanticConfig::enabled_for(parent.path()))
+            .expect("create");
+    let plan = store.plan_schema_upgrade(4, 5).expect("plan v4→v5");
+    store.execute_schema_upgrade(&plan).expect("execute v4→v5");
+    drop(store); // release the file handle before reopening
+
+    // Roll back to v4 using the original plan (remembers from=4, to=5).
+    let upgraded =
+        SemanticStore::open_for_upgrade(&root, SemanticConfig::enabled_for(parent.path()))
+            .expect("reopen at v5");
+    upgraded.rollback_schema_upgrade(&plan).expect("rollback v5→v4");
+    drop(upgraded);
+
+    // On-disk marker must be back at v4.
+    assert_eq!(
+        read_marker_schema_version(&root),
+        4,
+        "on-disk marker must be at v4 after rollback"
+    );
+
+    // FTS5 virtual table + three triggers must be gone; value_flat column gone.
+    let db_path = root.join("semantic.sqlite3");
+    let conn = rusqlite::Connection::open(&db_path).expect("open raw conn");
+
+    let fts_exists: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='claim_search_fts'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query fts existence");
+    assert_eq!(fts_exists, 0, "claim_search_fts must be dropped on rollback");
+
+    let trig_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'claim_status_%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query trigger count");
+    assert_eq!(trig_count, 0, "all claim_status_* triggers must be dropped on rollback");
+
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(claim_status)")
+        .expect("prepare pragma")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("query_map")
+        .filter_map(|r| r.ok())
+        .collect();
+    assert!(
+        !cols.iter().any(|c| c == "value_flat"),
+        "value_flat column must be dropped on rollback, got cols: {cols:?}"
+    );
+}

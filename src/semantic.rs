@@ -6678,6 +6678,21 @@ fn validate_database_identity(
             // is exactly what plan_schema_upgrade(from) expects.
             return Ok(());
         }
+        // Post-upgrade rollback window: the operator just ran
+        // `execute_schema_upgrade` (which advanced the on-disk marker to
+        // `to_version`) and now wants to roll it back. Until the binary's
+        // CURRENT_DISK_SCHEMA_VERSION is bumped to match (Task 6 for the
+        // v4→v5 FTS5 migration), the marker is NEWER than the binary. The
+        // upgrade CLI (`open_for_upgrade`) must tolerate this so
+        // `rollback_schema_upgrade` can run — provided the binary can reach
+        // the marker's version via a known forward chain. Genuinely
+        // unsupported (no path) still fails closed below.
+        let marker_ahead_reachable = matches!(gate, GateBehavior::UpgradeOnly)
+            && marker.schema_version > CURRENT_DISK_SCHEMA_VERSION
+            && schema_upgrade_reachable(CURRENT_DISK_SCHEMA_VERSION, marker.schema_version);
+        if marker_ahead_reachable {
+            return Ok(());
+        }
         if has_path {
             return Err(SemanticError::CorruptLedger(format!(
                 "store schema_version {} is older than binary schema_version {}; a migration \
@@ -7237,6 +7252,56 @@ fn run_entity_identity_reform_reverse(transaction: &Transaction) -> Result<()> {
     Ok(())
 }
 
+/// FTS5 reverse migration (v5 → v4). Drops the sync triggers, the FTS5 virtual
+/// table, and the value_flat column (via claim_status table-recreation).
+/// Runs inside the caller's transaction. Rehearsed by the v4→v5→v4 round-trip
+/// test in tests/semantic_migration_v1.rs.
+///
+/// Drop order matters: triggers first (so no AFTER-trigger fires while we
+/// rewrite the table), then the FTS5 table (it references claim_status), then
+/// claim_status itself (recreated without value_flat).
+fn run_fts5_reverse(transaction: &Transaction<'_>) -> Result<()> {
+    // Step 1: drop triggers first (so no AFTER-trigger fires while we rewrite
+    // the table).
+    transaction.execute("DROP TRIGGER IF EXISTS claim_status_au", []).map_err(database_error)?;
+    transaction.execute("DROP TRIGGER IF EXISTS claim_status_ad", []).map_err(database_error)?;
+    transaction.execute("DROP TRIGGER IF EXISTS claim_status_ai", []).map_err(database_error)?;
+    // Step 2: drop the FTS5 virtual table.
+    transaction.execute("DROP TABLE IF EXISTS claim_search_fts", []).map_err(database_error)?;
+
+    // Step 3: recreate claim_status WITHOUT value_flat (same table-recreation
+    // pattern as run_entity_identity_reform_reverse).
+    transaction.execute(
+        "CREATE TABLE claim_status_fts5_rollback(\
+            claim_id TEXT PRIMARY KEY,\
+            domain TEXT NOT NULL,\
+            subject TEXT NOT NULL,\
+            predicate TEXT NOT NULL,\
+            confirmed_event_seq INTEGER NOT NULL,\
+            superseded_by_event_seq INTEGER,\
+            retracted_at_event_seq INTEGER,\
+            entity_id TEXT\
+         )",
+        [],
+    ).map_err(database_error)?;
+    transaction.execute(
+        "INSERT INTO claim_status_fts5_rollback(\
+            claim_id, domain, subject, predicate, confirmed_event_seq,\
+            superseded_by_event_seq, retracted_at_event_seq, entity_id\
+         ) \
+         SELECT claim_id, domain, subject, predicate, confirmed_event_seq,\
+                superseded_by_event_seq, retracted_at_event_seq, entity_id \
+         FROM claim_status",
+        [],
+    ).map_err(database_error)?;
+    transaction.execute("DROP TABLE claim_status", []).map_err(database_error)?;
+    transaction.execute(
+        "ALTER TABLE claim_status_fts5_rollback RENAME TO claim_status",
+        [],
+    ).map_err(database_error)?;
+    Ok(())
+}
+
 /// Runs one `UpgradeStep`'s reverse action inside an open transaction. The
 /// v2→v3 noop reverse is also a noop for the data layer, but it DOES wipe
 /// the per-step audit row written by `run_upgrade_step_forward` so the
@@ -7261,6 +7326,11 @@ fn run_upgrade_step_reverse(
     // defaulting to "" when no claim exists.
     if (from_version, to_version) == (3, 4) && forward_index == 0 {
         run_entity_identity_reform_reverse(transaction)?;
+    }
+
+    // FTS5 Task 5: reverse the v4→v5 migration (drop triggers + FTS + value_flat).
+    if (from_version, to_version) == (4, 5) && forward_index == 0 {
+        run_fts5_reverse(transaction)?;
     }
 
     let audit_key = format!("upgrade_step_{forward_index}_to_v{to_version}");
