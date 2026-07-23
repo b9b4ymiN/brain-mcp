@@ -857,45 +857,28 @@ pub fn handle_brain_search(server: &McpServer, args: &Map<String, Value>) -> Too
     let Some(store) = &server.semantic_store else {
         return Err("brain not initialized".to_owned());
     };
-    let query = arg_str_req(args, "query")?.to_lowercase();
-    let domain_filter = arg_str(args, "domain");
+    let query = arg_str_req(args, "query")?;
+    let domain = arg_str(args, "domain");
     let top_k = arg_usize(args, "top_k").unwrap_or(10);
 
-    let head = store.ledger_head().map_err(|e| format!("{e}"))?;
-    let claims = store
-        .all_claims_current(head, chrono::Utc::now())
+    // Delegate to FTS5-backed search. The query is passed through verbatim —
+    // FTS5 (trigram tokenizer) handles its own tokenization, so lowercasing
+    // here would break phrase queries and is unnecessary.
+    let hits = store
+        .search_claims(&query, domain.as_deref(), top_k)
         .map_err(|e| format!("{e}"))?;
-
-    let results: Vec<serde_json::Value> = claims
-        .active
-        .iter()
-        .filter(|c| {
-            if let Some(ref d) = domain_filter
-                && c.domain != *d
-            {
-                return false;
-            }
-            c.subject.to_lowercase().contains(&query) || c.predicate.to_lowercase().contains(&query)
-        })
-        .take(top_k)
-        .map(|c| {
-            serde_json::json!({
-                "claim_id": c.claim_id,
-                "subject": c.subject,
-                "predicate": c.predicate,
-                "value": c.value,
-                "domain": c.domain,
-                "origin": format!("{:?}", c.origin),
-                "provenance": c.provenance_kind,
-                "entity_id": c.entity_id,
-            })
-        })
-        .collect();
 
     let payload = serde_json::json!({
         "query": query,
-        "count": results.len(),
-        "results": results,
+        "count": hits.len(),
+        "results": hits.iter().map(|h| serde_json::json!({
+            "claim_id": h.claim_id,
+            "subject": h.subject,
+            "predicate": h.predicate,
+            "value": h.value,
+            "domain": h.domain,
+            "score": h.score,
+        })).collect::<Vec<_>>(),
     });
     let s = serde_json::to_string_pretty(&payload).map_err(|e| format!("{e}"))?;
     ok_text(s)
