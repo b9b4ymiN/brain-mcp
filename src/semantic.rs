@@ -7855,6 +7855,10 @@ fn build_confirmation_material(
         valid_from,
         valid_to,
     } = proposal.draft;
+    // FTS5: compute value_flat so newly-confirmed claims are searchable by
+    // value terms. Computed here (before `value` is moved into
+    // ConfirmationObject below) because flatten_json borrows it.
+    let value_flat = flatten_json(&value);
     // Resolve (or lazily create) the entity this claim attaches to, inside the
     // same confirm transaction so the claim_status row is never written
     // without an entity_id. This is the point where a confirmed claim becomes
@@ -7897,10 +7901,13 @@ fn build_confirmation_material(
             params![proposal_id.to_string(), claim_id.to_string()],
         )
         .map_err(database_error)?;
+    // value_flat is written here; the claim_search_fts FTS row itself is
+    // populated by the claim_status_ai AFTER INSERT trigger (installed by the
+    // v4→v5 migration / fresh-store DDL), keeping the write path single-site.
     transaction
         .execute(
-            "INSERT INTO claim_status(claim_id,domain,subject,predicate,confirmed_event_seq,superseded_by_event_seq,retracted_at_event_seq,entity_id) VALUES (?1,?2,?3,?4,?5,NULL,NULL,?6)",
-            params![claim_id.to_string(), domain_for_claim, subject, predicate, identity.event_seq as i64, entity_id.to_string()],
+            "INSERT INTO claim_status(claim_id,domain,subject,predicate,confirmed_event_seq,superseded_by_event_seq,retracted_at_event_seq,entity_id,value_flat) VALUES (?1,?2,?3,?4,?5,NULL,NULL,?6,?7)",
+            params![claim_id.to_string(), domain_for_claim, subject, predicate, identity.event_seq as i64, entity_id.to_string(), value_flat],
         )
         .map_err(database_error)?;
     for superseded_id in &superseded_claim_ids {
