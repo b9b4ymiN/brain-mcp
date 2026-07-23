@@ -445,6 +445,71 @@ fn fixture_at_v3() -> (TempDir, std::path::PathBuf) {
     (parent, root)
 }
 
+/// Stage a v4 store: `SemanticStore::create` produces a fresh store at
+/// `CURRENT_DISK_SCHEMA_VERSION` (v5 after the FTS5 Task 6 bump), close it,
+/// then rewrite its on-disk marker to schema_version=4 AND restore the
+/// `claim_status` table to its v4 shape (8 columns, NO `value_flat`) and drop
+/// the three `claim_status_*` sync triggers + the `claim_search_fts` virtual
+/// table that the fresh-store DDL installed. Returns the parent tempdir + the
+/// store root so the v4→v5 tests can `open_for_upgrade()` against a GENUINE v4
+/// store — both the marker and the FTS5 artifact shape are v4. This mirrors
+/// [`fixture_at_v3`] and is essential after Task 6: without staging, a test
+/// that calls `plan_schema_upgrade(4, 5)` against a fresh store fails with
+/// "plan from=4 does not match live marker schema_version=5" rather than
+/// exercising the v4→v5 path it claims to test. The v4 `claim_status` shape
+/// here is byte-identical to what `run_fts5_reverse` produces (see
+/// `claim_status_fts5_rollback` in src/semantic.rs).
+fn fixture_at_v4() -> (TempDir, std::path::PathBuf) {
+    let parent = tempfile::tempdir().expect("fixture parent");
+    let root = parent.path().join("semantic-store");
+    let (_store, _admin) =
+        SemanticStore::create(&root, enabled(parent.path())).expect("create");
+    // `_store` dropped here — closes the connection so the SQLite file is
+    // not contended when we rewrite the marker + restore v4 table shapes.
+    drop(_store);
+    rewrite_marker_schema_version(&root, 4);
+    // Restore the v4 FTS5 artifact shape: drop the triggers first (so no
+    // AFTER-trigger fires while we rewrite claim_status), drop the FTS5
+    // virtual table, then recreate claim_status WITHOUT value_flat. The
+    // fresh store's claim_status is empty, so the INSERT INTO ... SELECT
+    // carries zero rows but preserves the exact column list for shape parity.
+    let conn = rusqlite::Connection::open(root.join("semantic.sqlite3"))
+        .expect("open for v4 table recreation");
+    conn.execute_batch(
+        "DROP TRIGGER IF EXISTS claim_status_au;\
+         DROP TRIGGER IF EXISTS claim_status_ad;\
+         DROP TRIGGER IF EXISTS claim_status_ai;\
+         DROP TABLE IF EXISTS claim_search_fts;\
+         CREATE TABLE claim_status_fts5_reform(\
+           claim_id TEXT PRIMARY KEY,\
+           domain TEXT NOT NULL,\
+           subject TEXT NOT NULL,\
+           predicate TEXT NOT NULL,\
+           confirmed_event_seq INTEGER NOT NULL,\
+           superseded_by_event_seq INTEGER,\
+           retracted_at_event_seq INTEGER,\
+           entity_id TEXT\
+         );\
+         INSERT INTO claim_status_fts5_reform(\
+           claim_id, domain, subject, predicate, confirmed_event_seq,\
+           superseded_by_event_seq, retracted_at_event_seq, entity_id\
+         ) \
+         SELECT claim_id, domain, subject, predicate, confirmed_event_seq,\
+                superseded_by_event_seq, retracted_at_event_seq, entity_id \
+         FROM claim_status;\
+         DROP TABLE claim_status;\
+         ALTER TABLE claim_status_fts5_reform RENAME TO claim_status;",
+    )
+    .expect("restore v4-shaped claim_status");
+    drop(conn);
+    assert_eq!(
+        read_marker_schema_version(&root),
+        4,
+        "test setup: marker staged at v4"
+    );
+    (parent, root)
+}
+
 /// Phase Reform Task 1: the v3→v4 upgrade path is recognized as a known
 /// migration route. Pre-Task-1 this returned `unsupported schema upgrade
 /// path` because only `(2, 3)` was in the predicate's match; the `(3, 4)` arm
@@ -707,10 +772,14 @@ fn v3_to_v4_rollback_restores_domain_column() {
     );
 }
 
-/// Phase Reform Task 6: a freshly-created store is at schema_version 4 and
-/// its entities table has no `domain` column.
+/// Phase Reform Task 6 (refreshed after FTS5 Task 6): a freshly-created store
+/// is at schema_version 5, its entities table has no `domain` column (the
+/// Entity Identity Reform is still in force), AND the FTS5 artifacts are
+/// already present in the fresh-store DDL (the version-gate flip in FTS5 Task
+/// 6 means new stores are created at v5 with FTS5 baked in, not migrated to
+/// it). The version-constant assertion locks the gate at 5.
 #[test]
-fn fresh_store_is_at_v4_without_domain_column() {
+fn fresh_store_is_at_v5_without_domain_column() {
     use llm_wiki::semantic::CURRENT_DISK_SCHEMA_VERSION;
     use rusqlite::Connection;
 
@@ -719,8 +788,8 @@ fn fresh_store_is_at_v4_without_domain_column() {
     let (store, _admin) =
         SemanticStore::create(&root, enabled(parent.path())).expect("create");
 
-    assert_eq!(CURRENT_DISK_SCHEMA_VERSION, 4);
-    assert_eq!(store.schema_version(), 4);
+    assert_eq!(CURRENT_DISK_SCHEMA_VERSION, 5);
+    assert_eq!(store.schema_version(), 5);
 
     let db_path = root.join("semantic.sqlite3");
     drop(store);
@@ -732,7 +801,45 @@ fn fresh_store_is_at_v4_without_domain_column() {
         .unwrap()
         .filter_map(Result::ok)
         .any(|col: String| col == "domain");
-    assert!(!has_domain_column, "fresh v4 store must not have entities.domain");
+    assert!(!has_domain_column, "fresh v5 store must not have entities.domain");
+
+    // The fresh store must carry the FTS5 artifacts (the v5 DDL in
+    // initialize_schema mirrors what run_fts5_forward produces). This is the
+    // byte-equivalence guarantee the version-gate flip relies on: a freshly
+    // created v5 store and a v4→v5 migrated store are indistinguishable.
+    let fts_exists: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='claim_search_fts'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query fts existence");
+    assert_eq!(
+        fts_exists, 1,
+        "fresh v5 store must have claim_search_fts in its DDL"
+    );
+    let trig_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'claim_status_%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query trigger count");
+    assert_eq!(
+        trig_count, 3,
+        "fresh v5 store must have all three claim_status_* triggers"
+    );
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(claim_status)")
+        .expect("prepare pragma")
+        .query_map([], |row| row.get::<_, String>(1))
+        .expect("query_map")
+        .filter_map(|r| r.ok())
+        .collect();
+    assert!(
+        cols.iter().any(|c| c == "value_flat"),
+        "fresh v5 store must have the value_flat column, got cols: {cols:?}"
+    );
 }
 
 // =============================================================================
@@ -741,19 +848,22 @@ fn fresh_store_is_at_v4_without_domain_column() {
 
 /// FTS5 Task 1: the v4→v5 upgrade path is recognized as a known migration
 /// route. Precondition for every subsequent migration step —
-/// `plan_schema_upgrade(4, 5)` must succeed. Today it fails with "unsupported
-/// schema upgrade path" because only (2,3) and (3,4) are in the match.
+/// `plan_schema_upgrade(4, 5)` must succeed. The store is staged at v4 via
+/// [`fixture_at_v4`] so the plan runs against a GENUINE v4 marker (after the
+/// FTS5 Task 6 bump, a fresh `SemanticStore::create` is at v5, which would fail
+/// the from-version check — `plan from=4 does not match live marker
+/// schema_version=5`).
 #[test]
 fn v4_to_v5_upgrade_path_is_known() {
-    use llm_wiki::semantic::{SemanticConfig, SemanticStore};
-    let parent = tempfile::tempdir().expect("fixture parent");
-    let root = parent.path().join("semantic-store");
-    let (store, _admin) =
-        SemanticStore::create(&root, SemanticConfig::enabled_for(parent.path()))
-            .expect("create");
-    // A fresh store is at CURRENT_DISK_SCHEMA_VERSION (4 today, 5 after Task 6).
-    // The plan call must succeed, not return the "unsupported path" error.
-    // We use from=4 explicitly to lock the predicate arm.
+    let (_parent, root) = fixture_at_v4();
+    let store = SemanticStore::open_for_upgrade(&root, enabled(_parent.path()))
+        .expect("open staged v4");
+    assert_eq!(
+        store.schema_version(),
+        4,
+        "live marker is at v4 pre-upgrade"
+    );
+
     let plan = store.plan_schema_upgrade(4, 5);
     assert!(
         plan.is_ok(),
@@ -764,14 +874,13 @@ fn v4_to_v5_upgrade_path_is_known() {
 /// FTS5 Task 2: planning a v4→v5 upgrade yields a reversible plan whose step
 /// description names the FTS5 index + value_flat column + sync triggers. The
 /// plan must advertise reversibility or `execute_schema_upgrade` will refuse it.
+/// Staged at v4 via [`fixture_at_v4`] for the same reason as
+/// [`v4_to_v5_upgrade_path_is_known`].
 #[test]
 fn v4_to_v5_plan_is_reversible_and_names_fts5() {
-    use llm_wiki::semantic::{SemanticConfig, SemanticStore};
-    let parent = tempfile::tempdir().expect("fixture parent");
-    let root = parent.path().join("semantic-store");
-    let (store, _admin) =
-        SemanticStore::create(&root, SemanticConfig::enabled_for(parent.path()))
-            .expect("create");
+    let (_parent, root) = fixture_at_v4();
+    let store = SemanticStore::open_for_upgrade(&root, enabled(_parent.path()))
+        .expect("open staged v4");
     let plan = store.plan_schema_upgrade(4, 5).expect("plan v4→v5");
     assert!(plan.is_reversible(), "v4→v5 plan must be reversible");
     assert_eq!(plan.steps.len(), 1, "v4→v5 is one step");
@@ -793,15 +902,15 @@ fn v4_to_v5_plan_is_reversible_and_names_fts5() {
 
 /// FTS5 Task 4: forward v4→v5 migration installs the FTS5 virtual table, the
 /// value_flat column, the three sync triggers, and backfills the index from
-/// existing claim_status rows.
+/// existing claim_status rows. Staged at v4 via [`fixture_at_v4`] (after the
+/// Task 6 bump a fresh store is v5, so `execute_schema_upgrade(4, 5)` would
+/// refuse it — from-version mismatch).
 #[test]
 fn v4_to_v5_forward_installs_fts5_and_backfills() {
-    use llm_wiki::semantic::{SemanticConfig, SemanticStore};
-    let parent = tempfile::tempdir().expect("fixture parent");
-    let root = parent.path().join("semantic-store");
-    let (store, _admin) =
-        SemanticStore::create(&root, SemanticConfig::enabled_for(parent.path()))
-            .expect("create");
+    let (_parent, root) = fixture_at_v4();
+    let store = SemanticStore::open_for_upgrade(&root, enabled(_parent.path()))
+        .expect("open staged v4");
+    assert_eq!(store.schema_version(), 4, "live marker is at v4 pre-upgrade");
 
     // Stage a real claim_status row (v4 shape: no value_flat) so the backfill
     // and trigger paths are actually exercised. Without this the FTS5 rowid
@@ -883,15 +992,15 @@ fn v4_to_v5_forward_installs_fts5_and_backfills() {
 
 /// FTS5 Task 5: v4→v5→v4 round trip drops the FTS5 artifacts and the
 /// value_flat column cleanly, leaving a v4-shaped claim_status. Rehearses the
-/// operator rollback path documented in the spec §Migration Plan.
+/// operator rollback path documented in the spec §Migration Plan. Staged at v4
+/// via [`fixture_at_v4`] for the same reason as
+/// [`v4_to_v5_forward_installs_fts5_and_backfills`].
 #[test]
 fn v4_to_v5_to_v4_round_trip_drops_fts5_artifacts() {
-    use llm_wiki::semantic::{SemanticConfig, SemanticStore};
-    let parent = tempfile::tempdir().expect("fixture parent");
-    let root = parent.path().join("semantic-store");
-    let (store, _admin) =
-        SemanticStore::create(&root, SemanticConfig::enabled_for(parent.path()))
-            .expect("create");
+    let (_parent, root) = fixture_at_v4();
+    let store = SemanticStore::open_for_upgrade(&root, enabled(_parent.path()))
+        .expect("open staged v4");
+    assert_eq!(store.schema_version(), 4, "live marker is at v4 pre-upgrade");
 
     // Stage a real claim_status row so the rollback's table-recreation
     // (INSERT INTO claim_status_fts5_rollback(...) SELECT ... FROM claim_status)
@@ -905,7 +1014,7 @@ fn v4_to_v5_to_v4_round_trip_drops_fts5_artifacts() {
 
     // Roll back to v4 using the original plan (remembers from=4, to=5).
     let upgraded =
-        SemanticStore::open_for_upgrade(&root, SemanticConfig::enabled_for(parent.path()))
+        SemanticStore::open_for_upgrade(&root, enabled(_parent.path()))
             .expect("reopen at v5");
     upgraded.rollback_schema_upgrade(&plan).expect("rollback v5→v4");
     drop(upgraded);

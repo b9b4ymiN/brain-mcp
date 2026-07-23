@@ -83,9 +83,14 @@ const VALID_CLIENT_CAPABILITIES: &[&str] = &["confirm", "purge", "propose"];
 ///         entity_aliases PK; consolidate fragmented subjects). The v3→v4
 ///         migration is the first NON-noop upgrade: it both rewrites data
 ///         (consolidation) and changes constraints (table recreation).
+///   * 5 — FTS5 `brain_search` (add `value_flat` to claim_status; create the
+///         `claim_search_fts` external-content table over claim_status with
+///         the trigram tokenizer; install `claim_status_ai`/`_ad`/`_au`
+///         sync triggers). The v4→v5 migration is a DDL + backfill upgrade
+///         (no data loss); `value_flat` defaults to '' for pre-existing rows.
 ///
 /// A store created under an older schema_version that has a known migration
-/// path (today: 2 → 3, 3 → 4) refuses to serve until an operator runs
+/// path (today: 2 → 3, 3 → 4, 4 → 5) refuses to serve until an operator runs
 /// `llm-wiki recovery upgrade`; an older version with NO migration path
 /// still fails closed (see `validate_database_identity`).
 ///
@@ -94,7 +99,7 @@ const VALID_CLIENT_CAPABILITIES: &[&str] = &["confirm", "purge", "propose"];
 /// of an event has not changed (same `EventEnvelope` JSON shape), so events
 /// keep `schema_version: 1` to stay valid against the hash-locked
 /// `event-schema-v1.json` contract.
-pub const CURRENT_DISK_SCHEMA_VERSION: u8 = 4;
+pub const CURRENT_DISK_SCHEMA_VERSION: u8 = 5;
 /// Event wire-format version (unchanged since the schema was hash-locked in
 /// Task 0.2). Kept as a named constant rather than a literal so the next
 /// genuine wire break is a one-line change with a clear audit trail.
@@ -6488,7 +6493,13 @@ fn initialize_schema(
                -- Task 2.2: stable entity this claim resolves to. Populated at
                -- confirm time; nullable only for rows backfilled from legacy
                -- stores (none in production — Task 2.3 territory).
-               entity_id TEXT
+               entity_id TEXT,
+               -- FTS5 Task 6 (schema v5): flattened, tokenizable copy of the
+               -- claim value for brain_search. Mirrors the column added by
+               -- run_fts5_forward's v4→v5 migration. Defaults to '' so legacy
+               -- INSERTs that omit it still work (the migration cannot decrypt
+               -- event payloads to populate it for pre-existing rows).
+               value_flat TEXT NOT NULL DEFAULT ''
              );
              -- Task 2.2 entity model (ADR Decision 3, Entity Identity Reform
              -- v4). One stable UUIDv7 per canonical_subject — domain is no
@@ -6587,6 +6598,47 @@ fn initialize_schema(
                invalidated_at TEXT
              );
              COMMIT;",
+        )
+        .map_err(database_error)?;
+    // FTS5 Task 6 (schema v5): create the `claim_search_fts` full-text index
+    // + sync triggers for fresh stores. This block MUST be byte-equivalent to
+    // what `run_fts5_forward` produces for the v4→v5 migration — a freshly
+    // created v5 store and a v4→v5 migrated store are indistinguishable in
+    // their FTS5 artifacts. The trigger bodies are copied verbatim from
+    // `run_fts5_forward` (the reviewed-and-fixed version); do NOT hand-edit.
+    //
+    // External-content table: stores only the inverted index, pulls column
+    // values from claim_status on demand. trigram tokenizer matches all
+    // scripts (Thai/CJK/English); porter unicode61 would collapse unspaced
+    // Thai into one oversized token. content_rowid omitted → defaults to the
+    // content table's implicit INTEGER rowid (claim_status.claim_id is TEXT;
+    // mapping content_rowid to it would collide UUIDs sharing a numeric
+    // prefix). No backfill INSERT needed here — claim_status is empty on a
+    // fresh store.
+    connection
+        .execute_batch(
+            "CREATE VIRTUAL TABLE claim_search_fts USING fts5(\
+                subject,\
+                predicate,\
+                value_flat,\
+                domain,\
+                content='claim_status',\
+                tokenize = 'trigram'\
+             );\
+             CREATE TRIGGER claim_status_ai AFTER INSERT ON claim_status BEGIN \
+                INSERT INTO claim_search_fts(rowid, subject, predicate, value_flat, domain) \
+                VALUES (new.rowid, new.subject, new.predicate, new.value_flat, new.domain); \
+             END;\
+             CREATE TRIGGER claim_status_ad AFTER DELETE ON claim_status BEGIN \
+                INSERT INTO claim_search_fts(claim_search_fts, rowid, subject, predicate, value_flat, domain) \
+                VALUES('delete', old.rowid, old.subject, old.predicate, old.value_flat, old.domain); \
+             END;\
+             CREATE TRIGGER claim_status_au AFTER UPDATE ON claim_status BEGIN \
+                INSERT INTO claim_search_fts(claim_search_fts, rowid, subject, predicate, value_flat, domain) \
+                VALUES('delete', old.rowid, old.subject, old.predicate, old.value_flat, old.domain); \
+                INSERT INTO claim_search_fts(rowid, subject, predicate, value_flat, domain) \
+                VALUES (new.rowid, new.subject, new.predicate, new.value_flat, new.domain); \
+             END;",
         )
         .map_err(database_error)?;
     for (key, value) in [
