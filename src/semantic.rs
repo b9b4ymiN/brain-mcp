@@ -7088,6 +7088,11 @@ fn run_fts5_forward(transaction: &Transaction) -> Result<()> {
         .map_err(database_error)?;
 
     // Step 2: create the FTS5 external-content table with trigram tokenizer.
+    // NOTE: content_rowid is intentionally omitted — it defaults to the
+    // content table's implicit INTEGER rowid. claim_status.claim_id is a TEXT
+    // UUID; mapping content_rowid to it would coerce UUIDs to INTEGER and
+    // collide rows sharing a numeric prefix (01923b8a-... → 1923). The
+    // implicit rowid is a stable unique INTEGER within a schema version.
     transaction
         .execute(
             "CREATE VIRTUAL TABLE claim_search_fts USING fts5(\
@@ -7096,7 +7101,6 @@ fn run_fts5_forward(transaction: &Transaction) -> Result<()> {
                 value_flat,\
                 domain,\
                 content='claim_status',\
-                content_rowid='claim_id',\
                 tokenize = 'trigram'\
              )",
             [],
@@ -7109,7 +7113,7 @@ fn run_fts5_forward(transaction: &Transaction) -> Result<()> {
         .execute(
             "CREATE TRIGGER claim_status_ai AFTER INSERT ON claim_status BEGIN \
                 INSERT INTO claim_search_fts(rowid, subject, predicate, value_flat, domain) \
-                VALUES (new.claim_id, new.subject, new.predicate, new.value_flat, new.domain); \
+                VALUES (new.rowid, new.subject, new.predicate, new.value_flat, new.domain); \
              END",
             [],
         )
@@ -7118,7 +7122,7 @@ fn run_fts5_forward(transaction: &Transaction) -> Result<()> {
         .execute(
             "CREATE TRIGGER claim_status_ad AFTER DELETE ON claim_status BEGIN \
                 INSERT INTO claim_search_fts(claim_search_fts, rowid, subject, predicate, value_flat, domain) \
-                VALUES('delete', old.claim_id, old.subject, old.predicate, old.value_flat, old.domain); \
+                VALUES('delete', old.rowid, old.subject, old.predicate, old.value_flat, old.domain); \
              END",
             [],
         )
@@ -7127,9 +7131,9 @@ fn run_fts5_forward(transaction: &Transaction) -> Result<()> {
         .execute(
             "CREATE TRIGGER claim_status_au AFTER UPDATE ON claim_status BEGIN \
                 INSERT INTO claim_search_fts(claim_search_fts, rowid, subject, predicate, value_flat, domain) \
-                VALUES('delete', old.claim_id, old.subject, old.predicate, old.value_flat, old.domain); \
+                VALUES('delete', old.rowid, old.subject, old.predicate, old.value_flat, old.domain); \
                 INSERT INTO claim_search_fts(rowid, subject, predicate, value_flat, domain) \
-                VALUES (new.claim_id, new.subject, new.predicate, new.value_flat, new.domain); \
+                VALUES (new.rowid, new.subject, new.predicate, new.value_flat, new.domain); \
              END",
             [],
         )
@@ -7139,7 +7143,7 @@ fn run_fts5_forward(transaction: &Transaction) -> Result<()> {
     transaction
         .execute(
             "INSERT INTO claim_search_fts(rowid, subject, predicate, value_flat, domain)\
-             SELECT claim_id, subject, predicate, value_flat, domain FROM claim_status",
+             SELECT rowid, subject, predicate, value_flat, domain FROM claim_status",
             [],
         )
         .map_err(database_error)?;

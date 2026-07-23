@@ -802,17 +802,20 @@ fn v4_to_v5_forward_installs_fts5_and_backfills() {
     let (store, _admin) =
         SemanticStore::create(&root, SemanticConfig::enabled_for(parent.path()))
             .expect("create");
-    // Fresh store is at CURRENT_DISK_SCHEMA_VERSION (4 today; Task 6 bumps to 5).
+
+    // Stage a real claim_status row (v4 shape: no value_flat) so the backfill
+    // and trigger paths are actually exercised. Without this the FTS5 rowid
+    // mapping (implicit rowid, NOT the TEXT claim_id) would never be validated.
+    store.insert_orphan_claim_status_for_test("test-domain", "Reinvent the Wheel", "is");
+
     let plan = store.plan_schema_upgrade(4, 5).expect("plan v4→v5");
     store.execute_schema_upgrade(&plan).expect("execute v4→v5");
+    drop(store); // release the file handle before opening a raw connection
 
-    // Probe: FTS5 artifacts must exist on disk via a raw SQLite connection.
-    // The store's database file lives at <root>/semantic.sqlite3 (see
-    // DATABASE_FILE in src/semantic.rs); opening &root directly would fail.
-    drop(store);
     let db_path = root.join("semantic.sqlite3");
     let conn = rusqlite::Connection::open(&db_path).expect("open raw conn");
 
+    // FTS5 table + 3 triggers + value_flat column exist.
     let fts_exists: i64 = conn
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='claim_search_fts'",
@@ -841,6 +844,27 @@ fn v4_to_v5_forward_installs_fts5_and_backfills() {
     assert!(
         cols.iter().any(|c| c == "value_flat"),
         "value_flat column must exist post-migration, got cols: {cols:?}"
+    );
+
+    // The staged row MUST have been backfilled into the FTS index. This is the
+    // assertion that catches the content_rowid-over-TEXT-PK bug: if the rowid
+    // mapping were broken, the backfill would still insert a row, but a MATCH
+    // on the subject would fail to retrieve it.
+    let fts_rows: i64 = conn
+        .query_row("SELECT count(*) FROM claim_search_fts", [], |row| row.get(0))
+        .expect("count fts rows");
+    assert_eq!(fts_rows, 1, "the staged claim must be backfilled into the FTS index");
+
+    let matched: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM claim_search_fts WHERE claim_search_fts MATCH ?1",
+            ["reinvent"],
+            |row| row.get(0),
+        )
+        .expect("match query");
+    assert_eq!(
+        matched, 1,
+        "MATCH on the subject must find the staged claim (rowid mapping works)"
     );
 
     let drift: Vec<(String,)> = conn
