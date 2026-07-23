@@ -88,8 +88,8 @@ fn search_claims_smoke_finds_confirmed_claim() {
 use std::sync::Arc;
 
 use llm_wiki::semantic::{
-    ClaimDraft, ConfirmCommand, PrivacyLabel, ProposeUserAssertionCommand, SemanticConfig,
-    SemanticStore, SupersedeCommand, TrustedContext,
+    ClaimDraft, ConfirmCommand, PrivacyLabel, ProposeUserAssertionCommand, RetractCommand,
+    SemanticConfig, SemanticStore, SupersedeCommand, TrustedContext,
 };
 use tempfile::TempDir;
 
@@ -486,6 +486,58 @@ fn fts5_superseded_claim_excluded_from_search() {
     assert!(
         hits.iter().all(|h| h.value == serde_json::json!(61)),
         "superseded claim A (value 58) must not appear; got: {hits:?}"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// Test 7b — retracted claims are excluded from search
+// -----------------------------------------------------------------------------
+
+/// Mirror of [`fts5_superseded_claim_excluded_from_search`] for the retract
+/// path. The DoD says "Superseded/retracted claims are excluded" but only the
+/// supersede branch was covered; this locks the retract branch explicitly.
+/// Retracting a confirmed claim sets its `retracted_at_event_seq`, and
+/// `search_claims` filters it out via `retracted_at_event_seq IS NULL`.
+///
+/// Retract API (from src/semantic.rs): `store.retract(&ctx, RetractCommand {
+/// operation_id, claim_operation_id })` where `claim_operation_id` is the
+/// claim's *confirm* operation_id (the op that confirmed it). No new proposal
+/// is required — retract is a direct mutation on an existing confirmed claim.
+#[test]
+fn fts5_retracted_claim_excluded_from_search() {
+    let (_parent, store, ctx) = fts5_fixture();
+
+    // Confirm a claim, then retract it.
+    confirm_claim(
+        &store,
+        &ctx,
+        "p-retract",
+        "c-retract", // <-- this confirm operation_id is what retract references
+        draft(
+            "Retractable Claim",
+            "is",
+            serde_json::json!("active"),
+            Some("status"),
+        ),
+    );
+    store
+        .retract(
+            &ctx,
+            RetractCommand {
+                operation_id: "r-1".to_owned(),
+                claim_operation_id: "c-retract".to_owned(),
+            },
+        )
+        .expect("retract");
+
+    // The subject still tokenizes to "retractable", so without the retracted
+    // filter the row would be a hit. The filter must drop it.
+    let hits = store
+        .search_claims("retractable", None, 10)
+        .expect("search_claims");
+    assert!(
+        hits.iter().all(|h| !h.subject.contains("Retractable")),
+        "retracted claim must not appear in search; got: {hits:?}"
     );
 }
 

@@ -986,6 +986,71 @@ fn v4_to_v5_forward_installs_fts5_and_backfills() {
     assert!(drift.is_empty(), "FTS5 integrity-check must report no drift, got: {drift:?}");
 }
 
+/// Locks the documented Phase A limitation for legacy claim values: the v4→v5
+/// migration backfills `value_flat = ''` for pre-existing claim_status rows
+/// because it runs in the migration transaction WITHOUT access to the event
+/// payloads (which are encrypted/structured and only rehydratable via the
+/// confirm-event lookup). This is called out in the spec, but locking it here
+/// means a future "fix" that changes the backfill value cannot silently slip
+/// through. If a later phase starts populating value_flat for legacy rows
+/// (e.g. by decrypting event payloads during migration), THIS TEST MUST BE
+/// UPDATED — the empty-string assertion is the documented contract.
+///
+/// We cannot assert via `search_claims` here: that path tries to rehydrate the
+/// value from the events table, and the orphan row has no confirmation event,
+/// so it errors (same shape as the Task 8 smoke). Instead we assert on the raw
+/// post-migration DB: value_flat is '' (the limitation), yet the row IS in the
+/// FTS index and reachable by a subject term (search-by-subject works; only
+/// search-by-value-term is limited for legacy rows).
+#[test]
+fn v4_to_v5_legacy_claim_value_flat_is_empty_post_migration() {
+    let (_parent, root) = fixture_at_v4();
+    let store = SemanticStore::open_for_upgrade(&root, enabled(_parent.path()))
+        .expect("open staged v4");
+
+    // Stage a legacy claim_status row (v4 shape: no value_flat). The orphan
+    // helper inserts with confirmed_event_seq=0 and no confirmation event,
+    // i.e. exactly the pre-migration legacy shape.
+    store.insert_orphan_claim_status_for_test("legacy-domain", "Legacy Subject", "is");
+
+    let plan = store.plan_schema_upgrade(4, 5).expect("plan v4→v5");
+    store.execute_schema_upgrade(&plan).expect("execute v4→v5");
+    drop(store); // release the file handle before opening a raw connection
+
+    let db_path = root.join("semantic.sqlite3");
+    let conn = rusqlite::Connection::open(&db_path).expect("open raw conn");
+
+    // The documented limitation: the legacy row's value_flat is the empty
+    // string (the migration could not decrypt the event payload, so it
+    // backfilled '' rather than guessing).
+    let value_flat: String = conn
+        .query_row(
+            "SELECT value_flat FROM claim_status WHERE subject='Legacy Subject'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query value_flat");
+    assert_eq!(
+        value_flat, "",
+        "legacy claim value_flat must be the documented empty-string backfill, got: {value_flat:?}"
+    );
+
+    // The row IS in the FTS index and reachable by its SUBJECT term. Only
+    // value-term search is limited for legacy rows; subject-term search works
+    // because the subject is plaintext on claim_status and backfilled directly.
+    let fts_match: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM claim_search_fts WHERE claim_search_fts MATCH ?1",
+            ["legacy"],
+            |row| row.get(0),
+        )
+        .expect("match query");
+    assert_eq!(
+        fts_match, 1,
+        "the legacy claim must be in the FTS index, reachable by subject term"
+    );
+}
+
 // =============================================================================
 // FTS5 Task 5 — reverse v5→v4 migration body
 // =============================================================================

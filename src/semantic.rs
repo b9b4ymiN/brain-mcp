@@ -6873,10 +6873,11 @@ fn validate_database_identity(
         }
         // Post-upgrade rollback window: the operator just ran
         // `execute_schema_upgrade` (which advanced the on-disk marker to
-        // `to_version`) and now wants to roll it back. Until the binary's
-        // CURRENT_DISK_SCHEMA_VERSION is bumped to match (Task 6 for the
-        // v4→v5 FTS5 migration), the marker is NEWER than the binary. The
-        // upgrade CLI (`open_for_upgrade`) must tolerate this so
+        // `to_version`) and now wants to roll it back. If the marker is NEWER
+        // than the binary's CURRENT_DISK_SCHEMA_VERSION (e.g. a future v6+
+        // marker once the binary ships at v6; the v4→v5 FTS5 bump in Task 6
+        // already raised the binary to v5, so a v5 marker is no longer
+        // "ahead"), the upgrade CLI (`open_for_upgrade`) must tolerate this so
         // `rollback_schema_upgrade` can run — provided the binary can reach
         // the marker's version via a known forward chain. Genuinely
         // unsupported (no path) still fails closed below.
