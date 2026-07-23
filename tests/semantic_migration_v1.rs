@@ -892,6 +892,13 @@ fn v4_to_v5_to_v4_round_trip_drops_fts5_artifacts() {
     let (store, _admin) =
         SemanticStore::create(&root, SemanticConfig::enabled_for(parent.path()))
             .expect("create");
+
+    // Stage a real claim_status row so the rollback's table-recreation
+    // (INSERT INTO claim_status_fts5_rollback(...) SELECT ... FROM claim_status)
+    // is actually exercised — an empty table would pass even with a wrong
+    // column list. Mirrors the forward test's discipline.
+    store.insert_orphan_claim_status_for_test("test-domain", "Reinvent the Wheel", "is");
+
     let plan = store.plan_schema_upgrade(4, 5).expect("plan v4→v5");
     store.execute_schema_upgrade(&plan).expect("execute v4→v5");
     drop(store); // release the file handle before reopening
@@ -943,4 +950,29 @@ fn v4_to_v5_to_v4_round_trip_drops_fts5_artifacts() {
         !cols.iter().any(|c| c == "value_flat"),
         "value_flat column must be dropped on rollback, got cols: {cols:?}"
     );
+
+    // The staged row must survive the round trip (forward migrated it into the
+    // FTS-backed claim_status; reverse dropped value_flat but kept the 8 core
+    // columns). This is the assertion an empty-fixture test could never catch.
+    let surviving: Vec<(String, String, String)> = conn
+        .prepare("SELECT domain, subject, predicate FROM claim_status")
+        .expect("prepare surviving claims")
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .expect("query_map")
+        .filter_map(|r| r.ok())
+        .collect();
+    assert_eq!(
+        surviving.len(),
+        1,
+        "the staged claim must survive the v4→v5→v4 round trip"
+    );
+    assert_eq!(surviving[0].1, "Reinvent the Wheel", "subject preserved");
+    assert_eq!(surviving[0].2, "is", "predicate preserved");
+    assert_eq!(surviving[0].0, "test-domain", "domain preserved");
 }
