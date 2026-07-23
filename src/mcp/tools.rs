@@ -548,7 +548,7 @@ pub fn tool_list() -> Vec<Tool> {
         ),
         Tool::new(
             "brain_search",
-            "Search confirmed claims in the semantic brain",
+            "Search confirmed claims in the semantic brain (BM25-ranked full-text search across subject, predicate, value, and domain)",
             schema(
                 json!({
                     "query": str_prop("Search query (subject or predicate substring)"),

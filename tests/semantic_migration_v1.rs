@@ -1085,3 +1085,37 @@ fn v4_to_v5_to_v4_round_trip_drops_fts5_artifacts() {
     assert_eq!(surviving[0].2, "is", "predicate preserved");
     assert_eq!(surviving[0].0, "test-domain", "domain preserved");
 }
+
+// =============================================================================
+// FTS5 Task 11 — fresh-store integrity-check smoke probe
+// =============================================================================
+
+/// FTS5 Task 11: on a fresh v5 store, an FTS5 `integrity-check` reports no
+/// drift between the index and claim_status. This is the SQLite-documented
+/// health probe for external-content tables.
+#[test]
+fn v5_fresh_store_fts5_integrity_check_passes() {
+    use llm_wiki::semantic::{SemanticConfig, SemanticStore};
+    let parent = tempfile::tempdir().expect("fixture parent");
+    let root = parent.path().join("semantic-store");
+    let (store, _admin) =
+        SemanticStore::create(&root, SemanticConfig::enabled_for(parent.path()))
+            .expect("create");
+    drop(store); // release the file handle before opening a raw connection
+
+    // Fresh store at v5 has the FTS5 artifacts (Task 6 fresh-store DDL).
+    // integrity-check returns zero rows when the index is consistent.
+    let db_path = root.join("semantic.sqlite3");
+    let conn = rusqlite::Connection::open(&db_path).expect("open raw conn");
+    let drift: Vec<(String,)> = conn
+        .prepare("INSERT INTO claim_search_fts(claim_search_fts) VALUES('integrity-check')")
+        .expect("prepare integrity-check")
+        .query_map([], |row| Ok((row.get::<_, String>(0)?,)))
+        .expect("query_map")
+        .filter_map(|r| r.ok())
+        .collect();
+    assert!(
+        drift.is_empty(),
+        "FTS5 integrity-check must report no drift on a fresh v5 store, got: {drift:?}"
+    );
+}

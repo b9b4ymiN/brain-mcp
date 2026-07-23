@@ -2,6 +2,12 @@
 
 > **Date:** 2026-07-22
 > **Status:** DRAFT v2 — pending user review before implementation plan
+> **Amendment:** v2.1 — rowid correction applied (Task 4 code review). The
+>   `content_rowid='claim_id'` clause was removed from every SQL example:
+>   claim_status.claim_id is a TEXT UUID, which FTS5 would coerce to a leading
+>   numeric prefix, colliding rows that share one. content_rowid is now OMITTED
+>   so FTS5 uses claim_status's implicit INTEGER rowid, and `search_claims`
+>   JOINs on `cs.rowid = fts.rowid`. See "Design correction (v2.1)" below.
 > **Supersedes:** v1 (this same file, 2026-07-22) — two design points revised after research:
 >   1. **Tokenizer:** `porter unicode61` → **`trigram`** (Thai is a first-class `SubjectShape`; porter collapses Thai into one giant token).
 >   2. **Sync:** hand-written INSERTs in the write path → **SQL triggers** (research: triggers cannot be forgotten across code paths/migrations and stay atomic).
@@ -35,7 +41,7 @@ Wikidata (Blazegraph + Elasticsearch/CirrusSearch) and MusicBrainz (PostgreSQL +
 
 ### FTS5 best practices (from SQLite docs + production patterns)
 
-- **External-content table** (`content='claim_status', content_rowid='claim_id'`) — the FTS table stores only the inverted index, not a copy of the data. Keeps storage lean and avoids dual-write drift.
+- **External-content table** (`content='claim_status'`) — the FTS table stores only the inverted index, not a copy of the data. Keeps storage lean and avoids dual-write drift. **`content_rowid` is omitted** so FTS5 uses claim_status's implicit INTEGER rowid (the SQLite-documented default); see the v2.1 correction below for why it is *not* mapped onto `claim_id`.
 - **SQL triggers** (`AFTER INSERT` / `AFTER DELETE` / `AFTER UPDATE`) — the documented production pattern. Triggers cannot be forgotten across code paths or migrations, and they fire atomically inside the source write transaction. v1 of this spec proposed hand-written INSERTs in `build_confirmation_material`; research shows triggers are strictly safer, so v2 adopts them.
 - **`trigram` tokenizer** — indexes every 3-character window, giving substring match across **all scripts including Thai/CJK**. `porter unicode61` (v1's choice) is English-only and collapses unspaced Thai into a single oversized token, which would make `SubjectShape::ThaiPure` subjects (e.g. "บมจ. ปตท.") effectively unsearchable. The cost is a larger index and the loss of English stemming (`running` no longer matches `run`), accepted at this scale (10k rows × <200 bytes).
 - **`bm25()` with column weights** — `bm25(fts, 10.0, 5.0, 1.0, 2.0)` weights subject > predicate > value > domain for relevance ranking.
@@ -98,7 +104,7 @@ FTS5 cannot filter "active" (not superseded/retracted) inside the index itself �
 SELECT cs.claim_id, cs.subject, cs.predicate, cs.value, cs.domain,
        bm25(claim_search_fts, 10.0, 5.0, 1.0, 2.0) AS score
 FROM claim_search_fts fts
-JOIN claim_status cs ON cs.claim_id = fts.rowid
+JOIN claim_status cs ON cs.rowid = fts.rowid
 WHERE claim_search_fts MATCH ?
   AND cs.superseded_by_event_seq IS NULL
   AND cs.retracted_at_event_seq IS NULL
@@ -106,7 +112,7 @@ ORDER BY score ASC
 LIMIT ?
 ```
 
-This keeps as-of queries correct and means the FTS row for a superseded claim is *retained* (still indexable for historical/timeline views), just excluded from the default search. The trigram tokenizer means the `MATCH ?` argument is treated as a phrase/substring query by default.
+This keeps as-of queries correct and means the FTS row for a superseded claim is *retained* (still indexable for historical/timeline views), just excluded from the default search. The trigram tokenizer means the `MATCH ?` argument is treated as a phrase/substring query by default. **The JOIN keys on `cs.rowid = fts.rowid` (implicit INTEGER rowid), not on `claim_id`** — see the v2.1 correction below for the collision that motivated this.
 
 ### Data Flow
 
@@ -140,17 +146,18 @@ This keeps as-of queries correct and means the FTS row for a superseded claim is
          value_flat,
          domain,
          content='claim_status',
-         content_rowid='claim_id',
          tokenize = 'trigram'
      );
      ```
+     (`content_rowid` is deliberately OMITTED — see the v2.1 correction. FTS5 then uses claim_status's implicit INTEGER rowid.)
   4. Create the three sync triggers (`claim_status_ai`, `claim_status_ad`, `claim_status_au`) — SQL bodies identical to the SQLite docs canonical external-content example, adapted to our columns.
   5. Backfill the index from existing rows:
      ```sql
      INSERT INTO claim_search_fts(rowid, subject, predicate, value_flat, domain)
-       SELECT claim_id, subject, predicate, value_flat, domain FROM claim_status;
+       SELECT rowid, subject, predicate, value_flat, domain FROM claim_status;
      INSERT INTO claim_search_fts(claim_search_fts) VALUES('optimize');
      ```
+     (The backfill SELECTs `rowid` — the implicit INTEGER — not `claim_id`. See the v2.1 correction.)
 - `run_upgrade_step_reverse` — add a `(4, 5, 0)` arm that calls `run_fts5_reverse(transaction)`: `DROP TABLE claim_search_fts`, drop the three triggers, and recreate `claim_status` without `value_flat` (table-recreation, same pattern as v3→v4 reverse).
 - Fresh-store DDL in `initialize_schema` — emit the `value_flat` column, the FTS5 table, and the three triggers so brand-new v5 stores are consistent.
 
@@ -309,6 +316,16 @@ No change to the `brain_search` tool definition (same args: `query`, `domain`, `
 3. `docker compose build && docker compose up -d`.
 4. `recovery upgrade` (v4→v5).
 5. Verify: `brain_search "reinvent wheel"` returns the claim; `brain_search "ปตท"` returns the Thai claim.
+
+---
+
+## Design correction (v2.1 — Task 4 code review)
+
+The original v2 spec (inherited from v1) specified `content_rowid='claim_id'` on the FTS5 virtual table and a `JOIN claim_status cs ON cs.claim_id = fts.rowid` in `search_claims`. **This is wrong and was corrected during Task 4 code review.**
+
+**Why it breaks:** FTS5's `content_rowid` must name a column whose values are INTEGER rowids. `claim_status.claim_id` is a **TEXT UUID** (e.g. `01923b8a-...`). When FTS5 is told to use a TEXT column as its rowid source, SQLite applies its standard TEXT→INTEGER affinity coercion: it parses the **leading numeric prefix** of the string and discards the rest. So `01923b8a-...` becomes rowid `1923`, `01923b8a-...-second` also becomes `1923`, and every UUID that shares a leading-numeric prefix collides onto the same FTS5 rowid. The backfill still appears to "succeed" (a row is inserted), but MATCH queries silently miss rows because their rowids overwrote each other.
+
+**Shipped fix:** omit `content_rowid` entirely. With `content='claim_status'` and no `content_rowid`, FTS5 falls back to its documented default — the content table's **implicit INTEGER rowid** (the hidden `rowid` column every SQLite row has). This is unique per row by construction, so there is no collision. The `search_claims` JOIN becomes `JOIN claim_status cs ON cs.rowid = fts.rowid`, and the backfill `INSERT INTO ... SELECT rowid, ...` (not `claim_id`). This is verified by the `v4_to_v5_forward_installs_fts5_and_backfills` test (which MATCHes a staged claim and would fail under the broken mapping) and the dedicated fresh-store `v5_fresh_store_fts5_integrity_check_passes` probe.
 
 ---
 
