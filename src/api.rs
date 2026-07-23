@@ -723,8 +723,24 @@ async fn search(
     _session: AuthSession,
     Query(params): Query<SearchParams>,
 ) -> Result<Response, ApiError> {
-    let query = params.query.to_lowercase();
+    // FTS5-ranked search (shares the read path with the brain_search MCP tool).
+    // `search_claims` returns the ranked claim_ids + scores; we then hydrate
+    // the full Console display fields (origin/provenance/entity_id) from
+    // `all_claims_current`, ordered by the FTS5 ranking. This keeps the REST
+    // and MCP surfaces on one search engine instead of the old divergent
+    // linear scans, and adds `score` to the payload.
+    let query = &params.query;
     let top_k = params.top_k.unwrap_or(10);
+    let hits = state
+        .store
+        .search_claims(query, params.domain.as_deref(), top_k)
+        .map_err(|e| map_semantic_error(&e))?;
+    // Build a claim_id → score map for reordering after hydration.
+    let score_by_id: std::collections::HashMap<Uuid, f64> = hits
+        .iter()
+        .map(|h| (h.claim_id, h.score))
+        .collect();
+
     let head = state
         .store
         .ledger_head()
@@ -734,19 +750,11 @@ async fn search(
         .all_claims_current(head, Utc::now())
         .map_err(|e| map_semantic_error(&e))?;
 
-    let results: Vec<_> = claims
+    // Keep only the FTS-hit claim_ids, hydrate full fields, preserve BM25 order.
+    let mut results: Vec<_> = claims
         .active
         .iter()
-        .filter(|claim| {
-            if let Some(domain) = &params.domain
-                && claim.domain != *domain
-            {
-                return false;
-            }
-            claim.subject.to_lowercase().contains(&query)
-                || claim.predicate.to_lowercase().contains(&query)
-        })
-        .take(top_k)
+        .filter(|claim| score_by_id.contains_key(&claim.claim_id))
         .map(|claim| {
             json!({
                 "claim_id": claim.claim_id,
@@ -757,12 +765,18 @@ async fn search(
                 "origin": claim.origin,
                 "provenance": claim.provenance_kind,
                 "entity_id": claim.entity_id,
+                "score": score_by_id.get(&claim.claim_id),
             })
         })
         .collect();
+    results.sort_by(|a, b| {
+        let sa = a["score"].as_f64().unwrap_or(f64::INFINITY);
+        let sb = b["score"].as_f64().unwrap_or(f64::INFINITY);
+        sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     Ok(Json(json!({
-        "query": query,
+        "query": params.query,
         "count": results.len(),
         "results": results,
     }))
