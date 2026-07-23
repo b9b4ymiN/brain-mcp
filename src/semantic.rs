@@ -328,6 +328,20 @@ pub struct ClaimDraft {
     pub valid_to: Option<DateTime<Utc>>,
 }
 
+/// A single search result from FTS5-ranked claim search (`SemanticStore::search_claims`).
+/// `value` is rehydrated from the confirmation event payload (claim_status
+/// stores no value column) via the same path `claims_current` uses.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClaimSearchHit {
+    pub claim_id: Uuid,
+    pub subject: String,
+    pub predicate: String,
+    pub value: Value,
+    pub domain: String,
+    /// BM25 relevance score (lower = more relevant; FTS5 returns negatives).
+    pub score: f64,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PrivacyLabel {
@@ -4071,6 +4085,133 @@ impl SemanticStore {
             }
         }
         Ok(result)
+    }
+
+    /// Full-text search over confirmed, active claims using the FTS5 index.
+    /// Returns claims ranked by BM25 relevance to the query.
+    ///
+    /// The query is run as a trigram phrase/substring query by default; FTS5
+    /// MATCH syntax also supports prefix (`rein*`), phrase (`"exact match"`),
+    /// and boolean (AND/OR) operators. Column weights (subject=10, predicate=5,
+    /// value_flat=1, domain=2) favor subject matches.
+    ///
+    /// `value` is rehydrated from the confirmation event payload via the same
+    /// path as `claims_current` (confirmed_event_seq → events.object_id →
+    /// decrypt_object → ConfirmationObject.claim.value), because claim_status
+    /// stores no value column.
+    pub fn search_claims(
+        &self,
+        query: &str,
+        domain: Option<&str>,
+        top_k: usize,
+    ) -> Result<Vec<ClaimSearchHit>> {
+        // Mirror all_claims_current's TOCTOU-safe single-transaction read.
+        let mut raw_connection = open_connection(&self.root)?;
+        let transaction = raw_connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(database_error)?;
+        let connection = &transaction;
+
+        // FTS5 MATCH + active-row filter + optional domain filter.
+        // JOIN on rowid (the FTS content_rowid is claim_status's implicit
+        // INTEGER rowid, NOT the TEXT claim_id — see run_fts5_forward).
+        // BM25 column weights: subject=10, predicate=5, value_flat=1, domain=2.
+        let mut stmt = if let Some(_d) = domain {
+            connection
+                .prepare(
+                    "SELECT fts.rowid,
+                            cs.claim_id, cs.subject, cs.predicate, cs.domain,
+                            cs.confirmed_event_seq,
+                            bm25(claim_search_fts, 10.0, 5.0, 1.0, 2.0) AS score
+                     FROM claim_search_fts fts
+                     JOIN claim_status cs ON cs.rowid = fts.rowid
+                     WHERE claim_search_fts MATCH ?1
+                       AND cs.superseded_by_event_seq IS NULL
+                       AND cs.retracted_at_event_seq IS NULL
+                       AND cs.domain = ?2
+                     ORDER BY score ASC
+                     LIMIT ?3",
+                )
+                .map_err(database_error)?
+        } else {
+            connection
+                .prepare(
+                    "SELECT fts.rowid,
+                            cs.claim_id, cs.subject, cs.predicate, cs.domain,
+                            cs.confirmed_event_seq,
+                            bm25(claim_search_fts, 10.0, 5.0, 1.0, 2.0) AS score
+                     FROM claim_search_fts fts
+                     JOIN claim_status cs ON cs.rowid = fts.rowid
+                     WHERE claim_search_fts MATCH ?1
+                       AND cs.superseded_by_event_seq IS NULL
+                       AND cs.retracted_at_event_seq IS NULL
+                     ORDER BY score ASC
+                     LIMIT ?2",
+                )
+                .map_err(database_error)?
+        };
+        let rows: Vec<(i64, String, String, String, String, i64, f64)> = if let Some(d) = domain {
+            stmt.query_map(params![query, d, top_k as i64], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,    // fts.rowid (unused, but selected for debugging)
+                    row.get::<_, String>(1)?, // claim_id
+                    row.get::<_, String>(2)?, // subject
+                    row.get::<_, String>(3)?, // predicate
+                    row.get::<_, String>(4)?, // domain
+                    row.get::<_, i64>(5)?,    // confirmed_event_seq
+                    row.get::<_, f64>(6)?,    // score
+                ))
+            })
+            .map_err(database_error)?
+            .filter_map(|r| r.ok())
+            .collect()
+        } else {
+            stmt.query_map(params![query, top_k as i64], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, f64>(6)?,
+                ))
+            })
+            .map_err(database_error)?
+            .filter_map(|r| r.ok())
+            .collect()
+        };
+        drop(stmt);
+
+        // Rehydrate value from the confirmation event payload for each hit,
+        // the same path claims_current uses (semantic.rs ~3938-3948):
+        // confirmed_event_seq → events.object_id → decrypt_object →
+        // ConfirmationObject.claim.value.
+        let mut hits = Vec::with_capacity(rows.len());
+        for (_rowid, claim_id_str, subject, predicate, domain_val, confirmed_seq, score) in rows {
+            let claim_id = Uuid::parse_str(&claim_id_str).map_err(|_| {
+                SemanticError::CorruptLedger(format!("claim_id not a UUID: {claim_id_str}"))
+            })?;
+            let object_id: String = connection
+                .query_row(
+                    "SELECT object_id FROM events WHERE owner_id=?1 AND event_seq=?2",
+                    params![self.marker.owner_id.to_string(), confirmed_seq],
+                    |row| row.get(0),
+                )
+                .map_err(database_error)?;
+            let object: ConfirmationObject =
+                serde_json::from_slice(&decrypt_object(connection, &self.root, &object_id)?)
+                    .map_err(serialization_error)?;
+            hits.push(ClaimSearchHit {
+                claim_id,
+                subject,
+                predicate,
+                value: object.claim.value,
+                domain: domain_val,
+                score,
+            });
+        }
+        Ok(hits)
     }
 
     /// Lists every proposal still awaiting review (Task 5.1 Inbox). Owner
