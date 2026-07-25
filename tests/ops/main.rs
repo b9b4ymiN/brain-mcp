@@ -1,5 +1,6 @@
 mod helpers;
 
+mod activity;
 mod config;
 mod content;
 mod export;
