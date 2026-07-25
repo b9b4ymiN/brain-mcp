@@ -12,6 +12,7 @@ use crate::config;
 use crate::engine::EngineState;
 use crate::frontmatter;
 use crate::git;
+use crate::index_manager::UpdateReport;
 use crate::index_schema::IndexSchema;
 use crate::markdown;
 use crate::slug::{ReadTarget, Slug, WikiUri, resolve_read_target};
@@ -132,6 +133,11 @@ pub struct WriteResult {
     pub path: PathBuf,
     /// Canonical slug that was written after applying content placement rules.
     pub slug: String,
+    /// Git commit SHA when `commit=true`, else `None`.
+    /// Empty string when `commit=true` but the file was unchanged (no commit produced).
+    pub commit_sha: Option<String>,
+    /// Incremental index report when `commit=true`, else `None`.
+    pub index_report: Option<UpdateReport>,
 }
 
 /// Return the canonical top-level folder for a frontmatter type.
@@ -223,6 +229,8 @@ pub fn content_write(
         bytes_written: content.len(),
         path,
         slug: slug.as_str().to_string(),
+        commit_sha: None,
+        index_report: None,
     })
 }
 
