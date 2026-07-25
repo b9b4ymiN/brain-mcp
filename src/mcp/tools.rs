@@ -216,11 +216,13 @@ pub fn tool_list() -> Vec<Tool> {
         ),
         Tool::new(
             "wiki_content_write",
-            "Write content to a page in the wiki tree; bare slugs are canonicalized from frontmatter type into the Blueprint layout",
+            "Write a page to the wiki tree. By default also validates frontmatter, commits to git, updates the search index, and refreshes the web mirror — i.e. a complete durable write in one call. Set commit=false for bulk-write flows that defer ingestion to a later wiki_ingest call. Bare slugs are canonicalized from frontmatter type into the Blueprint layout.",
             schema(
                 json!({
                     "uri": str_prop("Slug or wiki:// URI. Prefer explicit paths such as concepts/topic; bare slugs are placed by frontmatter type."),
                     "content": str_prop("File content"),
+                    "commit": opt_bool("When true (default), validate + git commit + update search index + refresh web mirror. When false, write to disk only (bulk-write escape hatch)."),
+                    "redact": opt_bool("Run redaction pass on the body before validation (opt-in; lossy). Forwarded to the ingest pipeline when commit=true. Ignored when commit=false."),
                     "wiki": opt_str("Target wiki name"),
                 }),
                 &["uri", "content"],
@@ -583,13 +585,7 @@ pub fn tool_list() -> Vec<Tool> {
                     "domain": opt_str("Optional domain tag (e.g. stocks, projects). Entity Identity Reform: domain is a categorization tag, not part of entity identity."),
                     "claim_kind": opt_str("Claim kind (default: user_assertion)"),
                 }),
-                &[
-                    "operation_id",
-                    "utterance",
-                    "subject",
-                    "predicate",
-                    "value",
-                ],
+                &["operation_id", "utterance", "subject", "predicate", "value"],
             ),
         ),
         Tool::new(
@@ -635,13 +631,7 @@ pub fn tool_list() -> Vec<Tool> {
                     "claim_kind": opt_str("Claim kind (default: inference)"),
                     "evidence_capture_operation_ids": opt_str("Comma-separated capture operation ids backing this inference (omit for an unsupported/no-evidence proposal)"),
                 }),
-                &[
-                    "operation_id",
-                    "subject",
-                    "predicate",
-                    "value",
-                    "method",
-                ],
+                &["operation_id", "subject", "predicate", "value", "method"],
             ),
         ),
     ];
