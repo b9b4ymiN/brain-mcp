@@ -24,6 +24,7 @@
     indexStatus as apiIndexStatus,
     indexUpdate as apiIndexUpdate,
     indexRebuild as apiIndexRebuild,
+    opsJobs as apiOpsJobs,
     type ConfigView,
     type IndexStatus,
     ApiError,
@@ -145,17 +146,56 @@
       toasts.push(
         'info',
         'Rebuild queued',
-        `Background job ${job_id} — status refreshes below`,
+        `Background job ${job_id} — refreshing when it completes…`,
       )
-      // The rebuild is asynchronous, so a single refresh may not show the
-      // new state yet. Kick one off anyway so the UI feels responsive; the
-      // user can hit Refresh again once the job settles.
+      // Poll /ops/jobs until our job leaves the active/queued registry
+      // (complete_job removes the entry; fail_job leaves it with status=
+      // "failed" so the dashboard can surface it — but job_summary collapses
+      // to {active, queued, failed} counts, so we can't distinguish our job
+      // from others. Practically: poll until the registry drains, with a
+      // hard cap to avoid spinning forever if another job is stuck).
+      const POLL_MS = 1000
+      const MAX_POLLS = 60   // 60s cap — rebuild on this wiki took <1s; large wikis may need more
+      let polled = 0
+      let sawOurJob = false
+      while (polled < MAX_POLLS) {
+        await sleep(POLL_MS)
+        polled++
+        const summary = await apiOpsJobs()
+        // First poll: our job should be visible (active or queued). If the
+        // job already finished within the first second (small wiki), we'll
+        // see {0,0,0} immediately — treat that as "done" too.
+        if (!sawOurJob && (summary.active > 0 || summary.queued > 0)) {
+          sawOurJob = true
+        }
+        // Exit when the registry has drained AND we either saw our job
+        // appear, or it finished faster than the first poll (sawOurJob=false
+        // + empty registry → assume our job already completed).
+        if (summary.active === 0 && summary.queued === 0) {
+          break
+        }
+      }
+      // Refresh /index-status to pick up the new built/last_* fields.
       await refreshIndex()
+      if (polled >= MAX_POLLS) {
+        toasts.push(
+          'warning',
+          'Rebuild still running',
+          `Polled ${MAX_POLLS}s — hit Refresh to check.`,
+        )
+      } else {
+        toasts.push('success', 'Rebuild complete', `Polled ${polled}s.`)
+      }
     } catch (cause) {
       toasts.push('error', 'Rebuild failed', handleActionError(cause, 'index rebuild'))
     } finally {
       rebuilding = false
     }
+  }
+
+  /** Promise-based delay (no async-sleep in stdlib). */
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
   }
 
   onMount(() => {
