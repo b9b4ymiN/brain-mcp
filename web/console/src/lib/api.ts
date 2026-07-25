@@ -523,6 +523,57 @@ export interface BackupHealth {
 }
 
 /**
+ * Staleness buckets from `GET /status` — counts of pages by last-modified age.
+ * Mirrors Rust `StalenessBuckets` (src/ops/stats.rs).
+ */
+export interface StalenessBuckets {
+  fresh: number
+  stale_7d: number
+  stale_30d: number
+}
+
+/**
+ * Index health from `GET /status`. `built` is the RFC 3339 timestamp of the
+ * last successful rebuild, or `null` when the index has never been built.
+ */
+export interface IndexHealth {
+  stale: boolean
+  built: string | null
+}
+
+/**
+ * Louvain community-detection result. Opaque on the TS side beyond `count`
+ * (the Rust struct has more fields but the Status page only uses count).
+ * If a future page needs more, expand this interface then.
+ */
+export interface CommunityStats {
+  count: number
+}
+
+/**
+ * `GET /status` body. Mirrors Rust `WikiStats` (src/ops/stats.rs:35).
+ * Optional graph fields are `null` when the wiki has too few connected nodes
+ * to compute them (e.g. a fresh seed with one page).
+ */
+export interface WikiStats {
+  wiki: string
+  pages: number
+  sections: number
+  types: Record<string, number>
+  status: Record<string, number>
+  orphans: number
+  avg_connections: number
+  graph_density: number
+  staleness: StalenessBuckets
+  index: IndexHealth
+  communities: CommunityStats | null
+  diameter: number | null
+  radius: number | null
+  center: string[]
+  structural_note: string | null
+}
+
+/**
  * One item a destructive action will affect. Mirrors Rust
  * `DestructivePreviewItem`. The destructive-warning handler returns an empty
  * `preview` array by default; the Console populates it client-side from the
@@ -821,6 +872,11 @@ export async function opsEvals(domain: string): Promise<EvalSummary> {
 /** `GET /ops/backup-health` — backup + restore-drill health. */
 export async function opsBackupHealth(): Promise<BackupHealth> {
   return request<BackupHealth>({ method: 'GET', path: '/ops/backup-health' })
+}
+
+/** `GET /status` — wiki health snapshot for the Status page. */
+export async function status(): Promise<WikiStats> {
+  return request<WikiStats>({ method: 'GET', path: '/status' })
 }
 
 /**
