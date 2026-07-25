@@ -340,6 +340,7 @@ pub fn router(state: ConsoleApiState) -> Router {
         .route("/galaxy", get(galaxy))
         // Console-expansion (2026-07-25) — engine-backed read surfaces.
         .route("/status", get(status))
+        .route("/activity", get(activity))
         // E3.2 — trust + operations + entity-mutation + purge surfaces.
         .route("/trust", get(trust))
         .route("/ops/clients", get(ops_clients))
@@ -1156,6 +1157,44 @@ async fn status(
     let stats = crate::ops::stats(&guard, &wiki_name)
         .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"))?;
     Ok(Json(stats))
+}
+
+/// Query params for `GET /api/v1/activity`. `since` accepts `1d` / `7d` /
+/// `30d` (anything else, including `None`, falls back to `7d`); `limit` is
+/// clamped to `[1, 200]` with a default of `50`.
+#[derive(Deserialize)]
+struct ActivityQuery {
+    since: Option<String>,
+    limit: Option<usize>,
+}
+
+/// `GET /api/v1/activity?since=1d|7d|30d&limit=N` — recent page changes feed
+/// (Console Activity page timeline, Task 11 of the 2026-07-25 console-expansion
+/// series).
+///
+/// Read-only — session-only auth (no CSRF). Returns events newest-first as
+/// `Vec<ActivityEvent>` JSON. Wraps [`crate::ops::recent_activity`] (Task 10).
+/// 500 `internal_error` when the engine is not attached (defensive — same as
+/// `/status`).
+async fn activity(
+    State(state): State<ConsoleApiState>,
+    _session: AuthSession,
+    Query(query): Query<ActivityQuery>,
+) -> Result<Json<Vec<crate::ops::ActivityEvent>>, ApiError> {
+    let engine = state.engine.as_ref().ok_or_else(|| {
+        ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+    })?;
+    let since = match query.since.as_deref().unwrap_or("7d") {
+        "1d" => std::time::Duration::from_secs(86_400),
+        "30d" => std::time::Duration::from_secs(86_400 * 30),
+        // default + any unrecognized value → 7d (lenient parse).
+        _ => std::time::Duration::from_secs(86_400 * 7),
+    };
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let guard = engine.state.read();
+    let events = crate::ops::recent_activity(&guard, since, limit)
+        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"))?;
+    Ok(Json(events))
 }
 
 // ── trust + operations + destructive-warning (Task E3.2) ────────────────────

@@ -150,3 +150,50 @@ async fn status_returns_wiki_stats_shape() {
     assert!(body["staleness"]["stale_30d"].is_i64(), "staleness.stale_30d is an integer");
     assert!(body["index"]["stale"].is_boolean(), "index.stale is a boolean");
 }
+
+// ── /activity ────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn activity_requires_session() {
+    let (_dir, state) = make_state();
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{base}/api/v1/activity?since=1d"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn activity_returns_events_array() {
+    let (_dir, state) = make_state();
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+    let (cookie, _csrf) = login(&client, &base, SECRET).await.expect("login ok");
+
+    let resp = client
+        .get(format!("{base}/api/v1/activity?since=30d&limit=10"))
+        .header("Cookie", cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body.is_array(), "activity returns a JSON array");
+    // The make_state fixture creates a wiki with 1 commit touching 1 page.
+    // Expect >= 1 event when the commit is within the 30d window.
+    if let Some(arr) = body.as_array()
+        && !arr.is_empty()
+    {
+        let first = &arr[0];
+        assert!(first["kind"].is_string(), "kind field present");
+        assert!(first["timestamp"].is_string(), "timestamp field present");
+        assert!(first["actor"].is_string(), "actor field present");
+        assert!(first["target"].is_string(), "target field present");
+        assert!(first["detail"]["added"].is_i64(), "detail.added is an integer");
+        assert!(first["detail"]["removed"].is_i64(), "detail.removed is an integer");
+        assert!(first["detail"]["subject"].is_string(), "detail.subject is a string");
+    }
+}
