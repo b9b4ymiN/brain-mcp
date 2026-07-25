@@ -3,10 +3,9 @@
    * Status — wiki health dashboard (Layout Option 2: hero band + detail grid).
    *
    * Hero band: SYSTEM HEALTH rollup (Nominal/Stale/Degraded) + key metrics +
-   *   "Reindex →" link to /config.
+   *   inline "Reindex now" action (POST /index/rebuild → poll /ops/jobs →
+   *   refresh). Two-step confirm (NOT a modal — product ban).
    * Detail grid: Staleness bars, Graph shape, Backup (reuses /ops/backup-health).
-   *
-   * Read-only. No mutations on this page — destructive actions live on Config.
    *
    * Severity rule (WikiStats has no `index.queryable` field, so derive here):
    *   - degraded: index never built (`index.built === null`)
@@ -17,13 +16,14 @@
   import {
     status as apiStatus,
     opsBackupHealth as apiOpsBackupHealth,
+    indexRebuild as apiIndexRebuild,
+    opsJobs as apiOpsJobs,
     type WikiStats,
     type BackupHealth,
     ApiError,
   } from '../lib/api'
   import type { SessionStore } from '../lib/session.svelte'
   import type { ToastStore } from '../lib/toast.svelte'
-  import { navigate } from '../lib/router'
   import { formatRelative } from '../lib/format'
   import StateBox from '../components/StateBox.svelte'
   import HoloPanel from '../components/HoloPanel.svelte'
@@ -48,6 +48,19 @@
   let backupLoading = $state(false)
   let backupError = $state<string | null>(null)
   let backupSeq = 0
+
+  // ── Reindex action state ────────────────────────────────────────────────
+  // The hero-band "Reindex now" button kicks a full rebuild inline (with a
+  // two-step confirm) and polls /ops/jobs until the registry drains, then
+  // refreshes /status so the new built/last_* fields show. Mirrors the
+  // Config page's handleRebuild — kept here so the operator can act without
+  // leaving Status. The other index action (incremental Update) stays on
+  // Config: Update only matters when an incremental sync is cheaper than a
+  // rebuild, which is an operator call Config surfaces with the staleness
+  // context (state.toml commit vs HEAD). Status is the "is it healthy?"
+  // view; the only action it offers is the panic-button rebuild.
+  let reindexConfirming = $state(false)
+  let reindexing = $state(false)
 
   function handleReadError(cause: unknown, setErr: (m: string) => void, what: string): void {
     if (cause instanceof ApiError) {
@@ -93,6 +106,47 @@
 
   async function refreshAll(): Promise<void> {
     await Promise.all([void refreshStats(), void refreshBackup()])
+  }
+
+  /** Kick a full index rebuild from the Status hero band. Two-step inline
+   *  confirm (NOT a modal — product ban), then poll /ops/jobs until the
+   *  registry drains, then refresh /status. */
+  async function handleReindex(): Promise<void> {
+    if (reindexing) return
+    reindexing = true
+    reindexConfirming = false
+    try {
+      // Wiki name comes from the loaded stats — /index/rebuild needs it.
+      const wiki = stats?.wiki ?? 'brain'
+      const { job_id } = await apiIndexRebuild(wiki)
+      toasts.push('info', 'Reindex queued', `Background job ${job_id} — refreshing when it completes…`)
+      const POLL_MS = 1000
+      const MAX_POLLS = 60
+      let polled = 0
+      let sawOurJob = false
+      while (polled < MAX_POLLS) {
+        await sleep(POLL_MS)
+        polled++
+        const summary = await apiOpsJobs()
+        if (!sawOurJob && (summary.active > 0 || summary.queued > 0)) sawOurJob = true
+        if (summary.active === 0 && summary.queued === 0) break
+      }
+      await refreshStats()
+      if (polled >= MAX_POLLS) {
+        toasts.push('warning', 'Reindex still running', `Polled ${MAX_POLLS}s — hit Refresh to check.`)
+      } else {
+        toasts.push('success', 'Reindex complete', `Polled ${polled}s.`)
+      }
+    } catch (cause) {
+      handleReadError(cause, () => {}, 'index rebuild')
+      toasts.push('error', 'Reindex failed', cause instanceof ApiError ? cause.code : 'backend unreachable')
+    } finally {
+      reindexing = false
+    }
+  }
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
   }
 
   onMount(() => {
@@ -170,9 +224,38 @@
             {stats.index.stale ? 'stale' : 'queryable'} ·
             {stats.pages} pages · {stats.orphans} orphans
           </p>
-          <button type="button" class="reindex-link" onclick={() => navigate('config')}>
-            Reindex →
-          </button>
+          {#if reindexConfirming}
+            <span class="reindex-confirm">
+              <span class="reindex-confirm-prompt">Full rebuild queues a background job. Continue?</span>
+              <button
+                type="button"
+                class="reindex-link reindex-link--danger"
+                onclick={() => void handleReindex()}
+                disabled={reindexing}
+                aria-busy={reindexing}
+              >
+                {reindexing ? 'Reindexing…' : 'Confirm reindex'}
+              </button>
+              <button
+                type="button"
+                class="reindex-link reindex-link--ghost"
+                onclick={() => (reindexConfirming = false)}
+                disabled={reindexing}
+              >
+                Cancel
+              </button>
+            </span>
+          {:else}
+            <button
+              type="button"
+              class="reindex-link"
+              onclick={() => (reindexConfirming = true)}
+              disabled={reindexing}
+              aria-busy={reindexing}
+            >
+              {reindexing ? 'Reindexing…' : 'Reindex now'}
+            </button>
+          {/if}
         </div>
       {/if}
     </StateBox>
@@ -286,7 +369,21 @@
     border-radius: var(--radius-md); color: var(--color-accent);
     font-family: var(--font-body); font-size: var(--text-body); cursor: pointer;
   }
-  .reindex-link:hover { background: var(--surface-accent-soft); }
+  .reindex-link:hover:not(:disabled) { background: var(--surface-accent-soft); }
+  .reindex-link:disabled { opacity: 0.6; cursor: not-allowed; }
+  .reindex-link--danger { border-color: var(--color-danger); color: var(--color-danger); }
+  .reindex-link--danger:hover:not(:disabled) { background: var(--surface-danger-soft); }
+  .reindex-link--ghost { border-color: var(--color-hairline); color: var(--text-secondary); }
+  .reindex-confirm {
+    display: flex; flex-direction: column; align-items: flex-start;
+    gap: var(--space-xs); padding: var(--space-sm);
+    background: var(--surface-danger-soft);
+    border: 1px solid var(--color-danger); border-radius: var(--radius-md);
+  }
+  .reindex-confirm-prompt {
+    color: var(--text-primary); font-size: var(--text-body);
+  }
+  .reindex-confirm .reindex-link { align-self: flex-start; }
 
   .detail-grid {
     display: grid; gap: var(--space-md);
