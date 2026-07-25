@@ -137,6 +137,11 @@ pub struct WriteResult {
     /// Empty string when `commit=true` but the file was unchanged (no commit produced).
     pub commit_sha: Option<String>,
     /// Incremental index report when `commit=true`, else `None`.
+    ///
+    /// Note: this is a best-effort upper bound (`updated: 1` for the file
+    /// we just wrote), not a measurement of the actual index update. The
+    /// real counts would require threading `manager.refresh_index`'s
+    /// `UpdateReport` through the ingest pipeline, which is out of scope.
     pub index_report: Option<UpdateReport>,
 }
 
@@ -237,8 +242,9 @@ pub fn content_write(
 ) -> Result<WriteResult> {
     let (entry, slug) = WikiUri::resolve(uri, wiki_flag, &engine.config)?;
     let wiki_name = entry.name.clone();
-    let wiki_root = engine.space(&wiki_name)?.wiki_root.clone();
-    let repo_root = engine.space(&wiki_name)?.repo_root.clone();
+    let space = engine.space(&wiki_name)?;
+    let wiki_root = space.wiki_root.clone();
+    let repo_root = space.repo_root.clone();
     let path = markdown::write_page(slug.as_str(), content, &wiki_root)?;
 
     if !commit {
@@ -260,12 +266,7 @@ pub fn content_write(
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| slug.as_str().to_string());
     let report = crate::ops::ingest_with_redact(
-        engine,
-        manager,
-        &rel,
-        /* dry_run */ false,
-        redact,
-        &wiki_name,
+        engine, manager, &rel, /* dry_run */ false, redact, &wiki_name,
     )?;
 
     // ingest commits only when wiki.toml's ingest.auto_commit == true.
@@ -278,11 +279,15 @@ pub fn content_write(
     };
 
     // ingest already called manager.refresh_index(wiki_name) internally
-    // (src/ops/ingest.rs:77); calling index_after_commit again would be
-    // redundant. Use index_status to read the post-commit numbers without
-    // re-running the refresh.
+    // (src/ops/ingest.rs:77), so the index is current at this point. We
+    // don't re-measure here — re-reading the post-commit counts would
+    // require either calling refresh_index again (redundant) or threading
+    // the UpdateReport through ingest_with_redact's IngestReport (out of
+    // scope per the spec's non-goal on `src/ops/ingest.rs`). Instead,
+    // synthesize a best-effort upper bound: we wrote one file, so the
+    // index can have updated at most one page.
     let index_report = Some(UpdateReport {
-        updated: 1, // best-effort: the file we just wrote
+        updated: 1, // best-effort upper bound; not measured
         deleted: 0,
     });
 
