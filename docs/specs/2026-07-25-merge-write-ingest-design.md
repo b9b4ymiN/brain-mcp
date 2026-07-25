@@ -1,6 +1,32 @@
 # Merge `wiki_content_write` + `wiki_ingest` (Single-Call Write Pipeline)
 
 **Status:** Draft
+
+> **Verified during implementation (2026-07-25).** Four assumptions in this
+> spec were corrected during implementation:
+>
+> 1. The dependency is `ops::index_after_commit(manager, wiki_name)`, not
+>    `ops::index_after_write(wiki_name, changed_paths)`. The latter never
+>    existed.
+> 2. The index return type is `UpdateReport { updated, deleted }`, not
+>    `IndexReport` (which is the rebuild-only type).
+> 3. The data flow is a single `ops::ingest_with_redact` call (which already
+>    refreshes the index internally at `src/ops/ingest.rs:77`), not separate
+>    ingest + index steps. A separate `index_after_commit` step is redundant.
+>    When `wiki.toml`'s `ingest.auto_commit == false`, the implementation
+>    forces a commit via `git::commit_paths` so the `commit=true` contract
+>    holds regardless of wiki configuration.
+> 4. **Additional discovery during Task 6:** the merged pipeline writes Hugo
+>    mirror files via `sync_web_content` after the wiki page is committed.
+>    Those mirror files were left uncommitted, which would have broken the
+>    `commit=true` → `wiki_ingest` idempotency contract. `handle_content_write`
+>    now performs a follow-up `git::commit` to fold mirror changes into a
+>    durable commit when `sync_web_content` reports changes. The reported
+>    `commit_sha` is the final HEAD (post-mirror).
+>
+> See `docs/plans/2026-07-25-merge-write-ingest-implementation-plan.md` for
+> the deviation log and the shipped behavior.
+
 **Date:** 2026-07-25
 **Author:** THP (via brainstorming)
 **Scope:** brain-mcp vnext — MCP write API for wiki pages

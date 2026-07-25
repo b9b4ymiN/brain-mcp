@@ -77,7 +77,28 @@ llm-wiki content write <slug|uri>        # read content from stdin
           [--wiki <name>]
 ```
 
-Writes a file into the wiki tree. Does not validate, index, or commit.
+### `wiki_content_write`
+
+**Parameters:**
+- `uri` (string, required) — slug or `wiki://` URI.
+- `content` (string, required) — file content with frontmatter.
+- `commit` (bool, optional, default **true**) — when true, the call also
+  validates frontmatter, commits to git, updates the tantivy index, and
+  refreshes the web mirror. When false, the file is written to disk only
+  (bulk-write escape hatch — pair with a later `wiki_ingest` call).
+- `redact` (bool, optional, default **false**) — runs a redaction pass on the
+  body before validation. Forwarded to the ingest pipeline when `commit=true`.
+  Ignored when `commit=false`.
+- `wiki` (string, optional) — target wiki name.
+
+**Default behavior (`commit=true`):** the call is a complete durable write.
+The response includes `commit_sha` (the git oid of the final HEAD — either the
+wiki-page commit or the follow-up mirror-content commit, whichever is newer),
+`index_updated` (best-effort upper bound), and `index_deleted`.
+
+**Bulk-write behavior (`commit=false`):** byte-identical to the pre-merge
+`wiki_content_write`. Pair with `wiki_ingest { path: "directory" }` to commit
+and index many pages in one git commit.
 
 Accepts a bare slug or `wiki://` URI. When a `wiki://` URI is used,
 `--wiki` is ignored. Reads content from stdin by default, or from a

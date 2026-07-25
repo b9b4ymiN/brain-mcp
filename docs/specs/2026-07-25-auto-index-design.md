@@ -241,3 +241,16 @@ container start → engine::open
 
 None at design time. Implementation plan will resolve file-path details
 (exact location of `content_write` in the ops tree) during step 1.
+
+---
+
+## Follow-on: pulled into the default write path
+
+The `ops::index_after_commit` helper delivered by this spec is reused by
+spec #2 (`docs/specs/2026-07-25-merge-write-ingest-design.md`), which merges
+`wiki_content_write` + `wiki_ingest` into a single-call write pipeline. After
+spec #2 ships, every default `wiki_content_write` call automatically triggers
+indexing — making the Layer 1 helper the engine of the merged pipeline.
+
+(Note: spec #2 calls it `index_after_commit`, not `index_after_write`. The
+naming was finalized during spec #1's implementation.)
