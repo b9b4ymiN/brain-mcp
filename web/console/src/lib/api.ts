@@ -597,6 +597,106 @@ export interface ActivityEvent {
   detail: ActivityDetail
 }
 
+// ── Phase 4 — Config + index management shapes ──────────────────────────────
+// These mirror Rust `ConfigView` (src/ops/config_view.rs), `IndexStatus`
+// (src/index_manager.rs:47), and `UpdateReport` (src/index_manager.rs:39)
+// serde shapes EXACTLY. Field-name note: the on-disk TOML key is `[provider]`
+// but the Rust projection renames it to `extraction` on the wire so the Config
+// page can show "Extraction" without confusion — the TS shape follows the
+// wire (NOT the TOML key).
+
+/** One wiki space row in `ConfigView.wiki_spaces`. */
+export interface WikiSpaceView {
+  name: string
+  path: string
+  /** Optional, skipped on the wire when `None`. */
+  description?: string
+  /** Optional git remote URL, skipped when `None`. */
+  remote?: string
+}
+
+/** `ConfigView.server` — transport + access surface. No raw secret values. */
+export interface ServerView {
+  http_enabled: boolean
+  http_port: number
+  bind: string
+  bind_all_interfaces: boolean
+  acp_enabled: boolean
+  /** Env var NAME (not the value) holding the dev bootstrap username.
+   * Optional — skipped on the wire when not customized. */
+  bootstrap_username_env?: string
+  /** Env var NAME (not the value) holding the dev bootstrap password. */
+  bootstrap_password_env?: string
+}
+
+/**
+ * `ConfigView.extraction` — AI provider ("Extraction") section. `api_key_env`
+ * is the env-var NAME (e.g. `OPENAI_API_KEY`), NOT the resolved secret value,
+ * so the wire payload is safe to display verbatim.
+ */
+export interface ExtractionView {
+  enabled: boolean
+  base_url: string
+  /** Env var NAME — safe, not the value. */
+  api_key_env: string
+  routine_model: string
+  reasoning_model: string
+}
+
+/** `ConfigView.logging` — log format + rotation policy. */
+export interface LoggingView {
+  /** `"text"` or `"json"`. */
+  format: string
+  /** `"daily"` or `"never"`. */
+  rotation: string
+}
+
+/** `ConfigView.index` — tokenizer + auto-rebuild policy. */
+export interface IndexViewConfig {
+  tokenizer: string
+  auto_rebuild: boolean
+}
+
+/**
+ * `GET /config` body. Mirrors Rust `ConfigView` (src/ops/config_view.rs).
+ * Read-only projection of `GlobalConfig`; carries env-var NAMES (not values)
+ * for every secret-bearing field, so the whole payload is display-safe.
+ */
+export interface ConfigView {
+  wiki_spaces: WikiSpaceView[]
+  server: ServerView
+  extraction: ExtractionView
+  logging: LoggingView
+  index: IndexViewConfig
+}
+
+/**
+ * `GET /index-status?wiki=` body. Mirrors Rust `IndexStatus`
+ * (src/index_manager.rs:47). The three `last_*` fields are `Option<>` on the
+ * wire — added 2026-07-25, so they may be absent on old `state.toml` files.
+ */
+export interface IndexStatus {
+  wiki: string
+  path: string
+  /** ISO-8601 timestamp of the last successful build, or `null` if never built. */
+  built: string | null
+  pages: number
+  sections: number
+  stale: boolean
+  openable: boolean
+  queryable: boolean
+  /** Optional — may be absent on old `state.toml` files. */
+  last_pages_indexed?: number
+  last_skipped?: number
+  last_duration_ms?: number
+}
+
+/** `POST /index/update` body. Mirrors Rust `UpdateReport`. */
+export interface UpdateReport {
+  updated: number
+  deleted: number
+}
+
 /**
  * One item a destructive action will affect. Mirrors Rust
  * `DestructivePreviewItem`. The destructive-warning handler returns an empty
@@ -916,6 +1016,59 @@ export async function activity(opts?: {
   if (opts?.since) query.since = opts.since
   if (opts?.limit !== undefined) query.limit = String(opts.limit)
   return request<ActivityEvent[]>({ method: 'GET', path: '/activity', query })
+}
+
+// ── Phase 4 — Config + index management routes ──────────────────────────────
+//
+// `GET /config` + `GET /index-status` are session-only (no CSRF).
+// `POST /index/update` + `POST /index/rebuild` are CSRF-gated mutations
+// (cheap path vs. background job respectively).
+
+/** `GET /config` — masked, read-only projection of `GlobalConfig`. */
+export async function config(): Promise<ConfigView> {
+  return request<ConfigView>({ method: 'GET', path: '/config' })
+}
+
+/**
+ * `GET /index-status?wiki=name` — index health for a single wiki. `wiki`
+ * omitted → the server's default/first wiki (mirrors the Rust handler, which
+ * falls back to the configured default when the param is absent).
+ */
+export async function indexStatus(wiki?: string): Promise<IndexStatus> {
+  return request<IndexStatus>({
+    method: 'GET',
+    path: '/index-status',
+    query: wiki ? { wiki } : {},
+  })
+}
+
+/**
+ * `POST /index/update` body `{wiki}` — incremental update (cheap path,
+ * re-indexes only changed pages). CSRF-gated. Returns the per-wiki update
+ * tally (`updated` + `deleted` counts).
+ */
+export async function indexUpdate(wiki: string): Promise<UpdateReport> {
+  return request<UpdateReport>({
+    method: 'POST',
+    path: '/index/update',
+    body: { wiki },
+    csrf: true,
+  })
+}
+
+/**
+ * `POST /index/rebuild` body `{wiki}` — full rebuild, scheduled as a
+ * background job. Returns `{job_id}` immediately so the caller can poll
+ * `/ops/jobs` (or just refresh `/index-status` after the job settles).
+ * CSRF-gated.
+ */
+export async function indexRebuild(wiki: string): Promise<{ job_id: string }> {
+  return request<{ job_id: string }>({
+    method: 'POST',
+    path: '/index/rebuild',
+    body: { wiki },
+    csrf: true,
+  })
 }
 
 /**
