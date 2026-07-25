@@ -15,6 +15,7 @@
     type SystemPage,
   } from './lib/router'
   import Home from './pages/Home.svelte'
+  import Today from './pages/Today.svelte'
   import Search from './pages/Search.svelte'
   import Inbox from './pages/Inbox.svelte'
   import Entity from './pages/Entity.svelte'
@@ -244,6 +245,8 @@
     </section>
   {:else if currentPage === 'home'}
     <Home {session} {toasts} />
+  {:else if currentPage === 'today'}
+    <Today {session} {toasts} />
   {:else if currentPage === 'search'}
     <Search {session} {toasts} />
   {:else if currentPage === 'inbox'}
