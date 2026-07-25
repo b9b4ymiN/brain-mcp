@@ -2,6 +2,7 @@ mod helpers;
 
 mod activity;
 mod config;
+mod config_view;
 mod content;
 mod export;
 mod graph;
