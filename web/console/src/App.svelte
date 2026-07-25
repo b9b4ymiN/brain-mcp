@@ -7,7 +7,6 @@
     navigate,
     onRouteChange,
     parseHash,
-    PAGES,
     PRIMARY_PAGES,
     SYSTEM_PAGES,
     PAGE_LABELS,
