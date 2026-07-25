@@ -132,3 +132,106 @@ async def test_watcher_picks_up_external_file_write(tmp_path):
             task.cancel()
         if exc_holder:
             raise exc_holder[0]
+
+
+@pytest.mark.asyncio
+async def test_watcher_poll_mode_via_env_override(tmp_path, monkeypatch):
+    """Env var LLM_WIKI_WATCH_BACKEND=poll forces the PollWatcher backend.
+
+    Auto-detection on a local filesystem would normally pick Native; the env
+    override forces Poll regardless. A host-side write must then be picked
+    up within poll_interval_ms (500ms here) + debounce (100ms) + slack.
+    """
+    repo_root = tmp_path / "brain"
+    _init_wiki(RESEARCH_FIXTURE, repo_root)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[global]\n"
+        'default_wiki = "research"\n\n'
+        "[[wikis]]\n"
+        'name = "research"\n'
+        f'path = "{repo_root.as_posix()}"\n\n'
+        "[watch]\n"
+        "debounce_ms = 100\n"
+    )
+
+    # Force poll backend via env var with a short poll interval so the test
+    # does not have to wait the 30s default.
+    monkeypatch.setenv("LLM_WIKI_WATCH_BACKEND", "poll")
+    monkeypatch.setenv("LLM_WIKI_WATCH_POLL_MS", "500")
+
+    server = StdioServerParameters(
+        command=BIN,
+        args=["--config", str(config_path), "serve", "--watch"],
+        env=dict(os.environ),
+    )
+
+    ready: asyncio.Future = asyncio.get_event_loop().create_future()
+    stop: asyncio.Event = asyncio.Event()
+    session_holder: list = []
+    exc_holder: list = []
+
+    async def _run():
+        try:
+            async with stdio_client(server) as (read, write), ClientSession(
+                read, write
+            ) as session:
+                await session.initialize()
+                session_holder.append(session)
+                ready.set_result(None)
+                await stop.wait()
+        except Exception as e:
+            if not ready.done():
+                ready.set_exception(e)
+            else:
+                exc_holder.append(e)
+
+    task = asyncio.ensure_future(_run())
+    try:
+        await ready
+
+        sentinel = "ZQXEnvOverridePollSentinel"
+        page_path = repo_root / "wiki" / "concepts" / "env-override-sentinel.md"
+        page_path.parent.mkdir(parents=True, exist_ok=True)
+        page_path.write_text(
+            "---\n"
+            f"title: Env Override Sentinel\n"
+            "type: concept\n"
+            "status: active\n"
+            "---\n\n"
+            f"{sentinel} body.\n"
+        )
+
+        session = session_holder[0]
+        # Poll for up to 10s. Poll interval is 500ms + debounce 100ms + slack.
+        deadline = asyncio.get_event_loop().time() + 10.0
+        found = False
+        last_results = None
+        while asyncio.get_event_loop().time() < deadline:
+            result = await session.call_tool(
+                "wiki_search", {"query": sentinel, "wiki": "research"}
+            )
+            text = result.content[0].text if result.content else "{}"
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                data = {"results": []}
+            last_results = data
+            slugs = [r.get("slug", "") for r in data.get("results", [])]
+            if any("env-override-sentinel" in s for s in slugs):
+                found = True
+                break
+            await asyncio.sleep(0.5)
+
+        assert found, (
+            "env-override poll backend did not pick up external write within "
+            f"10s — last results: {last_results}"
+        )
+    finally:
+        stop.set()
+        try:
+            await asyncio.wait_for(task, timeout=5)
+        except TimeoutError:
+            task.cancel()
+        if exc_holder:
+            raise exc_holder[0]

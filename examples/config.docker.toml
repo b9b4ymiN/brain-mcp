@@ -84,6 +84,17 @@ log_max_files = 7
 [index]
 auto_rebuild = true
 
+# ── [watch] (Layer 2 — filesystem watcher backend selection) ────────────────
+# The watcher auto-detects the filesystem at startup: inotify on local Linux
+# filesystems, PollWatcher on virtualized bind mounts (Docker Desktop
+# Windows/macOS), NFS, SMB, FUSE — the filesystems where inotify silently
+# fails. Override only if detection is wrong for your environment.
+#
+# backend = "auto"            # auto (default) | native | poll
+# poll_interval_ms = 30000    # only used when backend resolves to poll
+[watch]
+debounce_ms = 500
+
 # ── Wiki space registration ────────────────────────────────────────────────
 #
 # `spaces create` via MCP cannot write this file (bind-mounted :ro by design)

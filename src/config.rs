@@ -737,11 +737,43 @@ pub struct WatchConfig {
     /// Debounce delay in milliseconds before triggering ingest after a file change (default: 500).
     #[serde(default = "default_debounce_ms")]
     pub debounce_ms: u32,
+    /// Watcher backend selection (default: auto — statfs-detect broken filesystems).
+    #[serde(default)]
+    pub backend: WatchBackendConfig,
+    /// Poll interval in milliseconds when running in `poll` mode
+    /// (default: 30000, matches notify upstream).
+    #[serde(default = "default_poll_interval_ms")]
+    pub poll_interval_ms: u32,
+}
+
+/// Operator-selected watcher backend.
+///
+/// `Auto` (default) statfs-probes each `wiki_root` at startup and falls back
+/// to `Poll` if any sits on a known-broken filesystem (V9FS, NFS, CIFS,
+/// FUSE). `Native` forces the OS-native watcher
+/// (inotify/FSEvents/ReadDirectoryChanges). `Poll` forces polling — required
+/// for Docker Desktop bind mounts on Windows/macOS where inotify silently
+/// fails across the V9FS / gRPC-FUSE virtualized bind mount.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WatchBackendConfig {
+    #[default]
+    Auto,
+    Native,
+    Poll,
+}
+
+fn default_poll_interval_ms() -> u32 {
+    30000
 }
 
 impl Default for WatchConfig {
     fn default() -> Self {
-        Self { debounce_ms: 500 }
+        Self {
+            debounce_ms: default_debounce_ms(),
+            backend: WatchBackendConfig::Auto,
+            poll_interval_ms: default_poll_interval_ms(),
+        }
     }
 }
 
@@ -1142,13 +1174,42 @@ pub fn resolve(global: &GlobalConfig, per_wiki: &WikiConfig) -> ResolvedConfig {
 
 /// Load the global config from a TOML file. Returns default config if the file is absent.
 pub fn load_global(path: &Path) -> Result<GlobalConfig> {
-    if !path.exists() {
-        return Ok(GlobalConfig::default());
+    let mut config: GlobalConfig = if !path.exists() {
+        GlobalConfig::default()
+    } else {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?
+    };
+
+    // Watcher env overrides (watcher bind-mount reliability, 2026-07-25).
+    // Env wins over config file, mirroring the [provider] env-var indirection
+    // pattern. Operators on Docker Desktop can force `poll` without editing
+    // the (often read-only) bind-mounted config file.
+    if let Ok(val) = std::env::var("LLM_WIKI_WATCH_BACKEND") {
+        match val.trim().to_ascii_lowercase().as_str() {
+            "auto" => config.watch.backend = WatchBackendConfig::Auto,
+            "native" => config.watch.backend = WatchBackendConfig::Native,
+            "poll" => config.watch.backend = WatchBackendConfig::Poll,
+            other => {
+                tracing::warn!(
+                    var = %other,
+                    "LLM_WIKI_WATCH_BACKEND must be auto|native|poll; ignoring"
+                );
+            }
+        }
     }
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    let config: GlobalConfig =
-        toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
+    if let Ok(val) = std::env::var("LLM_WIKI_WATCH_POLL_MS") {
+        match val.trim().parse::<u32>() {
+            Ok(ms) if ms >= 100 => config.watch.poll_interval_ms = ms,
+            Ok(ms) => tracing::warn!(ms, "LLM_WIKI_WATCH_POLL_MS must be >= 100; ignoring"),
+            Err(_) => tracing::warn!(
+                raw = %val,
+                "LLM_WIKI_WATCH_POLL_MS is not a valid u32; ignoring"
+            ),
+        }
+    }
+
     Ok(config)
 }
 

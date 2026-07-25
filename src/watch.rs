@@ -4,11 +4,141 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Event, EventKind, RecursiveMode};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::engine::WikiEngine;
+
+// ── Filesystem magic detection (watcher bind-mount reliability, 2026-07-25) ──
+
+/// Selected watcher backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    /// OS-native event-driven watcher (inotify / FSEvents / ReadDirectoryChanges).
+    Native,
+    /// Polling watcher — universal fallback for virtual / network filesystems
+    /// that do not deliver native events (V9FS bind mounts, NFS, CIFS, FUSE).
+    Poll,
+}
+
+/// Classification of a single filesystem based on its statfs magic number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilesystemKind {
+    /// Local filesystem that delivers reliable native events.
+    Native,
+    /// Virtual / network filesystem where inotify silently fails — must poll.
+    Broken,
+}
+
+/// Map a statfs filesystem magic number to a [`FilesystemKind`].
+///
+/// Magic numbers from `<linux/magic.h>`. Unknown magic numbers fall back to
+/// [`FilesystemKind::Native`] (fail-open — do not block startup on an
+/// unfamiliar filesystem; the operator can force `poll` via config if
+/// needed).
+pub fn fs_magic_kind(magic: u64) -> FilesystemKind {
+    // V9FS_MAGIC = 0x01021997 — WSL2 9P interop, the Docker Desktop Windows
+    // bind mount. Verified against include/uapi/linux/magic.h in the kernel.
+    const V9FS_MAGIC: u64 = 0x01021997;
+    // NFS_SUPER_MAGIC.
+    const NFS_SUPER_MAGIC: u64 = 0x6969;
+    // CIFS_MAGIC_NUMBER — SMB / CIFS.
+    const CIFS_MAGIC_NUMBER: u64 = 0xff534d42;
+    // FUSE_SUPER_MAGIC — includes gRPC-FUSE (Docker Desktop macOS bind mount).
+    const FUSE_SUPER_MAGIC: u64 = 0x65735546;
+
+    match magic {
+        V9FS_MAGIC | NFS_SUPER_MAGIC | CIFS_MAGIC_NUMBER | FUSE_SUPER_MAGIC => {
+            FilesystemKind::Broken
+        }
+        _ => FilesystemKind::Native,
+    }
+}
+
+/// Resolve the final [`Backend`] given the operator config and the per-wiki
+/// filesystem classifications.
+///
+/// - `Native` / `Poll` config: returned verbatim, bypassing detection.
+/// - `Auto` (default): `Poll` wins if **any** watched path sits on a broken
+///   filesystem; otherwise `Native`. An empty watch list defaults to
+///   `Native` (no work to do either way).
+pub fn resolve_backend(config: &crate::config::WatchConfig, kinds: &[FilesystemKind]) -> Backend {
+    use crate::config::WatchBackendConfig;
+
+    match config.backend {
+        WatchBackendConfig::Native => Backend::Native,
+        WatchBackendConfig::Poll => Backend::Poll,
+        WatchBackendConfig::Auto => {
+            if kinds.iter().any(|k| *k == FilesystemKind::Broken) {
+                Backend::Poll
+            } else {
+                Backend::Native
+            }
+        }
+    }
+}
+
+/// statfs-probe each `wiki_root` and return its [`FilesystemKind`].
+///
+/// On Linux: real `libc::statfs` call per path. Failures are logged at WARN
+/// and treated as [`FilesystemKind::Native`] (fail-open).
+///
+/// On non-Linux targets: always returns `Native` for each path. Other
+/// platforms (macOS, Windows) do not have the bind-mount silent-failure
+/// problem because their native watchers already use the right API
+/// (FSEvents on macOS, ReadDirectoryChangesW on Windows). The Docker
+/// Desktop containers, however, are Linux — so the cfg gate below is what
+/// matters in practice.
+pub fn statfs_wiki_roots(wiki_roots: &[PathBuf]) -> Vec<FilesystemKind> {
+    wiki_roots.iter().map(|p| statfs_kind(p)).collect()
+}
+
+#[cfg(target_os = "linux")]
+fn statfs_kind(path: &Path) -> FilesystemKind {
+    use std::ffi::CString;
+
+    let c_path = match CString::new(path.as_os_str().as_encoded_bytes()) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "statfs: path contained NUL; treating as Native"
+            );
+            return FilesystemKind::Native;
+        }
+    };
+
+    let mut buf = unsafe { std::mem::zeroed::<libc::statfs>() };
+    let rc = unsafe { libc::statfs(c_path.as_ptr(), &mut buf) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        tracing::warn!(
+            path = %path.display(),
+            error = %err,
+            "statfs failed; treating as Native"
+        );
+        return FilesystemKind::Native;
+    }
+
+    let magic = buf.f_type as u64;
+    let kind = fs_magic_kind(magic);
+    tracing::debug!(
+        path = %path.display(),
+        magic = format!("{:#x}", magic),
+        kind = ?kind,
+        "statfs detected filesystem"
+    );
+    kind
+}
+
+#[cfg(not(target_os = "linux"))]
+fn statfs_kind(_path: &Path) -> FilesystemKind {
+    // Non-Linux targets: native watchers (FSEvents, ReadDirectoryChangesW) are
+    // already correct. statfs is a Linux-specific concept.
+    FilesystemKind::Native
+}
 
 // ── Event types ───────────────────────────────────────────────────────────────
 
@@ -208,59 +338,110 @@ fn is_wiki_md(path: &Path) -> bool {
         && path.extension().and_then(|e| e.to_str()) == Some("md")
 }
 
+/// Build a `Box<dyn notify::Watcher>` of the requested backend, sharing the
+/// same event-handler closure shape used today.
+///
+/// Both `RecommendedWatcher` and `PollWatcher` accept the same closure
+/// signature (`FnMut(Result<Event, notify::Error>)`), so the closure body
+/// does not change — only the constructor call differs. `PollWatcher` is
+/// configured with `Config::default().with_poll_interval(poll_interval)`.
+fn build_watcher<F>(
+    backend: Backend,
+    poll_interval_ms: u32,
+    handler: F,
+) -> Result<Box<dyn notify::Watcher + Send>>
+where
+    F: FnMut(Result<Event, notify::Error>) + Send + 'static,
+{
+    match backend {
+        Backend::Native => {
+            let w = notify::recommended_watcher(handler)?;
+            Ok(Box::new(w))
+        }
+        Backend::Poll => {
+            let cfg = notify::Config::default()
+                .with_poll_interval(Duration::from_millis(poll_interval_ms as u64));
+            let w = notify::PollWatcher::new(handler, cfg)?;
+            Ok(Box::new(w))
+        }
+    }
+}
+
 fn start_notify_watcher(
     engine: &WikiEngine,
     tx: mpsc::Sender<(String, PathBuf)>,
     cancel: CancellationToken,
-) -> Result<RecommendedWatcher> {
-    let state = engine.state.read();
+) -> Result<Box<dyn notify::Watcher + Send>> {
+    let (watch_dirs, watch_config) = {
+        let state = engine.state.read();
+        let dirs: Vec<(String, PathBuf, PathBuf)> = state
+            .spaces
+            .iter()
+            .map(|(name, space)| {
+                (
+                    name.clone(),
+                    space.wiki_root.clone(),
+                    space.repo_root.clone(),
+                )
+            })
+            .collect();
+        let cfg = state.config.watch.clone();
+        (dirs, cfg)
+    };
 
-    // Build a map of watched paths to wiki names
-    let mut watch_dirs: Vec<(String, PathBuf, PathBuf)> = Vec::new();
-    for (name, space) in &state.spaces {
-        watch_dirs.push((
-            name.clone(),
-            space.wiki_root.clone(),
-            space.repo_root.clone(),
-        ));
-    }
-    drop(state);
+    // Detect filesystem kind per wiki_root, then resolve the final backend.
+    // Auto mode (default) probes via statfs and picks Poll if any wiki sits
+    // on a known-broken filesystem (V9FS/NFS/CIFS/FUSE); forced native/poll
+    // bypass detection entirely.
+    let wiki_roots: Vec<PathBuf> = watch_dirs.iter().map(|(_, root, _)| root.clone()).collect();
+    let kinds = statfs_wiki_roots(&wiki_roots);
+    let backend = resolve_backend(&watch_config, &kinds);
+    tracing::info!(
+        backend = ?backend,
+        poll_interval_ms = watch_config.poll_interval_ms,
+        detected = ?kinds,
+        "watcher backend selected"
+    );
 
     let tx_clone = tx.clone();
     let watch_dirs_clone = watch_dirs.clone();
 
-    let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-        if cancel.is_cancelled() {
-            return;
-        }
-        let event = match res {
-            Ok(ev) => ev,
-            Err(e) => {
-                tracing::error!(error = %e, "filesystem watcher error");
+    let mut watcher = build_watcher(
+        backend,
+        watch_config.poll_interval_ms,
+        move |res: Result<Event, notify::Error>| {
+            if cancel.is_cancelled() {
                 return;
             }
-        };
-
-        // Only care about create, modify, rename
-        match event.kind {
-            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {}
-            _ => return,
-        }
-
-        for path in &event.paths {
-            // Find which wiki this path belongs to
-            for (wiki_name, wiki_root, repo_root) in &watch_dirs_clone {
-                if path.starts_with(wiki_root) && is_wiki_md(path) {
-                    let _ = tx_clone.try_send((wiki_name.clone(), path.clone()));
-                    break;
+            let event = match res {
+                Ok(ev) => ev,
+                Err(e) => {
+                    tracing::error!(error = %e, "filesystem watcher error");
+                    return;
                 }
-                if path.starts_with(repo_root.join("schemas")) && is_schema_path(path) {
-                    let _ = tx_clone.try_send((wiki_name.clone(), path.clone()));
-                    break;
+            };
+
+            // Only care about create, modify, rename
+            match event.kind {
+                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {}
+                _ => return,
+            }
+
+            for path in &event.paths {
+                // Find which wiki this path belongs to
+                for (wiki_name, wiki_root, repo_root) in &watch_dirs_clone {
+                    if path.starts_with(wiki_root) && is_wiki_md(path) {
+                        let _ = tx_clone.try_send((wiki_name.clone(), path.clone()));
+                        break;
+                    }
+                    if path.starts_with(repo_root.join("schemas")) && is_schema_path(path) {
+                        let _ = tx_clone.try_send((wiki_name.clone(), path.clone()));
+                        break;
+                    }
                 }
             }
-        }
-    })?;
+        },
+    )?;
 
     // Watch wiki/ and schemas/ for each mounted wiki
     for (_, wiki_root, repo_root) in &watch_dirs {

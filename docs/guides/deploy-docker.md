@@ -151,8 +151,13 @@ The search index and Console UI reflect wiki writes without a manual
 2. **Filesystem watcher (Layer 2 — safety net).** The container runs with
    `--watch` by default (Dockerfile CMD + docker-compose `command:`), so
    external edits — `git pull` from another machine, host-side editor writes
-   via the bind mount — are caught by `notify` + a debounced incremental
-   update. See `src/watch.rs`.
+   via the bind mount — are caught by the watcher. At startup the watcher
+   statfs-probes each `wiki_root` and auto-selects the right backend:
+   `RecommendedWatcher` (inotify) on local Linux filesystems, `PollWatcher`
+   on virtualized bind mounts (Docker Desktop Windows/macOS), NFS, SMB, and
+   FUSE — the filesystems where inotify silently fails. Override with env
+   vars `LLM_WIKI_WATCH_BACKEND=auto|native|poll` and
+   `LLM_WIKI_WATCH_POLL_MS=<ms>` (default 30000). See `src/watch.rs`.
 3. **Boot recovery (Layer 3 — defense-in-depth).** `examples/config.docker.toml`
    sets `[index] auto_rebuild = true`, so a stale or corrupt index is rebuilt
    automatically on the next container start. The code default stays `false`
