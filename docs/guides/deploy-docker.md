@@ -137,6 +137,32 @@ convention. The loopback bind default (`127.0.0.1:8080`) protects it on a dev
 box; production puts it behind a reverse proxy that auth-gates the route (or
 scrapes over a private Compose network).
 
+### Auto-indexing (write-time + watcher + boot recovery)
+
+The search index and Console UI reflect wiki writes without a manual
+`wiki_index_rebuild` via three layered defenses:
+
+1. **Write-time index (Layer 1 — primary).** The `wiki_content_commit` and
+   `wiki_ingest` MCP tools refresh the tantivy index immediately after their
+   git commit succeeds, then sync Hugo content and notify the web refresh
+   channel. Read-after-write consistency for MCP writes does not depend on
+   any other layer. A failure here is non-fatal — the commit still succeeds;
+   the response surfaces `index_updated: 0` and Layers 2 and 3 recover.
+2. **Filesystem watcher (Layer 2 — safety net).** The container runs with
+   `--watch` by default (Dockerfile CMD + docker-compose `command:`), so
+   external edits — `git pull` from another machine, host-side editor writes
+   via the bind mount — are caught by `notify` + a debounced incremental
+   update. See `src/watch.rs`.
+3. **Boot recovery (Layer 3 — defense-in-depth).** `examples/config.docker.toml`
+   sets `[index] auto_rebuild = true`, so a stale or corrupt index is rebuilt
+   automatically on the next container start. The code default stays `false`
+   for local dev; only this production-style example opts in.
+
+All three layers are idempotent on the indexed commit hash; overlap is free.
+To disable the watcher for a specific deployment, override `command:` in
+`docker-compose.yml` (drop `--watch`). To disable boot recovery, omit the
+`[index]` section or set `auto_rebuild = false` in your `config.toml`.
+
 Tear down:
 
 ```bash
