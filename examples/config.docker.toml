@@ -74,6 +74,16 @@ log_format = "json"
 log_rotation = "daily"
 log_max_files = 7
 
+# ── [index] (Layer 3 — boot-time recovery) ──────────────────────────────────
+# If the watcher (Layer 2) died in a previous run, or the index became stale
+# between container restarts, the next boot rebuilds automatically rather
+# than silently serving stale search results. The brain wiki is small (~tens
+# of pages), so a rebuild is sub-second. The code default stays false
+# (src/config.rs::IndexConfig::default) for local dev where startup latency
+# matters more; this production-style example opts in.
+[index]
+auto_rebuild = true
+
 # ── Wiki space registration ────────────────────────────────────────────────
 #
 # `spaces create` via MCP cannot write this file (bind-mounted :ro by design)
