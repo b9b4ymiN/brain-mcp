@@ -17,6 +17,7 @@
   import Entity from './pages/Entity.svelte'
   import Operations from './pages/Operations.svelte'
   import Status from './pages/Status.svelte'
+  import Config from './pages/Config.svelte'
   import Activity from './pages/Activity.svelte'
   import SpaceBackdrop from './components/SpaceBackdrop.svelte'
   import HudFrame from './components/HudFrame.svelte'
@@ -245,6 +246,8 @@
     <Operations {session} {toasts} />
   {:else if currentPage === 'status'}
     <Status {session} {toasts} />
+  {:else if currentPage === 'config'}
+    <Config {session} {toasts} />
   {:else if currentPage === 'activity'}
     <Activity {session} {toasts} />
   {/if}
