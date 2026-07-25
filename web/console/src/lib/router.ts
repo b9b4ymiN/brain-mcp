@@ -10,40 +10,52 @@
  * navigation aligns without translation.
  */
 
-/** The five primary Console pages. Mirrors Rust `ConsolePage` (snake_case). */
-export type ConsolePage = 'home' | 'search' | 'inbox' | 'entity' | 'operations'
-
 /**
- * Page → hash mapping. The hash is always `#/<page>`. Iterating this record
- * drives the nav bar render in `App.svelte`.
+ * The Console pages. Mirrors Rust `ConsolePage` (snake_case).
+ * Split into primary nav (6) and system dropdown (3) per IA-B'.
  */
+export type PrimaryPage = 'home' | 'today' | 'search' | 'inbox' | 'entity' | 'operations'
+export type SystemPage = 'activity' | 'status' | 'config'
+export type ConsolePage = PrimaryPage | SystemPage
+
+/** Page → hash mapping. Hash is always `#/<page>`. */
 export const ROUTES: Record<ConsolePage, string> = {
   home: '#/home',
+  today: '#/today',
   search: '#/search',
   inbox: '#/inbox',
   entity: '#/entity',
   operations: '#/operations',
+  activity: '#/activity',
+  status: '#/status',
+  config: '#/config',
 }
 
-/** All pages in nav-display order. */
-export const PAGES: readonly ConsolePage[] = ['home', 'search', 'inbox', 'entity', 'operations']
+/** Primary nav in display order (top bar). */
+export const PRIMARY_PAGES: readonly PrimaryPage[] =
+  ['home', 'today', 'search', 'inbox', 'entity', 'operations']
 
-/** Human-readable label for each page (used in nav + headings). */
+/** System dropdown in display order. */
+export const SYSTEM_PAGES: readonly SystemPage[] = ['activity', 'status', 'config']
+
+/** All pages — kept for callers that iterate every page (e.g. footer). */
+export const PAGES: readonly ConsolePage[] = [...PRIMARY_PAGES, ...SYSTEM_PAGES]
+
+/** Human-readable label per page (nav + headings + footer). */
 export const PAGE_LABELS: Record<ConsolePage, string> = {
   home: 'Home',
+  today: 'Today',
   search: 'Search',
   inbox: 'Inbox',
   entity: 'Entity',
   operations: 'Operations',
+  activity: 'Activity',
+  status: 'Status',
+  config: 'Config',
 }
 
-/**
- * Parse `location.hash` into a `ConsolePage`. Defaults to `home` for empty
- * or unrecognized hashes. Trims a leading `#/`.
- */
+/** Parse `location.hash` into a `ConsolePage`. Defaults to `home`. */
 export function parseHash(hash: string = location.hash): ConsolePage {
-  // Strip leading '#' and any leading '/' — tolerate `#home`, `#/home`,
-  // `#/home/`, and query-string suffixes.
   const trimmed = hash.replace(/^#\/?/, '').split(/[/?]/)[0]
   if (isConsolePage(trimmed)) {
     return trimmed
@@ -51,13 +63,9 @@ export function parseHash(hash: string = location.hash): ConsolePage {
   return 'home'
 }
 
-/** Type guard: is this string a known `ConsolePage` value? */
+/** Type guard. */
 function isConsolePage(value: string): value is ConsolePage {
-  return value === 'home' ||
-    value === 'search' ||
-    value === 'inbox' ||
-    value === 'entity' ||
-    value === 'operations'
+  return (PAGES as readonly string[]).includes(value)
 }
 
 /** Navigate to a page by setting `location.hash`. No history noise. */
