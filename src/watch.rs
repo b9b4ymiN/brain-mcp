@@ -81,6 +81,67 @@ pub fn resolve_backend(
     }
 }
 
+/// statfs-probe each `wiki_root` and return its [`FilesystemKind`].
+///
+/// On Linux: real `libc::statfs` call per path. Failures are logged at WARN
+/// and treated as [`FilesystemKind::Native`] (fail-open).
+///
+/// On non-Linux targets: always returns `Native` for each path. Other
+/// platforms (macOS, Windows) do not have the bind-mount silent-failure
+/// problem because their native watchers already use the right API
+/// (FSEvents on macOS, ReadDirectoryChangesW on Windows). The Docker
+/// Desktop containers, however, are Linux — so the cfg gate below is what
+/// matters in practice.
+pub fn statfs_wiki_roots(wiki_roots: &[PathBuf]) -> Vec<FilesystemKind> {
+    wiki_roots.iter().map(|p| statfs_kind(p)).collect()
+}
+
+#[cfg(target_os = "linux")]
+fn statfs_kind(path: &Path) -> FilesystemKind {
+    use std::ffi::CString;
+
+    let c_path = match CString::new(path.as_os_str().as_encoded_bytes()) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "statfs: path contained NUL; treating as Native"
+            );
+            return FilesystemKind::Native;
+        }
+    };
+
+    let mut buf = unsafe { std::mem::zeroed::<libc::statfs>() };
+    let rc = unsafe { libc::statfs(c_path.as_ptr(), &mut buf) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        tracing::warn!(
+            path = %path.display(),
+            error = %err,
+            "statfs failed; treating as Native"
+        );
+        return FilesystemKind::Native;
+    }
+
+    let magic = buf.f_type as u64;
+    let kind = fs_magic_kind(magic);
+    tracing::debug!(
+        path = %path.display(),
+        magic = format!("{:#x}", magic),
+        kind = ?kind,
+        "statfs detected filesystem"
+    );
+    kind
+}
+
+#[cfg(not(target_os = "linux"))]
+fn statfs_kind(_path: &Path) -> FilesystemKind {
+    // Non-Linux targets: native watchers (FSEvents, ReadDirectoryChangesW) are
+    // already correct. statfs is a Linux-specific concept.
+    FilesystemKind::Native
+}
+
 // ── Event types ───────────────────────────────────────────────────────────────
 
 enum WatchAction {
