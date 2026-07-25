@@ -274,29 +274,51 @@ pub fn handle_content_read(server: &McpServer, args: &Map<String, Value>) -> Too
 pub fn handle_content_write(server: &McpServer, args: &Map<String, Value>) -> ToolHandlerResult {
     let uri = arg_str_req(args, "uri")?;
     let content = arg_str_req(args, "content")?;
-    let engine = server.engine();
+    // Default commit=true (the entire point of the merge). Default redact=false.
+    let commit = args.get("commit").and_then(|v| v.as_bool()).unwrap_or(true);
+    let redact = arg_bool(args, "redact");
     let wiki_flag = arg_str(args, "wiki");
-    let wiki_name = engine.resolve_wiki_name(wiki_flag.as_deref()).to_string();
-    let canonical_uri = ops::canonicalize_uri_for_content(&uri, &content);
 
-    let result = ops::content_write(
-        &engine,
-        &server.manager,
-        &canonical_uri,
-        wiki_flag.as_deref(),
-        &content,
-        /* commit */ true,   // default; overridden by arg in Task 4
-        /* redact */ false,
-    )
-    .map_err(|e| format!("{e}"))?;
-    drop(engine);
-    let web_content_synced = sync_web_content(server, &wiki_name)?;
+    let (canonical_uri, wiki_name) = {
+        let engine = server.engine();
+        let wiki_name = engine.resolve_wiki_name(wiki_flag.as_deref()).to_string();
+        let canonical_uri = ops::canonicalize_uri_for_content(&uri, &content);
+        (canonical_uri, wiki_name)
+    };
+
+    let result = {
+        let engine = server.engine();
+        ops::content_write(
+            &engine,
+            &server.manager,
+            &canonical_uri,
+            wiki_flag.as_deref(),
+            &content,
+            commit,
+            redact,
+        )
+        .map_err(|e| format!("{e}"))?
+    };
+
+    // sync_web_content is part of the commit=true path (ingest already
+    // refreshed the index). When commit=false, nothing has changed in the
+    // durable layer, so there is nothing to sync.
+    let web_content_synced = if commit {
+        sync_web_content(server, &wiki_name)?
+    } else {
+        None
+    };
+
     let response = serde_json::json!({
         "bytes_written": result.bytes_written,
         "path": result.path,
         "slug": result.slug,
         "uri": format!("wiki://{}/{}", wiki_name, result.slug),
         "canonicalized_from": if canonical_uri != uri { Some(uri) } else { None },
+        "commit": commit,
+        "commit_sha": result.commit_sha,
+        "index_updated": result.index_report.as_ref().map(|r| r.updated).unwrap_or(0),
+        "index_deleted": result.index_report.as_ref().map(|r| r.deleted).unwrap_or(0),
         "web_content_synced": web_content_synced,
     });
     let s = serde_json::to_string_pretty(&response).map_err(|e| format!("{e}"))?;
