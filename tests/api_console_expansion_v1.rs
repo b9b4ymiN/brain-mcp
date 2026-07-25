@@ -197,3 +197,161 @@ async fn activity_returns_events_array() {
         assert!(first["detail"]["subject"].is_string(), "detail.subject is a string");
     }
 }
+
+// ── /config (Task 16) ──────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn config_requires_session() {
+    let (_dir, state) = make_state();
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{base}/api/v1/config"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn config_returns_view_shape() {
+    let (_dir, state) = make_state();
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+    let (cookie, _csrf) = login(&client, &base, SECRET).await.expect("login ok");
+
+    let resp = client
+        .get(format!("{base}/api/v1/config"))
+        .header("Cookie", cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    // ConfigView shape (subset).
+    assert!(body["wiki_spaces"].is_array(), "wiki_spaces is an array");
+    assert!(
+        body["server"]["http_enabled"].is_boolean(),
+        "server.http_enabled is a boolean"
+    );
+    assert!(
+        body["extraction"]["enabled"].is_boolean(),
+        "extraction.enabled is a boolean"
+    );
+}
+
+// ── /index-status (Task 16) ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn index_status_requires_session() {
+    let (_dir, state) = make_state();
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{base}/api/v1/index-status"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn index_status_returns_status_shape() {
+    let (_dir, state) = make_state();
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+    let (cookie, _csrf) = login(&client, &base, SECRET).await.expect("login ok");
+
+    let resp = client
+        .get(format!("{base}/api/v1/index-status"))
+        .header("Cookie", cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body["wiki"].is_string(), "wiki field is a string");
+    assert!(
+        body["stale"].is_boolean(),
+        "stale field is a boolean"
+    );
+    assert!(
+        body["queryable"].is_boolean(),
+        "queryable field is a boolean"
+    );
+}
+
+// ── /index/update (Task 16) ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn index_update_requires_csrf() {
+    let (_dir, state) = make_state();
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+    let (cookie, _csrf) = login(&client, &base, SECRET).await.expect("login ok");
+
+    // Wrong CSRF token → 403 (session resolves first, so this is 403 not 401).
+    let resp = client
+        .post(format!("{base}/api/v1/index/update"))
+        .header("Cookie", cookie)
+        .header("X-CSRF-Token", "wrong-token")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+}
+
+#[tokio::test]
+async fn index_update_succeeds_with_csrf() {
+    let (_dir, state) = make_state();
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+    let (cookie, csrf) = login(&client, &base, SECRET).await.expect("login ok");
+
+    let resp = client
+        .post(format!("{base}/api/v1/index/update"))
+        .header("Cookie", cookie)
+        .header("X-CSRF-Token", csrf)
+        .json(&serde_json::json!({ "wiki": "test" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    // UpdateReport shape: { updated: usize, deleted: usize }.
+    assert!(
+        body["updated"].is_i64(),
+        "updated is an integer (got: {body})"
+    );
+    assert!(
+        body["deleted"].is_i64(),
+        "deleted is an integer (got: {body})"
+    );
+}
+
+// ── /index/rebuild (Task 16) ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn index_rebuild_returns_job_id() {
+    let (_dir, state) = make_state();
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+    let (cookie, csrf) = login(&client, &base, SECRET).await.expect("login ok");
+
+    let resp = client
+        .post(format!("{base}/api/v1/index/rebuild"))
+        .header("Cookie", cookie)
+        .header("X-CSRF-Token", csrf)
+        .json(&serde_json::json!({ "wiki": "test" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    // Returns { job_id: String } immediately; rebuild runs in the background.
+    assert!(
+        body["job_id"].is_string(),
+        "rebuild returns a job_id immediately (got: {body})"
+    );
+}
