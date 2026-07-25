@@ -6,7 +6,7 @@ import { loginAsConsole } from './helpers.ts'
 // The Rust `/status` endpoint (Task 6) returns `WikiStats`; this spec proves
 // the Status page renders the hero band (severity + key metrics) and at least
 // one detail panel after a real login. The second test covers the "Reindex →"
-// link to /config and is skipped until Task 17 lands the Config page.
+// link to /config — re-enabled once Task 17 landed the Config page.
 
 test.beforeEach(async ({ page }) => {
   await loginAsConsole(page)
@@ -25,10 +25,8 @@ test('status page renders hero + detail grid', async ({ page }) => {
   await expect(page.getByText('Staleness', { exact: false })).toBeVisible()
 })
 
-// TODO(Task 17 — Config page): un-skip once /config renders. The Reindex
-// button navigates to Config, which doesn't exist yet, so the assertion on
-// `#\/config$` would fail today.
-test.skip('status page Reindex link navigates to config', async ({ page }) => {
+// Config page now exists (Task 17) — Reindex navigates to /config.
+test('status page Reindex link navigates to config', async ({ page }) => {
   await page.goto('/#/status')
   await page.getByRole('button', { name: /Reindex/ }).click()
   await expect(page).toHaveURL(/#\/config$/)
