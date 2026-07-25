@@ -121,3 +121,47 @@ async def test_content_commit_after_write(mutable_mcp_env):
 
     resolved = await mutable_mcp_env.json("wiki_resolve", {"uri": slug, "wiki": SPACE_NAME})
     assert resolved["exists"] is True, f"page {slug} should exist after commit"
+
+
+async def test_content_commit_then_search_finds_page(mutable_mcp_env):
+    """Layer 1 contract: write → commit → search must find the page (no manual rebuild).
+
+    The original symptom was that a page written via wiki_content_write did
+    not appear in wiki_search until wiki_index_rebuild ran manually. With the
+    post-commit index hook, this must work end-to-end.
+    """
+    slug = "concepts/auto-index-read-after-write"
+    new_data = await mutable_mcp_env.json(
+        "wiki_content_new", {"uri": slug, "wiki": SPACE_NAME}
+    )
+    assert new_data["slug"] == slug
+
+    content = (
+        "---\n"
+        "title: Auto Index Read After Write\n"
+        "type: concept\n"
+        "status: active\n"
+        "---\n\n"
+        "ZQXAutoIndexSentinel unique body for search.\n"
+    )
+    await mutable_mcp_env.call(
+        "wiki_content_write",
+        {"uri": slug, "content": content, "wiki": SPACE_NAME},
+    )
+
+    # Commit. The response body shape is implementation-defined — accept the
+    # legacy bare-hash string or the JSON object form. The contract under test
+    # is that the page becomes searchable afterwards, not the response shape.
+    await mutable_mcp_env.call(
+        "wiki_content_commit",
+        {"slugs": [slug], "message": "test: auto-index read-after-write", "wiki": SPACE_NAME},
+    )
+
+    data = await mutable_mcp_env.json(
+        "wiki_search", {"query": "ZQXAutoIndexSentinel", "wiki": SPACE_NAME}
+    )
+    titles = [r.get("title", "") for r in data.get("results", [])]
+    slugs_found = [r.get("slug", "") for r in data.get("results", [])]
+    assert slug in slugs_found or any(
+        "Auto Index Read After Write" in t for t in titles
+    ), f"read-after-write failed — page {slug} not in search results: {data}"
