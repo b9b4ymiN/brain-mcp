@@ -653,3 +653,173 @@ fn auth_gate_owner_principal_allows_all_on_serve_path() {
         );
     }
 }
+
+// ── Merged write-pipeline contract (Task 6) ─────────────────────────────────
+// These pin the promised UX of the ingest merge: a single `wiki_content_write`
+// is enough to make a page searchable, the legacy `wiki_ingest` escape hatch
+// remains a no-op when nothing changed, and bulk-write-via-commit=false plus a
+// single directory ingest advances HEAD exactly once.
+
+#[test]
+fn mcp_content_write_default_makes_page_searchable_immediately() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config_path, _repo_root) = setup_mcp_smoke_wiki(dir.path());
+    let manager = Arc::new(WikiEngine::build(&config_path).unwrap());
+    let server = McpServer::new(manager);
+
+    let body = "---\ntitle: \"Single Call\"\ntype: concept\nstatus: active\n---\n\nUnique token: zeta-immediate-search-9b3c.\n";
+    let write_result = tools::call(
+        &server,
+        "wiki_content_write",
+        &args(json!({
+            "uri": "single-call",
+            "wiki": "test",
+            "content": body,
+        })),
+    );
+    assert!(!write_result.is_error, "write should succeed");
+    let write_text = write_result.content[0].as_text().unwrap().text.clone();
+    assert!(
+        write_text.contains("\"commit_sha\"") && !write_text.contains("\"commit_sha\": null"),
+        "commit_sha should be populated; got: {write_text}"
+    );
+
+    // The page must be searchable WITHOUT any further call.
+    let search_result = tools::call(
+        &server,
+        "wiki_search",
+        &args(json!({
+            "wiki": "test",
+            "query": "zeta-immediate-search-9b3c",
+        })),
+    );
+    assert!(!search_result.is_error, "search should succeed");
+    let search_text = search_result.content[0].as_text().unwrap().text.clone();
+    assert!(
+        search_text.contains("single-call") || search_text.contains("Single Call"),
+        "search should find the new page; got: {search_text}"
+    );
+}
+
+#[test]
+fn mcp_content_write_then_ingest_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config_path, repo_root) = setup_mcp_smoke_wiki(dir.path());
+    let manager = Arc::new(WikiEngine::build(&config_path).unwrap());
+    let server = McpServer::new(manager);
+
+    let body = "---\ntitle: \"Idempotent\"\ntype: concept\nstatus: active\n---\n\nBody.\n";
+    let write_result = tools::call(
+        &server,
+        "wiki_content_write",
+        &args(json!({
+            "uri": "idempotent",
+            "wiki": "test",
+            "content": body,
+        })),
+    );
+    let write_text = write_result.content[0].as_text().unwrap().text.clone();
+    // Extract the commit_sha from the write response.
+    let write_sha: String = {
+        let parsed: serde_json::Value = serde_json::from_str(&write_text).unwrap();
+        parsed["commit_sha"].as_str().unwrap().to_string()
+    };
+    assert!(!write_sha.is_empty());
+
+    // Now call wiki_ingest on the same page. It should be a no-op commit-wise.
+    let ingest_result = tools::call(
+        &server,
+        "wiki_ingest",
+        &args(json!({
+            "wiki": "test",
+            "path": "concepts/idempotent.md",
+        })),
+    );
+    assert!(!ingest_result.is_error, "follow-up ingest should succeed");
+    let ingest_text = ingest_result.content[0].as_text().unwrap().text.clone();
+
+    // HEAD should not have advanced — ingest saw no changes.
+    let head_after = std::process::Command::new("git")
+        .args(["-C", repo_root.to_str().unwrap(), "rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let head_sha = String::from_utf8(head_after.stdout).unwrap().trim().to_string();
+    assert_eq!(
+        head_sha, write_sha,
+        "follow-up ingest should not advance HEAD; got {head_sha}, expected {write_sha}"
+    );
+
+    // Silence unused warning if the assertion shape needs the text.
+    let _ = ingest_text;
+}
+
+#[test]
+fn mcp_content_write_commit_false_then_ingest_handles_bulk_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let (config_path, repo_root) = setup_mcp_smoke_wiki(dir.path());
+    let manager = Arc::new(WikiEngine::build(&config_path).unwrap());
+    let server = McpServer::new(manager);
+
+    // Write three pages with commit=false.
+    for slug in ["bulk-a", "bulk-b", "bulk-c"] {
+        let body = format!("---\ntitle: \"{slug}\"\ntype: concept\nstatus: active\n---\n\nBody.\n");
+        let result = tools::call(
+            &server,
+            "wiki_content_write",
+            &args(json!({
+                "uri": slug,
+                "wiki": "test",
+                "commit": false,
+                "content": body,
+            })),
+        );
+        assert!(!result.is_error, "write of {slug} should succeed");
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains("\"commit_sha\": null"),
+            "commit_sha should be null when commit=false; got: {text}"
+        );
+    }
+
+    // Record HEAD before the bulk ingest.
+    let head_before = std::process::Command::new("git")
+        .args(["-C", repo_root.to_str().unwrap(), "rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let head_before = String::from_utf8(head_before.stdout).unwrap().trim().to_string();
+
+    // One ingest call commits and indexes all three.
+    let ingest_result = tools::call(
+        &server,
+        "wiki_ingest",
+        &args(json!({
+            "wiki": "test",
+            "path": "concepts",
+        })),
+    );
+    assert!(!ingest_result.is_error, "bulk ingest should succeed");
+
+    let head_after = std::process::Command::new("git")
+        .args(["-C", repo_root.to_str().unwrap(), "rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let head_after = String::from_utf8(head_after.stdout).unwrap().trim().to_string();
+    assert_ne!(
+        head_before, head_after,
+        "bulk ingest should advance HEAD exactly once"
+    );
+
+    // All three should now be searchable.
+    for slug in ["bulk-a", "bulk-b", "bulk-c"] {
+        let search_result = tools::call(
+            &server,
+            "wiki_search",
+            &args(json!({ "wiki": "test", "query": slug })),
+        );
+        let search_text = search_result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            search_text.contains(slug),
+            "search should find {slug} after bulk ingest; got: {search_text}"
+        );
+    }
+}

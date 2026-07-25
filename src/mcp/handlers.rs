@@ -1,6 +1,7 @@
 use rmcp::model::Content;
 use serde_json::{Map, Value};
 
+use crate::git;
 use crate::ops;
 use crate::slug::{ReadTarget, WikiUri, resolve_read_target};
 
@@ -309,6 +310,43 @@ pub fn handle_content_write(server: &McpServer, args: &Map<String, Value>) -> To
         None
     };
 
+    // Fold any Hugo mirror changes written by `sync_web_content` into the
+    // durable layer. Without this, the working tree is left dirty under
+    // `site/content/` and the next `wiki_ingest` (whose auto_commit does a
+    // full-tree `git add -A`) would sweep those mirror files into an
+    // unrelated commit — breaking the "write then ingest is idempotent"
+    // contract. The mirror commit is a derived/durability commit; the final
+    // HEAD (returned as `commit_sha`) is what callers and tests reason about.
+    //
+    // We use the full-tree `git::commit` (not `commit_paths`) because the
+    // mirror may add new files under nested directories (`site/content/...`)
+    // and `commit_paths` cannot stage a directory in one call. The wiki page
+    // itself was already committed by `ops::content_write`'s ingest step, so
+    // the only uncommitted work the full-tree commit can pick up here is the
+    // mirror sync. If nothing changed, `git::commit` returns empty and we
+    // keep the original `commit_sha`.
+    let commit_sha = if commit && web_content_synced.is_some() {
+        let repo_root = {
+            let engine = server.engine();
+            let space = engine.space(&wiki_name).map_err(|e| format!("{e}"))?;
+            space.repo_root.clone()
+        };
+        let mirror_sha = git::commit(
+            &repo_root,
+            &format!("content_write: sync site mirror for {}", result.slug),
+        )
+        .map_err(|e| format!("{e}"))?;
+        if mirror_sha.is_empty() {
+            // Mirror sync reported a change but git saw no tree delta (e.g.
+            // the mirror files were already current). Keep the wiki-page sha.
+            result.commit_sha.clone()
+        } else {
+            Some(mirror_sha)
+        }
+    } else {
+        result.commit_sha.clone()
+    };
+
     let response = serde_json::json!({
         "bytes_written": result.bytes_written,
         "path": result.path,
@@ -316,7 +354,7 @@ pub fn handle_content_write(server: &McpServer, args: &Map<String, Value>) -> To
         "uri": format!("wiki://{}/{}", wiki_name, result.slug),
         "canonicalized_from": if canonical_uri != uri { Some(uri) } else { None },
         "commit": commit,
-        "commit_sha": result.commit_sha,
+        "commit_sha": commit_sha,
         "index_updated": result.index_report.as_ref().map(|r| r.updated).unwrap_or(0),
         "index_deleted": result.index_report.as_ref().map(|r| r.deleted).unwrap_or(0),
         "web_content_synced": web_content_synced,
