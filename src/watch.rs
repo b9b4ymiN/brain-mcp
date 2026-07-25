@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Event, EventKind, RecursiveMode};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -62,10 +62,7 @@ pub fn fs_magic_kind(magic: u64) -> FilesystemKind {
 /// - `Auto` (default): `Poll` wins if **any** watched path sits on a broken
 ///   filesystem; otherwise `Native`. An empty watch list defaults to
 ///   `Native` (no work to do either way).
-pub fn resolve_backend(
-    config: &crate::config::WatchConfig,
-    kinds: &[FilesystemKind],
-) -> Backend {
+pub fn resolve_backend(config: &crate::config::WatchConfig, kinds: &[FilesystemKind]) -> Backend {
     use crate::config::WatchBackendConfig;
 
     match config.backend {
@@ -340,59 +337,110 @@ fn is_wiki_md(path: &Path) -> bool {
         && path.extension().and_then(|e| e.to_str()) == Some("md")
 }
 
+/// Build a `Box<dyn notify::Watcher>` of the requested backend, sharing the
+/// same event-handler closure shape used today.
+///
+/// Both `RecommendedWatcher` and `PollWatcher` accept the same closure
+/// signature (`FnMut(Result<Event, notify::Error>)`), so the closure body
+/// does not change — only the constructor call differs. `PollWatcher` is
+/// configured with `Config::default().with_poll_interval(poll_interval)`.
+fn build_watcher<F>(
+    backend: Backend,
+    poll_interval_ms: u32,
+    handler: F,
+) -> Result<Box<dyn notify::Watcher + Send>>
+where
+    F: FnMut(Result<Event, notify::Error>) + Send + 'static,
+{
+    match backend {
+        Backend::Native => {
+            let w = notify::recommended_watcher(handler)?;
+            Ok(Box::new(w))
+        }
+        Backend::Poll => {
+            let cfg = notify::Config::default()
+                .with_poll_interval(Duration::from_millis(poll_interval_ms as u64));
+            let w = notify::PollWatcher::new(handler, cfg)?;
+            Ok(Box::new(w))
+        }
+    }
+}
+
 fn start_notify_watcher(
     engine: &WikiEngine,
     tx: mpsc::Sender<(String, PathBuf)>,
     cancel: CancellationToken,
-) -> Result<RecommendedWatcher> {
-    let state = engine.state.read();
+) -> Result<Box<dyn notify::Watcher + Send>> {
+    let (watch_dirs, watch_config) = {
+        let state = engine.state.read();
+        let dirs: Vec<(String, PathBuf, PathBuf)> = state
+            .spaces
+            .iter()
+            .map(|(name, space)| {
+                (
+                    name.clone(),
+                    space.wiki_root.clone(),
+                    space.repo_root.clone(),
+                )
+            })
+            .collect();
+        let cfg = state.config.watch.clone();
+        (dirs, cfg)
+    };
 
-    // Build a map of watched paths to wiki names
-    let mut watch_dirs: Vec<(String, PathBuf, PathBuf)> = Vec::new();
-    for (name, space) in &state.spaces {
-        watch_dirs.push((
-            name.clone(),
-            space.wiki_root.clone(),
-            space.repo_root.clone(),
-        ));
-    }
-    drop(state);
+    // Detect filesystem kind per wiki_root, then resolve the final backend.
+    // Auto mode (default) probes via statfs and picks Poll if any wiki sits
+    // on a known-broken filesystem (V9FS/NFS/CIFS/FUSE); forced native/poll
+    // bypass detection entirely.
+    let wiki_roots: Vec<PathBuf> = watch_dirs.iter().map(|(_, root, _)| root.clone()).collect();
+    let kinds = statfs_wiki_roots(&wiki_roots);
+    let backend = resolve_backend(&watch_config, &kinds);
+    tracing::info!(
+        backend = ?backend,
+        poll_interval_ms = watch_config.poll_interval_ms,
+        detected = ?kinds,
+        "watcher backend selected"
+    );
 
     let tx_clone = tx.clone();
     let watch_dirs_clone = watch_dirs.clone();
 
-    let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-        if cancel.is_cancelled() {
-            return;
-        }
-        let event = match res {
-            Ok(ev) => ev,
-            Err(e) => {
-                tracing::error!(error = %e, "filesystem watcher error");
+    let mut watcher = build_watcher(
+        backend,
+        watch_config.poll_interval_ms,
+        move |res: Result<Event, notify::Error>| {
+            if cancel.is_cancelled() {
                 return;
             }
-        };
-
-        // Only care about create, modify, rename
-        match event.kind {
-            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {}
-            _ => return,
-        }
-
-        for path in &event.paths {
-            // Find which wiki this path belongs to
-            for (wiki_name, wiki_root, repo_root) in &watch_dirs_clone {
-                if path.starts_with(wiki_root) && is_wiki_md(path) {
-                    let _ = tx_clone.try_send((wiki_name.clone(), path.clone()));
-                    break;
+            let event = match res {
+                Ok(ev) => ev,
+                Err(e) => {
+                    tracing::error!(error = %e, "filesystem watcher error");
+                    return;
                 }
-                if path.starts_with(repo_root.join("schemas")) && is_schema_path(path) {
-                    let _ = tx_clone.try_send((wiki_name.clone(), path.clone()));
-                    break;
+            };
+
+            // Only care about create, modify, rename
+            match event.kind {
+                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {}
+                _ => return,
+            }
+
+            for path in &event.paths {
+                // Find which wiki this path belongs to
+                for (wiki_name, wiki_root, repo_root) in &watch_dirs_clone {
+                    if path.starts_with(wiki_root) && is_wiki_md(path) {
+                        let _ = tx_clone.try_send((wiki_name.clone(), path.clone()));
+                        break;
+                    }
+                    if path.starts_with(repo_root.join("schemas")) && is_schema_path(path) {
+                        let _ = tx_clone.try_send((wiki_name.clone(), path.clone()));
+                        break;
+                    }
                 }
             }
-        }
-    })?;
+        },
+    )?;
 
     // Watch wiki/ and schemas/ for each mounted wiki
     for (_, wiki_root, repo_root) in &watch_dirs {

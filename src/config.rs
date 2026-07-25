@@ -1202,10 +1202,7 @@ pub fn load_global(path: &Path) -> Result<GlobalConfig> {
     if let Ok(val) = std::env::var("LLM_WIKI_WATCH_POLL_MS") {
         match val.trim().parse::<u32>() {
             Ok(ms) if ms >= 100 => config.watch.poll_interval_ms = ms,
-            Ok(ms) => tracing::warn!(
-                ms,
-                "LLM_WIKI_WATCH_POLL_MS must be >= 100; ignoring"
-            ),
+            Ok(ms) => tracing::warn!(ms, "LLM_WIKI_WATCH_POLL_MS must be >= 100; ignoring"),
             Err(_) => tracing::warn!(
                 raw = %val,
                 "LLM_WIKI_WATCH_POLL_MS is not a valid u32; ignoring"

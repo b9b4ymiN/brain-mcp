@@ -2,7 +2,7 @@
 //! the statfs-detection logic for the watcher bind-mount fix (2026-07-25).
 
 use llm_wiki::config::{WatchBackendConfig, WatchConfig};
-use llm_wiki::watch::{fs_magic_kind, resolve_backend, Backend, FilesystemKind};
+use llm_wiki::watch::{Backend, FilesystemKind, fs_magic_kind, resolve_backend};
 
 #[test]
 fn fs_magic_v9fs_is_broken() {
