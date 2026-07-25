@@ -29,7 +29,11 @@ services:
     # Built fresh from the repo Dockerfile on `docker compose up --build`.
     # Pin to a release tag (e.g. `brain:v0.5`) in production and drop the
     # `build:` block to deploy a pre-built image from a registry.
-    image: brain:v0.10-ai-review
+    # v0.11-watcher-fix (2026-07-25): statfs-based watcher backend selection
+    # — auto-fallback to PollWatcher on Docker Desktop bind mounts / NFS / SMB
+    # / FUSE; RecommendedWatcher on local Linux. See
+    # docs/specs/2026-07-25-watcher-bind-mount-fix-design.md.
+    image: brain:v0.11-watcher-fix
     build:
       context: .
       dockerfile: Dockerfile
