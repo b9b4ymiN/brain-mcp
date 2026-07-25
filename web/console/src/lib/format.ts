@@ -59,6 +59,36 @@ export function formatDate(iso: string | null | undefined): string {
 }
 
 /**
+ * Render an ISO 8601 timestamp as a relative "time ago" string, falling back
+ * to `formatDate` for anything older than 7 days.
+ *
+ *   - absent / invalid  → `'—'`
+ *   - < 60 seconds      → `'just now'`
+ *   - < 60 minutes      → `'{n}m ago'`
+ *   - < 24 hours        → `'{n}h ago'`
+ *   - < 7 days          → `'{n}d ago'`
+ *   - >= 7 days         → `formatDate(iso)` (locale string)
+ *
+ * Total + pure, matching the rest of this module. Used by the Activity /
+ * Status / Today pages' relative-timestamp readouts (new in 2026-07-25
+ * Console expansion).
+ */
+export function formatRelative(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  const seconds = Math.floor((Date.now() - d.getTime()) / 1000)
+  if (seconds < 60) return 'just now'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}d ago`
+  return formatDate(iso)
+}
+
+/**
  * Truncate `text` to `max` visible characters, appending an ellipsis when
  * truncation occurs. `max` is the maximum length of the *returned* string
  * (including the ellipsis), so e.g. `truncate('abcdef', 5)` → `'ab…'`.
