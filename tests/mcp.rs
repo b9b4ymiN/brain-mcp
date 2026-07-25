@@ -743,7 +743,10 @@ fn mcp_content_write_then_ingest_is_idempotent() {
         .args(["-C", repo_root.to_str().unwrap(), "rev-parse", "HEAD"])
         .output()
         .unwrap();
-    let head_sha = String::from_utf8(head_after.stdout).unwrap().trim().to_string();
+    let head_sha = String::from_utf8(head_after.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
     assert_eq!(
         head_sha, write_sha,
         "follow-up ingest should not advance HEAD; got {head_sha}, expected {write_sha}"
@@ -786,7 +789,10 @@ fn mcp_content_write_commit_false_then_ingest_handles_bulk_write() {
         .args(["-C", repo_root.to_str().unwrap(), "rev-parse", "HEAD"])
         .output()
         .unwrap();
-    let head_before = String::from_utf8(head_before.stdout).unwrap().trim().to_string();
+    let head_before = String::from_utf8(head_before.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
 
     // One ingest call commits and indexes all three.
     let ingest_result = tools::call(
@@ -803,7 +809,10 @@ fn mcp_content_write_commit_false_then_ingest_handles_bulk_write() {
         .args(["-C", repo_root.to_str().unwrap(), "rev-parse", "HEAD"])
         .output()
         .unwrap();
-    let head_after = String::from_utf8(head_after.stdout).unwrap().trim().to_string();
+    let head_after = String::from_utf8(head_after.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
     assert_ne!(
         head_before, head_after,
         "bulk ingest should advance HEAD exactly once"

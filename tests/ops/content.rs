@@ -184,14 +184,27 @@ fn content_write_commit_true_returns_commit_sha_and_indexes() {
 
     let body = "---\ntitle: \"Commit Me\"\ntype: concept\nstatus: active\n---\n\nBody.\n";
     let result = ops::content_write(
-        &engine, &manager, "commit-me", None, body, /* commit */ true, /* redact */ false,
+        &engine,
+        &manager,
+        "commit-me",
+        None,
+        body,
+        /* commit */ true,
+        /* redact */ false,
     )
     .unwrap();
 
-    let sha = result.commit_sha.expect("commit_sha should be Some when commit=true");
-    assert!(!sha.is_empty(), "commit_sha should not be empty for a fresh page");
+    let sha = result
+        .commit_sha
+        .expect("commit_sha should be Some when commit=true");
+    assert!(
+        !sha.is_empty(),
+        "commit_sha should not be empty for a fresh page"
+    );
 
-    let report = result.index_report.expect("index_report should be Some when commit=true");
+    let report = result
+        .index_report
+        .expect("index_report should be Some when commit=true");
     assert!(report.updated >= 1, "index_report.updated should be >= 1");
 
     // The page must exist in git history.
@@ -212,18 +225,35 @@ fn content_write_commit_false_leaves_file_uncommitted_and_unindexed() {
 
     let body = "---\ntitle: \"No Commit\"\ntype: concept\nstatus: active\n---\n\nBody.\n";
     let result = ops::content_write(
-        &engine, &manager, "no-commit", None, body, /* commit */ false, /* redact */ false,
+        &engine,
+        &manager,
+        "no-commit",
+        None,
+        body,
+        /* commit */ false,
+        /* redact */ false,
     )
     .unwrap();
 
-    assert!(result.commit_sha.is_none(), "commit_sha should be None when commit=false");
-    assert!(result.index_report.is_none(), "index_report should be None when commit=false");
+    assert!(
+        result.commit_sha.is_none(),
+        "commit_sha should be None when commit=false"
+    );
+    assert!(
+        result.index_report.is_none(),
+        "index_report should be None when commit=false"
+    );
     assert!(result.path.exists(), "file should still be written to disk");
 
     // The page should appear as untracked / unstaged in git status.
     let space = engine.space("test").unwrap();
     let status = std::process::Command::new("git")
-        .args(["-C", space.repo_root.to_str().unwrap(), "status", "--porcelain"])
+        .args([
+            "-C",
+            space.repo_root.to_str().unwrap(),
+            "status",
+            "--porcelain",
+        ])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&status.stdout);
@@ -246,7 +276,13 @@ fn content_write_commit_true_redact_true_replaces_known_secret_pattern() {
     // applies — all built-ins active.
     let body = "---\ntitle: \"Has Secret\"\ntype: concept\nstatus: active\n---\n\nMy key is AKIAIOSFODNN7EXAMPLE.\n";
     let result = ops::content_write(
-        &engine, &manager, "has-secret", None, body, /* commit */ true, /* redact */ true,
+        &engine,
+        &manager,
+        "has-secret",
+        None,
+        body,
+        /* commit */ true,
+        /* redact */ true,
     )
     .unwrap();
 
@@ -291,5 +327,8 @@ fn content_write_commit_true_forces_commit_when_auto_commit_disabled() {
     let sha = result
         .commit_sha
         .expect("commit_sha should be Some even when auto_commit=false (fallback fires)");
-    assert!(!sha.is_empty(), "fallback commit should produce a non-empty sha");
+    assert!(
+        !sha.is_empty(),
+        "fallback commit should produce a non-empty sha"
+    );
 }
