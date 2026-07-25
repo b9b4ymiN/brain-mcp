@@ -21,6 +21,28 @@ fn sync_web_content(server: &McpServer, wiki_name: &str) -> Result<Option<usize>
     Ok(synced)
 }
 
+/// Layer 1 post-commit hook: incremental tantivy index update + Hugo web
+/// content sync + web refresh notification, executed as one unit.
+///
+/// Called by handlers whose git commit has just succeeded (`handle_content_commit`,
+/// and implicitly via `ops::ingest_with_redact` for the ingest path). Returns
+/// the `UpdateReport` so the caller can surface `updated` / `deleted` counts in
+/// its MCP response. `sync_web_content` already fires `notify_web_refresh`, so
+/// callers do not need to notify separately.
+///
+/// The underlying `WikiEngine::refresh_index` → `index_manager.update` walks
+/// both committed changes (vs `last_commit`) and uncommitted working-tree
+/// changes, so this is safe to call after any write or commit. Idempotent: a
+/// no-op when nothing has changed.
+fn index_and_sync_after_commit(
+    server: &McpServer,
+    wiki_name: &str,
+) -> Result<crate::index_manager::UpdateReport, String> {
+    let report = ops::index_after_commit(&server.manager, wiki_name).map_err(|e| format!("{e}"))?;
+    let _synced = sync_web_content(server, wiki_name)?;
+    Ok(report)
+}
+
 // ── Ingest limit rejection (Task F2.3) ──────────────────────────────────────
 //
 // Ingest handlers run the size+rate gate (`McpServer::check_ingest_limits`)
@@ -352,19 +374,50 @@ pub fn handle_resolve(server: &McpServer, args: &Map<String, Value>) -> ToolHand
 }
 
 /// Handle `wiki_content_commit` — commit pending changes to git.
+///
+/// After the commit succeeds this fires the Layer 1 post-commit hook
+/// (`index_and_sync_after_commit`): an incremental tantivy index update so
+/// `wiki_search` reflects the new pages without a manual `wiki_index_rebuild`,
+/// plus a Hugo web content sync + web refresh notification so the Console UI
+/// catches up. The index update is non-fatal — a failure is surfaced in the
+/// response as `index_updated: 0` with a warning log, and the watcher (Layer 2)
+/// or `auto_rebuild` (Layer 3) will recover on their own schedule.
 pub fn handle_content_commit(server: &McpServer, args: &Map<String, Value>) -> ToolHandlerResult {
-    let engine = server.engine();
-    let wiki_name = resolve_wiki_name(&engine, args)?;
-    let message = arg_str(args, "message");
+    let (wiki_name, message, slugs, all) = {
+        let engine = server.engine();
+        let wiki_name = resolve_wiki_name(&engine, args)?.to_string();
+        let message = arg_str(args, "message");
+        let slugs: Vec<String> = arg_str(args, "slugs")
+            .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
+            .unwrap_or_default();
+        let all = slugs.is_empty();
+        (wiki_name, message, slugs, all)
+    };
 
-    let slugs: Vec<String> = arg_str(args, "slugs")
-        .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
-        .unwrap_or_default();
-    let all = slugs.is_empty();
+    // Commit first — the index update is git-diff based and benefits from the
+    // new HEAD existing (it also picks up uncommitted working-tree changes).
+    let hash = {
+        let engine = server.engine();
+        ops::content_commit(&engine, &wiki_name, &slugs, all, message.as_deref())
+            .map_err(|e| format!("{e}"))?
+    };
 
-    let hash = ops::content_commit(&engine, &wiki_name, &slugs, all, message.as_deref())
-        .map_err(|e| format!("{e}"))?;
-    ok_text(hash)
+    // Layer 1: refresh index + sync web + notify. Non-fatal — see fn doc.
+    let index_report = match index_and_sync_after_commit(server, &wiki_name) {
+        Ok(report) => Some(report),
+        Err(e) => {
+            tracing::warn!(wiki = %wiki_name, error = %e, "post-commit index update failed");
+            None
+        }
+    };
+
+    let response = serde_json::json!({
+        "commit": hash,
+        "index_updated": index_report.as_ref().map(|r| r.updated).unwrap_or(0),
+        "index_deleted": index_report.as_ref().map(|r| r.deleted).unwrap_or(0),
+    });
+    let s = serde_json::to_string_pretty(&response).map_err(|e| format!("{e}"))?;
+    ok_text(s)
 }
 
 // ── Search ────────────────────────────────────────────────────────────────────
