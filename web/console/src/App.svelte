@@ -16,6 +16,7 @@
   import Inbox from './pages/Inbox.svelte'
   import Entity from './pages/Entity.svelte'
   import Operations from './pages/Operations.svelte'
+  import Status from './pages/Status.svelte'
   import SpaceBackdrop from './components/SpaceBackdrop.svelte'
   import HudFrame from './components/HudFrame.svelte'
   import Toaster from './components/Toaster.svelte'
@@ -241,6 +242,8 @@
     <Entity {session} {toasts} />
   {:else if currentPage === 'operations'}
     <Operations {session} {toasts} />
+  {:else if currentPage === 'status'}
+    <Status {session} {toasts} />
   {/if}
 </main>
 
