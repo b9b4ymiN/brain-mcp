@@ -10,6 +10,77 @@ use tokio_util::sync::CancellationToken;
 
 use crate::engine::WikiEngine;
 
+// ── Filesystem magic detection (watcher bind-mount reliability, 2026-07-25) ──
+
+/// Selected watcher backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    /// OS-native event-driven watcher (inotify / FSEvents / ReadDirectoryChanges).
+    Native,
+    /// Polling watcher — universal fallback for virtual / network filesystems
+    /// that do not deliver native events (V9FS bind mounts, NFS, CIFS, FUSE).
+    Poll,
+}
+
+/// Classification of a single filesystem based on its statfs magic number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilesystemKind {
+    /// Local filesystem that delivers reliable native events.
+    Native,
+    /// Virtual / network filesystem where inotify silently fails — must poll.
+    Broken,
+}
+
+/// Map a statfs filesystem magic number to a [`FilesystemKind`].
+///
+/// Magic numbers from `<linux/magic.h>`. Unknown magic numbers fall back to
+/// [`FilesystemKind::Native`] (fail-open — do not block startup on an
+/// unfamiliar filesystem; the operator can force `poll` via config if
+/// needed).
+pub fn fs_magic_kind(magic: u64) -> FilesystemKind {
+    // V9FS_MAGIC — WSL2 9P interop, the Docker Desktop Windows bind mount.
+    const V9FS_MAGIC: u64 = 0x012ff7b5;
+    // NFS_SUPER_MAGIC.
+    const NFS_SUPER_MAGIC: u64 = 0x6969;
+    // CIFS_MAGIC_NUMBER — SMB / CIFS.
+    const CIFS_MAGIC_NUMBER: u64 = 0xff534d42;
+    // FUSE_SUPER_MAGIC — includes gRPC-FUSE (Docker Desktop macOS bind mount).
+    const FUSE_SUPER_MAGIC: u64 = 0x65735546;
+
+    match magic {
+        V9FS_MAGIC | NFS_SUPER_MAGIC | CIFS_MAGIC_NUMBER | FUSE_SUPER_MAGIC => {
+            FilesystemKind::Broken
+        }
+        _ => FilesystemKind::Native,
+    }
+}
+
+/// Resolve the final [`Backend`] given the operator config and the per-wiki
+/// filesystem classifications.
+///
+/// - `Native` / `Poll` config: returned verbatim, bypassing detection.
+/// - `Auto` (default): `Poll` wins if **any** watched path sits on a broken
+///   filesystem; otherwise `Native`. An empty watch list defaults to
+///   `Native` (no work to do either way).
+pub fn resolve_backend(
+    config: &crate::config::WatchConfig,
+    kinds: &[FilesystemKind],
+) -> Backend {
+    use crate::config::WatchBackendConfig;
+
+    match config.backend {
+        WatchBackendConfig::Native => Backend::Native,
+        WatchBackendConfig::Poll => Backend::Poll,
+        WatchBackendConfig::Auto => {
+            if kinds.iter().any(|k| *k == FilesystemKind::Broken) {
+                Backend::Poll
+            } else {
+                Backend::Native
+            }
+        }
+    }
+}
+
 // ── Event types ───────────────────────────────────────────────────────────────
 
 enum WatchAction {
