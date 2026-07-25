@@ -34,6 +34,10 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: brain
+    # Explicit at the compose layer so operators reading this file see the
+    # watcher is on. Matches the Dockerfile CMD default (Layer 2 — see
+    # src/watch.rs). Override per-deployment if you want the watcher off.
+    command: ["serve", "--http", ":8080", "--watch"]
     # Loopback-only publish. For any non-local access, put a reverse proxy
     # (nginx/caddy) in front that terminates TLS and forwards to 127.0.0.1:8080.
     ports:

@@ -97,9 +97,15 @@ EXPOSE 8080
 # tini reaps zombies and forwards SIGTERM; the ENTRYPOINT is the binary so the
 # CMD is just the subcommand + flags (compose / `docker run` overrides apply).
 ENTRYPOINT ["/usr/bin/tini", "--", "llm-wiki"]
-# Default args: `serve --http :8080`. Bind is loopback by default; the smoke
-# config / compose sets `http_bind_all_interfaces = true` for in-container 0.0.0.0.
-CMD ["serve", "--http", ":8080"]
+# Default args: `serve --http :8080 --watch`. The watcher (src/watch.rs) is the
+# Layer 2 safety net — it catches external file edits (git pull, host-side
+# editor writes via the bind mount) that bypass the MCP write path. Layer 1
+# (post-commit index hook in handle_content_commit / handle_ingest) covers MCP
+# writes; the watcher covers everything else. Idempotent on unchanged commit
+# hash, so overlap with Layer 1 is free. Bind is loopback by default; the
+# smoke config / compose sets `http_bind_all_interfaces = true` for in-container
+# 0.0.0.0.
+CMD ["serve", "--http", ":8080", "--watch"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -sf http://127.0.0.1:8080/health || exit 1
