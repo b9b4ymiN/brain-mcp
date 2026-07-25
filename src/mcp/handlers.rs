@@ -279,8 +279,16 @@ pub fn handle_content_write(server: &McpServer, args: &Map<String, Value>) -> To
     let wiki_name = engine.resolve_wiki_name(wiki_flag.as_deref()).to_string();
     let canonical_uri = ops::canonicalize_uri_for_content(&uri, &content);
 
-    let result = ops::content_write(&engine, &canonical_uri, wiki_flag.as_deref(), &content)
-        .map_err(|e| format!("{e}"))?;
+    let result = ops::content_write(
+        &engine,
+        &server.manager,
+        &canonical_uri,
+        wiki_flag.as_deref(),
+        &content,
+        /* commit */ true,   // default; overridden by arg in Task 4
+        /* redact */ false,
+    )
+    .map_err(|e| format!("{e}"))?;
     drop(engine);
     let web_content_synced = sync_web_content(server, &wiki_name)?;
     let response = serde_json::json!({

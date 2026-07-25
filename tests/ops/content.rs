@@ -58,7 +58,7 @@ fn content_write_and_read_back() {
     let engine = manager.state.read();
 
     let body = "---\ntitle: \"New\"\ntype: page\n---\n\nHello.\n";
-    let result = ops::content_write(&engine, "new-page", None, body).unwrap();
+    let result = ops::content_write(&engine, &manager, "new-page", None, body, false, false).unwrap();
     assert_eq!(result.bytes_written, body.len());
 
     match ops::content_read(&engine, "new-page", None, false, false).unwrap() {
@@ -161,9 +161,12 @@ fn content_commit_all() {
     // Write a new file so there's something to commit
     ops::content_write(
         &engine,
+        &manager,
         "scratch",
         None,
         "---\ntitle: \"Scratch\"\ntype: page\n---\n\ntemp\n",
+        false,
+        false,
     )
     .unwrap();
 

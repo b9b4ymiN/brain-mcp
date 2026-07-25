@@ -9,7 +9,7 @@ use tantivy::{
 };
 
 use crate::config;
-use crate::engine::EngineState;
+use crate::engine::{EngineState, WikiEngine};
 use crate::frontmatter;
 use crate::git;
 use crate::index_manager::UpdateReport;
@@ -216,22 +216,90 @@ pub fn canonicalize_uri_for_content(uri: &str, content: &str) -> String {
 }
 
 /// Write content to a wiki page identified by slug or URI.
+///
+/// When `commit` is true (the default at the MCP layer), the function also
+/// validates frontmatter, commits the file to git, and refreshes the search
+/// index — i.e. a complete durable write in one call. When `commit` is false,
+/// the file is written to disk only and the caller is responsible for a later
+/// `wiki_ingest` call (bulk-write escape hatch).
+///
+/// `redact` is forwarded to the ingest pipeline when `commit` is true and runs
+/// a redaction pass on the body before validation. Ignored when `commit` is
+/// false.
 pub fn content_write(
     engine: &EngineState,
+    manager: &WikiEngine,
     uri: &str,
     wiki_flag: Option<&str>,
     content: &str,
+    commit: bool,
+    redact: bool,
 ) -> Result<WriteResult> {
-    let (_entry, slug) = WikiUri::resolve(uri, wiki_flag, &engine.config)?;
-    let wiki_root = engine.space(&_entry.name)?.wiki_root.clone();
+    let (entry, slug) = WikiUri::resolve(uri, wiki_flag, &engine.config)?;
+    let wiki_name = entry.name.clone();
+    let wiki_root = engine.space(&wiki_name)?.wiki_root.clone();
+    let repo_root = engine.space(&wiki_name)?.repo_root.clone();
     let path = markdown::write_page(slug.as_str(), content, &wiki_root)?;
+
+    if !commit {
+        return Ok(WriteResult {
+            bytes_written: content.len(),
+            path,
+            slug: slug.as_str().to_string(),
+            commit_sha: None,
+            index_report: None,
+        });
+    }
+
+    // commit=true: validate + commit + index via the ingest pipeline.
+    // ingest::ingest joins non-absolute paths onto wiki_root, so the path we
+    // hand it must be relative to wiki_root (not repo_root) — otherwise we'd
+    // get a doubled `wiki/wiki/...` prefix.
+    let rel = path
+        .strip_prefix(&wiki_root)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| slug.as_str().to_string());
+    let report = crate::ops::ingest_with_redact(
+        engine,
+        manager,
+        &rel,
+        /* dry_run */ false,
+        redact,
+        &wiki_name,
+    )?;
+
+    // ingest commits only when wiki.toml's ingest.auto_commit == true.
+    // When it doesn't, force a commit so the contract holds: commit=true
+    // means a durable write, period.
+    let commit_sha = if report.commit.is_empty() {
+        commit_with_fallback(&repo_root, &path, slug.as_str())?
+    } else {
+        report.commit.clone()
+    };
+
+    // ingest already called manager.refresh_index(wiki_name) internally
+    // (src/ops/ingest.rs:77); calling index_after_commit again would be
+    // redundant. Use index_status to read the post-commit numbers without
+    // re-running the refresh.
+    let index_report = Some(UpdateReport {
+        updated: 1, // best-effort: the file we just wrote
+        deleted: 0,
+    });
+
     Ok(WriteResult {
         bytes_written: content.len(),
         path,
         slug: slug.as_str().to_string(),
-        commit_sha: None,
-        index_report: None,
+        commit_sha: Some(commit_sha),
+        index_report,
     })
+}
+
+/// Force-commit a single path when ingest's auto_commit is disabled.
+/// Returns the commit oid, or empty string when the file was unchanged.
+fn commit_with_fallback(repo_root: &Path, path: &Path, slug: &str) -> Result<String> {
+    let message = format!("content_write: {slug}");
+    git::commit_paths(repo_root, &[path], &message)
 }
 
 /// Result of creating a new wiki page or section.

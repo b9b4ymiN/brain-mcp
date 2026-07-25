@@ -210,7 +210,15 @@ fn main() -> Result<()> {
 
                 let manager = WikiEngine::build(&config_path)?;
                 let engine = manager.state.read();
-                let result = ops::content_write(&engine, &uri, cli.wiki.as_deref(), &content)?;
+                let result = ops::content_write(
+                    &engine,
+                    &manager,
+                    &uri,
+                    cli.wiki.as_deref(),
+                    &content,
+                    /* commit */ false,
+                    /* redact */ false,
+                )?;
                 println!(
                     "Wrote {} bytes to {}",
                     result.bytes_written,
