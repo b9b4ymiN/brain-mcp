@@ -6,8 +6,9 @@ use llm_wiki::watch::{Backend, FilesystemKind, fs_magic_kind, resolve_backend};
 
 #[test]
 fn fs_magic_v9fs_is_broken() {
-    // V9FS_MAGIC = 0x012ff7b5 — WSL2 9P interop (Docker Desktop Windows bind mount).
-    assert_eq!(fs_magic_kind(0x012ff7b5), FilesystemKind::Broken);
+    // V9FS_MAGIC = 0x01021997 — WSL2 9P interop, the Docker Desktop Windows
+    // bind mount. Verified against include/uapi/linux/magic.h in the kernel.
+    assert_eq!(fs_magic_kind(0x01021997), FilesystemKind::Broken);
 }
 
 #[test]

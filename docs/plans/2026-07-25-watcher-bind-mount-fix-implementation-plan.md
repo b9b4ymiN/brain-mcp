@@ -226,8 +226,9 @@ use llm_wiki::watch::{fs_magic_kind, Backend, FilesystemKind};
 
 #[test]
 fn fs_magic_v9fs_is_broken() {
-    // V9FS_MAGIC = 0x012ff7b5 — WSL2 9P interop (Docker Desktop Windows bind mount).
-    assert_eq!(fs_magic_kind(0x012ff7b5), FilesystemKind::Broken);
+    // V9FS_MAGIC = 0x01021997 — WSL2 9P interop, the Docker Desktop Windows
+    // bind mount. Verified against include/uapi/linux/magic.h in the kernel.
+    assert_eq!(fs_magic_kind(0x01021997), FilesystemKind::Broken);
 }
 
 #[test]
@@ -368,7 +369,7 @@ pub enum FilesystemKind {
 /// needed).
 pub fn fs_magic_kind(magic: u64) -> FilesystemKind {
     // V9FS_MAGIC — WSL2 9P interop, the Docker Desktop Windows bind mount.
-    const V9FS_MAGIC: u64 = 0x012ff7b5;
+    const V9FS_MAGIC: u64 = 0x01021997;
     // NFS_SUPER_MAGIC.
     const NFS_SUPER_MAGIC: u64 = 0x6969;
     // CIFS_MAGIC_NUMBER — SMB / CIFS.

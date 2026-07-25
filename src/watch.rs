@@ -38,8 +38,9 @@ pub enum FilesystemKind {
 /// unfamiliar filesystem; the operator can force `poll` via config if
 /// needed).
 pub fn fs_magic_kind(magic: u64) -> FilesystemKind {
-    // V9FS_MAGIC — WSL2 9P interop, the Docker Desktop Windows bind mount.
-    const V9FS_MAGIC: u64 = 0x012ff7b5;
+    // V9FS_MAGIC = 0x01021997 — WSL2 9P interop, the Docker Desktop Windows
+    // bind mount. Verified against include/uapi/linux/magic.h in the kernel.
+    const V9FS_MAGIC: u64 = 0x01021997;
     // NFS_SUPER_MAGIC.
     const NFS_SUPER_MAGIC: u64 = 0x6969;
     // CIFS_MAGIC_NUMBER — SMB / CIFS.

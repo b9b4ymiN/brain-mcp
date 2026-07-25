@@ -168,7 +168,7 @@ The known-broken magic numbers (Linux; values from `<linux/magic.h>`):
 
 | Magic constant | Hex | Filesystem | Why broken |
 |----------------|-----|------------|-----------|
-| `V9FS_MAGIC` | `0x012ff7b5` | 9P (WSL2 interop, Docker Desktop Windows bind mount) | inotify_add_watch succeeds, no events delivered |
+| `V9FS_MAGIC` | `0x01021997` | 9P (WSL2 interop, Docker Desktop Windows bind mount) | inotify_add_watch succeeds, no events delivered |
 | `NFS_SUPER_MAGIC` | `0x6969` | NFS | Network FS, no kernel-side event delivery |
 | `CIFS_MAGIC_NUMBER` | `0xff534d42` | SMB / CIFS | Network FS, no kernel-side event delivery |
 | `FUSE_SUPER_MAGIC` | `0x65735546` | FUSE (gRPC-FUSE on Docker Desktop macOS) | Userspace FS, inotify unreliable across the bridge |
