@@ -63,6 +63,17 @@ pub struct IndexStatus {
     pub openable: bool,
     /// True if the index can be queried (reader opened successfully).
     pub queryable: bool,
+    /// Pages indexed in the last successful rebuild. `None` if `state.toml`
+    /// predates the 2026-07-25 Console expansion or no rebuild has happened.
+    #[serde(default)]
+    pub last_pages_indexed: Option<usize>,
+    /// Files skipped in the last successful rebuild. `None` if unavailable.
+    #[serde(default)]
+    pub last_skipped: Option<usize>,
+    /// Wall-clock duration (ms) of the last successful rebuild. `None` if
+    /// unavailable.
+    #[serde(default)]
+    pub last_duration_ms: Option<u64>,
 }
 
 /// Classification of index staleness used to choose the cheapest rebuild strategy.
@@ -97,6 +108,18 @@ pub struct IndexState {
     /// Per-type content hashes at last build (type name → hash).
     #[serde(default)]
     pub types: std::collections::HashMap<String, String>,
+    /// Number of pages indexed in the last successful rebuild. Added in the
+    /// 2026-07-25 Console expansion. Persisted so the `/index-status`
+    /// endpoint can show a "last rebuild result" readout on the Config page.
+    /// `#[serde(default)]` keeps old `state.toml` files loadable.
+    #[serde(default)]
+    pub last_pages_indexed: usize,
+    /// Number of files skipped in the last successful rebuild.
+    #[serde(default)]
+    pub last_skipped: usize,
+    /// Wall-clock duration of the last successful rebuild, in milliseconds.
+    #[serde(default)]
+    pub last_duration_ms: u64,
 }
 
 // ── SpaceIndexManager ─────────────────────────────────────────────────────────
@@ -321,6 +344,9 @@ impl SpaceIndexManager {
         }
 
         let commit = git::current_head(repo_root).unwrap_or_default();
+        // Compute duration_ms once and reuse for both IndexState (persistence)
+        // and IndexReport (return value) so they cannot disagree.
+        let duration_ms = start.elapsed().as_millis() as u64;
         let state = IndexState {
             schema_hash: registry.schema_hash().to_string(),
             built: Utc::now().to_rfc3339(),
@@ -328,6 +354,9 @@ impl SpaceIndexManager {
             sections,
             commit,
             types: registry.type_hashes().clone(),
+            last_pages_indexed: pages,
+            last_skipped: skipped,
+            last_duration_ms: duration_ms,
         };
         std::fs::write(
             self.index_path.join("state.toml"),
@@ -338,7 +367,7 @@ impl SpaceIndexManager {
             wiki: self.wiki_name.clone(),
             pages_indexed: pages,
             skipped,
-            duration_ms: start.elapsed().as_millis() as u64,
+            duration_ms,
         })
     }
 
@@ -356,6 +385,7 @@ impl SpaceIndexManager {
             return Ok(UpdateReport::default());
         }
 
+        let start = std::time::Instant::now();
         let mut writer = self.writer()?;
 
         let f_slug = is.field("slug");
@@ -391,6 +421,41 @@ impl SpaceIndexManager {
 
         writer.commit()?;
         self.reload_reader()?;
+
+        // Persist state.toml so the Config page's "last rebuild result" readout
+        // reflects this incremental update. `update()` does not change the
+        // total page/section count (it mutates in place), so we preserve the
+        // prior `pages`/`sections`/`schema_hash`/`types` and advance `built`
+        // and `commit`. The `last_*` fields describe THIS operation: `updated`
+        // counts touched pages, updates don't skip.
+        let existing = std::fs::read_to_string(self.index_path.join("state.toml"))
+            .ok()
+            .and_then(|c| toml::from_str::<IndexState>(&c).ok());
+        let commit = git::current_head(repo_root).unwrap_or_else(|| {
+            existing.as_ref().map(|s| s.commit.clone()).unwrap_or_default()
+        });
+        let state = IndexState {
+            schema_hash: existing
+                .as_ref()
+                .map(|s| s.schema_hash.clone())
+                .unwrap_or_else(|| registry.schema_hash().to_string()),
+            built: Utc::now().to_rfc3339(),
+            pages: existing.as_ref().map(|s| s.pages).unwrap_or(0),
+            sections: existing.as_ref().map(|s| s.sections).unwrap_or(0),
+            commit,
+            types: existing
+                .as_ref()
+                .map(|s| s.types.clone())
+                .unwrap_or_else(|| registry.type_hashes().clone()),
+            last_pages_indexed: updated,
+            last_skipped: 0,
+            last_duration_ms: start.elapsed().as_millis() as u64,
+        };
+        std::fs::write(
+            self.index_path.join("state.toml"),
+            toml::to_string_pretty(&state)?,
+        )?;
+
         Ok(UpdateReport { updated, deleted })
     }
 
@@ -399,23 +464,32 @@ impl SpaceIndexManager {
         let state_path = self.index_path.join("state.toml");
         let search_dir = self.index_path.join("search-index");
 
-        let (built, pages, sections, stale) = if state_path.exists() {
-            match std::fs::read_to_string(&state_path)
-                .ok()
-                .and_then(|c| toml::from_str::<IndexState>(&c).ok())
-            {
-                Some(state) => {
-                    let head = git::current_head(repo_root).unwrap_or_default();
-                    let (current_schema_hash, _) =
-                        crate::type_registry::compute_disk_hashes(repo_root).unwrap_or_default();
-                    let stale = state.commit != head || state.schema_hash != current_schema_hash;
-                    (Some(state.built), state.pages, state.sections, stale)
+        let (built, pages, sections, stale, last_pages_indexed, last_skipped, last_duration_ms) =
+            if state_path.exists() {
+                match std::fs::read_to_string(&state_path)
+                    .ok()
+                    .and_then(|c| toml::from_str::<IndexState>(&c).ok())
+                {
+                    Some(state) => {
+                        let head = git::current_head(repo_root).unwrap_or_default();
+                        let (current_schema_hash, _) =
+                            crate::type_registry::compute_disk_hashes(repo_root).unwrap_or_default();
+                        let stale = state.commit != head || state.schema_hash != current_schema_hash;
+                        (
+                            Some(state.built),
+                            state.pages,
+                            state.sections,
+                            stale,
+                            Some(state.last_pages_indexed),
+                            Some(state.last_skipped),
+                            Some(state.last_duration_ms),
+                        )
+                    }
+                    None => (None, 0, 0, true, None, None, None),
                 }
-                None => (None, 0, 0, true),
-            }
-        } else {
-            (None, 0, 0, true)
-        };
+            } else {
+                (None, 0, 0, true, None, None, None)
+            };
 
         let (openable, queryable) = if search_dir.exists() {
             let try_open = || -> std::result::Result<Index, Box<dyn std::error::Error>> {
@@ -451,6 +525,9 @@ impl SpaceIndexManager {
             stale,
             openable,
             queryable,
+            last_pages_indexed,
+            last_skipped,
+            last_duration_ms,
         })
     }
 
@@ -569,6 +646,13 @@ impl SpaceIndexManager {
 
         // Update state.toml
         let commit = git::current_head(repo_root).unwrap_or_default();
+        // Compute duration_ms once; reuse for both IndexState and IndexReport.
+        let duration_ms = start.elapsed().as_millis() as u64;
+        // Partial rebuild: total `pages`/`sections` cannot be recomputed
+        // accurately here (we only re-walk matching types), so we keep the
+        // existing `pages: 0`/`sections: 0` convention. The `last_*` fields,
+        // however, describe the most recent operation's result, so they ARE
+        // accurate for this partial rebuild and worth persisting.
         let state = IndexState {
             schema_hash: registry.schema_hash().to_string(),
             built: Utc::now().to_rfc3339(),
@@ -576,6 +660,9 @@ impl SpaceIndexManager {
             sections: 0,
             commit,
             types: registry.type_hashes().clone(),
+            last_pages_indexed: pages,
+            last_skipped: skipped,
+            last_duration_ms: duration_ms,
         };
         std::fs::write(
             self.index_path.join("state.toml"),
@@ -586,7 +673,7 @@ impl SpaceIndexManager {
             wiki: self.wiki_name.clone(),
             pages_indexed: pages,
             skipped,
-            duration_ms: start.elapsed().as_millis() as u64,
+            duration_ms,
         })
     }
 }

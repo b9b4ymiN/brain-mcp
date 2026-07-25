@@ -87,6 +87,28 @@ fn rebuild_indexes_all_pages() {
 }
 
 #[test]
+fn rebuild_persists_last_rebuild_result_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let wiki_root = setup_repo(dir.path());
+    write_page(&wiki_root, "concepts/foo.md", &concept_page("Foo", "body"));
+    let mgr = build_index(dir.path(), &wiki_root);
+
+    // state.toml MUST exist after rebuild (mirrors assertion in rebuild_indexes_all_pages).
+    let state_path = mgr.index_path().join("state.toml");
+    assert!(state_path.exists());
+
+    let state: toml::Value =
+        toml::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap();
+    // The new fields must be present and accurate for this 1-page rebuild.
+    assert_eq!(state["last_pages_indexed"].as_integer().unwrap(), 1);
+    assert_eq!(state["last_skipped"].as_integer().unwrap(), 0);
+    assert!(
+        state["last_duration_ms"].as_integer().unwrap() >= 0,
+        "duration_ms should be non-negative"
+    );
+}
+
+#[test]
 fn rebuild_report_fields() {
     let dir = tempfile::tempdir().unwrap();
     let wiki_root = setup_repo(dir.path());
