@@ -574,6 +574,30 @@ export interface WikiStats {
 }
 
 /**
+ * `GET /activity` row. Mirrors Rust `ActivityEvent` (src/ops/activity.rs).
+ * `ActivityKind` is `snake_case` serde-tagged on the Rust side; the three
+ * variants below are exhaustive for phase 1 (git page events only).
+ */
+export type ActivityKind = 'page_created' | 'page_edited' | 'page_deleted'
+
+export interface ActivityDetail {
+  added: number
+  removed: number
+  subject: string
+}
+
+export interface ActivityEvent {
+  kind: ActivityKind
+  /** ISO-8601 timestamp (git's %aI author-date format). */
+  timestamp: string
+  /** Git author name. */
+  actor: string
+  /** Slug path (wiki-relative) of the page touched. */
+  target: string
+  detail: ActivityDetail
+}
+
+/**
  * One item a destructive action will affect. Mirrors Rust
  * `DestructivePreviewItem`. The destructive-warning handler returns an empty
  * `preview` array by default; the Console populates it client-side from the
@@ -877,6 +901,21 @@ export async function opsBackupHealth(): Promise<BackupHealth> {
 /** `GET /status` — wiki health snapshot for the Status page. */
 export async function status(): Promise<WikiStats> {
   return request<WikiStats>({ method: 'GET', path: '/status' })
+}
+
+/**
+ * `GET /activity?since=&limit=` — recent page changes feed. `since` accepts
+ * `1d` / `7d` / `30d` (server defaults to `7d`); `limit` is clamped server-
+ * side to 1..=200 (defaults to 50). Returns events newest-first.
+ */
+export async function activity(opts?: {
+  since?: '1d' | '7d' | '30d'
+  limit?: number
+}): Promise<ActivityEvent[]> {
+  const query: Record<string, string> = {}
+  if (opts?.since) query.since = opts.since
+  if (opts?.limit !== undefined) query.limit = String(opts.limit)
+  return request<ActivityEvent[]>({ method: 'GET', path: '/activity', query })
 }
 
 /**
