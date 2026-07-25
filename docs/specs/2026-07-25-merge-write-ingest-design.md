@@ -23,6 +23,14 @@
 >    now performs a follow-up `git::commit` to fold mirror changes into a
 >    durable commit when `sync_web_content` reports changes. The reported
 >    `commit_sha` is the final HEAD (post-mirror).
+> 5. **Post-audit fix (2026-07-25):** the original non-goal "do not touch
+>    `src/ops/ingest.rs`" left `content_write` synthesizing a hardcoded
+>    `UpdateReport { updated: 1, deleted: 0 }` because
+>    `ingest_with_redact` discarded `manager.refresh_index`'s real result.
+>    That hardcode was removed by threading the measured `UpdateReport`
+>    through a new `IngestReport.index_report` field (serde-defaulted for
+>    backward compat). The "ingest + index are separate steps" framing in
+>    item 3 is now fully realized: the real counts flow end-to-end.
 >
 > See `docs/plans/2026-07-25-merge-write-ingest-implementation-plan.md` for
 > the deviation log and the shipped behavior.

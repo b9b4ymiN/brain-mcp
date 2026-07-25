@@ -138,10 +138,8 @@ pub struct WriteResult {
     pub commit_sha: Option<String>,
     /// Incremental index report when `commit=true`, else `None`.
     ///
-    /// Note: this is a best-effort upper bound (`updated: 1` for the file
-    /// we just wrote), not a measurement of the actual index update. The
-    /// real counts would require threading `manager.refresh_index`'s
-    /// `UpdateReport` through the ingest pipeline, which is out of scope.
+    /// Measured by `manager.refresh_index` inside the ingest pipeline and
+    /// threaded back via `IngestReport.index_report`.
     pub index_report: Option<UpdateReport>,
 }
 
@@ -278,18 +276,10 @@ pub fn content_write(
         report.commit.clone()
     };
 
-    // ingest already called manager.refresh_index(wiki_name) internally
-    // (src/ops/ingest.rs:77), so the index is current at this point. We
-    // don't re-measure here — re-reading the post-commit counts would
-    // require either calling refresh_index again (redundant) or threading
-    // the UpdateReport through ingest_with_redact's IngestReport (out of
-    // scope per the spec's non-goal on `src/ops/ingest.rs`). Instead,
-    // synthesize a best-effort upper bound: we wrote one file, so the
-    // index can have updated at most one page.
-    let index_report = Some(UpdateReport {
-        updated: 1, // best-effort upper bound; not measured
-        deleted: 0,
-    });
+    // ingest already called manager.refresh_index(wiki_name) internally and
+    // threaded the measured UpdateReport back through IngestReport, so use
+    // the real counts directly — no synthesis, no redundant refresh.
+    let index_report = Some(report.index_report.clone());
 
     Ok(WriteResult {
         bytes_written: content.len(),

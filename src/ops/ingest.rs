@@ -74,8 +74,13 @@ pub fn ingest_with_redact(
     )?;
 
     if !dry_run {
-        if let Err(e) = manager.refresh_index(wiki_name) {
-            tracing::warn!(error = %e, "incremental index update failed after ingest");
+        // Capture the real UpdateReport so callers (e.g. content_write) can
+        // surface measured counts instead of synthesizing constants. On
+        // error we keep the prior contract (warn + continue) and leave the
+        // report at its Default so the ingest result is still returned.
+        match manager.refresh_index(wiki_name) {
+            Ok(update) => report.index_report = update,
+            Err(e) => tracing::warn!(error = %e, "incremental index update failed after ingest"),
         }
 
         // Validate edge targets after index update (targets must be indexed)

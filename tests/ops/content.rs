@@ -205,7 +205,12 @@ fn content_write_commit_true_returns_commit_sha_and_indexes() {
     let report = result
         .index_report
         .expect("index_report should be Some when commit=true");
-    assert!(report.updated >= 1, "index_report.updated should be >= 1");
+    // Now the measured value from manager.refresh_index, not a hardcode.
+    // We wrote one new page, so the incremental update should report exactly 1.
+    assert_eq!(
+        report.updated, 1,
+        "index_report.updated should be measured as 1"
+    );
 
     // The page must exist in git history.
     let space = engine.space("test").unwrap();

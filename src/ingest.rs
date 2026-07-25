@@ -48,6 +48,14 @@ pub struct IngestReport {
     /// Redaction reports for any files that had secrets removed.
     #[serde(default)]
     pub redacted: Vec<RedactionReport>,
+    /// Incremental index update counts from `manager.refresh_index`.
+    ///
+    /// Populated by `ops::ingest_with_redact` (the ops-boundary wrapper); the
+    /// underlying `ingest::ingest` leaves this at `Default::default()` because
+    /// it has no access to the `WikiEngine`. `#[serde(default)]` keeps older
+    /// JSON (and the bare `ingest::ingest` path) backward-compatible.
+    #[serde(default)]
+    pub index_report: crate::index_manager::UpdateReport,
 }
 
 /// Walk `path` (file or directory), validate, optionally redact, commit, and return a report.

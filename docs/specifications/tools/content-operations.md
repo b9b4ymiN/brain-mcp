@@ -94,7 +94,7 @@ llm-wiki content write <slug|uri>        # read content from stdin
 **Default behavior (`commit=true`):** the call is a complete durable write.
 The response includes `commit_sha` (the git oid of the final HEAD — either the
 wiki-page commit or the follow-up mirror-content commit, whichever is newer),
-`index_updated` (best-effort upper bound), and `index_deleted`.
+`index_updated`, and `index_deleted`.
 
 **Bulk-write behavior (`commit=false`):** byte-identical to the pre-merge
 `wiki_content_write`. Pair with `wiki_ingest { path: "directory" }` to commit
