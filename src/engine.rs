@@ -50,6 +50,7 @@ impl SpaceContext {
 // ── EngineState ──────────────────────────────────────────────────────────────
 
 /// Shared mutable state protected by [`WikiEngine`]'s `RwLock`.
+#[derive(Clone)]
 pub struct EngineState {
     /// Loaded global configuration.
     pub config: GlobalConfig,
@@ -90,6 +91,7 @@ impl EngineState {
 /// Central engine — owns all wiki spaces and exposes index/mount operations.
 ///
 /// Cheap to clone (`Arc` inside). Safe to share across async tasks.
+#[derive(Clone)]
 pub struct WikiEngine {
     /// Shared engine state protected by a reader-writer lock.
     pub state: Arc<RwLock<EngineState>>,

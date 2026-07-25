@@ -168,6 +168,13 @@ pub struct ConsoleApiState {
     /// quality checks run without subject-validation tags (legacy mode). Set
     /// at boot via [`Self::with_subject_validator`] from the loaded rules.
     pub subject_validator: Option<std::sync::Arc<crate::subject_validator::SubjectValidator>>,
+    /// Optional handle to the `WikiEngine`. When `None` (the default in tests
+    /// that build a bare `SemanticStore`), endpoints that need the engine
+    /// (`/status`, `/index-status`, `/index/update`, `/index/rebuild`, `/config`)
+    /// return `internal_error`. When `Some` (production wiring via
+    /// [`Self::with_engine`]), those endpoints can read `EngineState` and call
+    /// `ops::stats` / `ops::index::*`.
+    pub engine: Option<Arc<crate::engine::WikiEngine>>,
 }
 
 impl ConsoleApiState {
@@ -219,6 +226,7 @@ impl ConsoleApiState {
             events: Arc::new(events),
             ai_provider: None,       // Phase 3 — set via with_ai_provider builder
             subject_validator: None, // Phase 1.5 — set via with_subject_validator
+            engine: None,            // Console-expansion — set via with_engine builder
         }
     }
 
@@ -239,6 +247,16 @@ impl ConsoleApiState {
         validator: std::sync::Arc<crate::subject_validator::SubjectValidator>,
     ) -> Self {
         self.subject_validator = Some(validator);
+        self
+    }
+
+    /// Attach a [`WikiEngine`] handle so engine-backed endpoints (`/status`,
+    /// `/index-status`, `/index/update`, `/index/rebuild`, `/config`) can serve
+    /// data. Production wires this via `server::serve`; tests that exercise
+    /// engine-backed endpoints pass `Some(...)`; tests that don't leave it
+    /// `None`.
+    pub fn with_engine(mut self, engine: Arc<crate::engine::WikiEngine>) -> Self {
+        self.engine = Some(engine);
         self
     }
 
