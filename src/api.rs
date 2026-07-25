@@ -338,6 +338,8 @@ pub fn router(state: ConsoleApiState) -> Router {
         .route("/inbox/{proposal_id}/reject", post(reject))
         .route("/inbox/{proposal_id}/supersede", post(supersede))
         .route("/galaxy", get(galaxy))
+        // Console-expansion (2026-07-25) — engine-backed read surfaces.
+        .route("/status", get(status))
         // E3.2 — trust + operations + entity-mutation + purge surfaces.
         .route("/trust", get(trust))
         .route("/ops/clients", get(ops_clients))
@@ -1129,6 +1131,31 @@ async fn galaxy(
     };
 
     Ok(Json(graph.to_payload(lod)).into_response())
+}
+
+// ── console-expansion (2026-07-25): engine-backed reads ─────────────────────
+
+/// `GET /api/v1/status` — wiki health snapshot for the Console Status page
+/// (Task 6 of the 2026-07-25 console-expansion series). Returns the full
+/// [`crate::ops::WikiStats`] for the configured default wiki so the
+/// client can pick fields (hero band, detail grid) without a second
+/// round-trip.
+///
+/// Read-only — session-only auth (no CSRF). 500 `internal_error` when the
+/// engine is not attached (defensive — production wires it; tests opt in via
+/// `ConsoleApiState::with_engine`).
+async fn status(
+    State(state): State<ConsoleApiState>,
+    _session: AuthSession,
+) -> Result<Json<crate::ops::WikiStats>, ApiError> {
+    let engine = state.engine.as_ref().ok_or_else(|| {
+        ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+    })?;
+    let guard = engine.state.read();
+    let wiki_name = guard.default_wiki_name().to_owned();
+    let stats = crate::ops::stats(&guard, &wiki_name)
+        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"))?;
+    Ok(Json(stats))
 }
 
 // ── trust + operations + destructive-warning (Task E3.2) ────────────────────
