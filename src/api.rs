@@ -168,6 +168,13 @@ pub struct ConsoleApiState {
     /// quality checks run without subject-validation tags (legacy mode). Set
     /// at boot via [`Self::with_subject_validator`] from the loaded rules.
     pub subject_validator: Option<std::sync::Arc<crate::subject_validator::SubjectValidator>>,
+    /// Optional handle to the `WikiEngine`. When `None` (the default in tests
+    /// that build a bare `SemanticStore`), endpoints that need the engine
+    /// (`/status`, `/index-status`, `/index/update`, `/index/rebuild`, `/config`)
+    /// return `internal_error`. When `Some` (production wiring via
+    /// [`Self::with_engine`]), those endpoints can read `EngineState` and call
+    /// `ops::stats` / `ops::index::*`.
+    pub engine: Option<Arc<crate::engine::WikiEngine>>,
 }
 
 impl ConsoleApiState {
@@ -219,6 +226,7 @@ impl ConsoleApiState {
             events: Arc::new(events),
             ai_provider: None,       // Phase 3 — set via with_ai_provider builder
             subject_validator: None, // Phase 1.5 — set via with_subject_validator
+            engine: None,            // Console-expansion — set via with_engine builder
         }
     }
 
@@ -239,6 +247,16 @@ impl ConsoleApiState {
         validator: std::sync::Arc<crate::subject_validator::SubjectValidator>,
     ) -> Self {
         self.subject_validator = Some(validator);
+        self
+    }
+
+    /// Attach a [`WikiEngine`] handle so engine-backed endpoints (`/status`,
+    /// `/index-status`, `/index/update`, `/index/rebuild`, `/config`) can serve
+    /// data. Production wires this via `server::serve`; tests that exercise
+    /// engine-backed endpoints pass `Some(...)`; tests that don't leave it
+    /// `None`.
+    pub fn with_engine(mut self, engine: Arc<crate::engine::WikiEngine>) -> Self {
+        self.engine = Some(engine);
         self
     }
 
@@ -320,6 +338,14 @@ pub fn router(state: ConsoleApiState) -> Router {
         .route("/inbox/{proposal_id}/reject", post(reject))
         .route("/inbox/{proposal_id}/supersede", post(supersede))
         .route("/galaxy", get(galaxy))
+        // Console-expansion (2026-07-25) — engine-backed read surfaces.
+        .route("/status", get(status))
+        .route("/activity", get(activity))
+        // Console-expansion (Task 16) — config + index endpoints.
+        .route("/config", get(config))
+        .route("/index-status", get(index_status))
+        .route("/index/update", post(index_update))
+        .route("/index/rebuild", post(index_rebuild))
         // E3.2 — trust + operations + entity-mutation + purge surfaces.
         .route("/trust", get(trust))
         .route("/ops/clients", get(ops_clients))
@@ -1111,6 +1137,189 @@ async fn galaxy(
     };
 
     Ok(Json(graph.to_payload(lod)).into_response())
+}
+
+// ── console-expansion (2026-07-25): engine-backed reads ─────────────────────
+
+/// `GET /api/v1/status` — wiki health snapshot for the Console Status page
+/// (Task 6 of the 2026-07-25 console-expansion series). Returns the full
+/// [`crate::ops::WikiStats`] for the configured default wiki so the
+/// client can pick fields (hero band, detail grid) without a second
+/// round-trip.
+///
+/// Read-only — session-only auth (no CSRF). 500 `internal_error` when the
+/// engine is not attached (defensive — production wires it; tests opt in via
+/// `ConsoleApiState::with_engine`).
+async fn status(
+    State(state): State<ConsoleApiState>,
+    _session: AuthSession,
+) -> Result<Json<crate::ops::WikiStats>, ApiError> {
+    let engine = state.engine.as_ref().ok_or_else(|| {
+        ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+    })?;
+    let guard = engine.state.read();
+    let wiki_name = guard.default_wiki_name().to_owned();
+    let stats = crate::ops::stats(&guard, &wiki_name)
+        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"))?;
+    Ok(Json(stats))
+}
+
+/// Query params for `GET /api/v1/activity`. `since` accepts `1d` / `7d` /
+/// `30d` (anything else, including `None`, falls back to `7d`); `limit` is
+/// clamped to `[1, 200]` with a default of `50`.
+#[derive(Deserialize)]
+struct ActivityQuery {
+    since: Option<String>,
+    limit: Option<usize>,
+}
+
+/// `GET /api/v1/activity?since=1d|7d|30d&limit=N` — recent page changes feed
+/// (Console Activity page timeline, Task 11 of the 2026-07-25 console-expansion
+/// series).
+///
+/// Read-only — session-only auth (no CSRF). Returns events newest-first as
+/// `Vec<ActivityEvent>` JSON. Wraps [`crate::ops::recent_activity`] (Task 10).
+/// 500 `internal_error` when the engine is not attached (defensive — same as
+/// `/status`).
+async fn activity(
+    State(state): State<ConsoleApiState>,
+    _session: AuthSession,
+    Query(query): Query<ActivityQuery>,
+) -> Result<Json<Vec<crate::ops::ActivityEvent>>, ApiError> {
+    let engine = state.engine.as_ref().ok_or_else(|| {
+        ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+    })?;
+    let since = match query.since.as_deref().unwrap_or("7d") {
+        "1d" => std::time::Duration::from_secs(86_400),
+        "30d" => std::time::Duration::from_secs(86_400 * 30),
+        // default + any unrecognized value → 7d (lenient parse).
+        _ => std::time::Duration::from_secs(86_400 * 7),
+    };
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let guard = engine.state.read();
+    let events = crate::ops::recent_activity(&guard, since, limit)
+        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"))?;
+    Ok(Json(events))
+}
+
+/// `GET /api/v1/config` — masked, read-only projection of `GlobalConfig`
+/// (Task 16 of the 2026-07-25 console-expansion series). Backed by
+/// [`crate::ops::config_view::config_view`] (Task 15), which projects a safe
+/// subset of fields for the Config page.
+///
+/// Read-only — session-only auth (no CSRF). 500 `internal_error` when the
+/// engine is not attached (defensive — same as `/status`).
+async fn config(
+    State(state): State<ConsoleApiState>,
+    _session: AuthSession,
+) -> Result<Json<crate::ops::config_view::ConfigView>, ApiError> {
+    let engine = state.engine.as_ref().ok_or_else(|| {
+        ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+    })?;
+    let guard = engine.state.read();
+    Ok(Json(crate::ops::config_view::config_view(&guard.config)))
+}
+
+/// Query params for `GET /api/v1/index-status`. `wiki` defaults to the
+/// engine's default wiki when absent — the Config page typically inspects the
+/// primary wiki, so callers can omit it.
+#[derive(Deserialize)]
+struct IndexStatusQuery {
+    wiki: Option<String>,
+}
+
+/// `GET /api/v1/index-status?wiki=name` — IndexStatus for a wiki (Task 16).
+/// Defaults to the engine's default wiki. Read-only — session-only auth.
+/// 500 `internal_error` when the engine is not attached or the wiki is
+/// unknown.
+async fn index_status(
+    State(state): State<ConsoleApiState>,
+    _session: AuthSession,
+    Query(q): Query<IndexStatusQuery>,
+) -> Result<Json<crate::index_manager::IndexStatus>, ApiError> {
+    let engine = state.engine.as_ref().ok_or_else(|| {
+        ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+    })?;
+    let guard = engine.state.read();
+    let wiki = q.wiki.unwrap_or_else(|| guard.default_wiki_name().to_owned());
+    let status = crate::ops::index_status(&guard, &wiki)
+        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"))?;
+    Ok(Json(status))
+}
+
+/// Body for `POST /api/v1/index/update` + `POST /api/v1/index/rebuild`. Names
+/// the wiki to target. (Console currently targets a single wiki; the field is
+/// explicit so the request shape stays stable when multi-wiki lands.)
+#[derive(Deserialize)]
+struct IndexTargetBody {
+    wiki: String,
+}
+
+/// `POST /api/v1/index/update` — incremental index update (cheap path, Task 16).
+/// Walks committed + uncommitted git changes since the last indexed state.
+/// Idempotent: returns `{updated: 0, deleted: 0}` when nothing changed.
+/// CSRF-gated (mutating, but not a destructive chain).
+async fn index_update(
+    State(state): State<ConsoleApiState>,
+    _session: CsrfSession,
+    Json(body): Json<IndexTargetBody>,
+) -> Result<Json<crate::index_manager::UpdateReport>, ApiError> {
+    let engine = state.engine.as_ref().ok_or_else(|| {
+        ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+    })?;
+    let report = crate::ops::index_after_commit(engine, &body.wiki)
+        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"))?;
+    metrics::counter!("console_mutations_total", "action" => "index_update").increment(1);
+    Ok(Json(report))
+}
+
+/// Response body for `POST /api/v1/index/rebuild` — the rebuild runs in the
+/// background, so the API returns the job_id immediately for progress polling
+/// via `/api/v1/ops/jobs`.
+#[derive(Serialize)]
+struct JobAccepted {
+    job_id: String,
+}
+
+/// `POST /api/v1/index/rebuild` — full index rebuild as a background job
+/// (Task 16). Returns immediately with `{job_id}`; track progress via
+/// `/ops/jobs`. The rebuild is synchronous + blocking so it runs on
+/// `spawn_blocking`; job status transitions queued → running → completed/failed
+/// via the SemanticStore job table. CSRF-gated.
+async fn index_rebuild(
+    State(state): State<ConsoleApiState>,
+    _session: CsrfSession,
+    Json(body): Json<IndexTargetBody>,
+) -> Result<Json<JobAccepted>, ApiError> {
+    let engine = state.engine.as_ref().ok_or_else(|| {
+        ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+    })?;
+    let job_id = state
+        .store
+        .register_job("index_rebuild")
+        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"))?;
+    state
+        .store
+        .activate_job(&job_id)
+        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error"))?;
+    let store = state.store.clone();
+    let engine = engine.clone();
+    let wiki = body.wiki;
+    let job_id_for_background = job_id.clone();
+    tokio::task::spawn_blocking(move || {
+        let result = crate::ops::index_rebuild(&engine, &wiki);
+        match result {
+            Ok(_) => {
+                let _ = store.complete_job(&job_id_for_background);
+            }
+            Err(e) => {
+                eprintln!("index_rebuild job {job_id_for_background} failed: {e}");
+                let _ = store.fail_job(&job_id_for_background);
+            }
+        }
+    });
+    metrics::counter!("console_mutations_total", "action" => "index_rebuild").increment(1);
+    Ok(Json(JobAccepted { job_id }))
 }
 
 // ── trust + operations + destructive-warning (Task E3.2) ────────────────────

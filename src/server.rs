@@ -205,6 +205,7 @@ async fn serve_http(
                     creds.password,
                     serve_cfg.http_bind_all_interfaces,
                 )
+                .with_engine(engine.clone())
                 .with_subject_validator(subject_validator);
                 if let Some(p) = &console_provider {
                     state = state.with_ai_provider(p.clone());

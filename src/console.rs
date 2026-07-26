@@ -24,10 +24,14 @@ use serde_json::Value;
 #[serde(rename_all = "snake_case")]
 pub enum ConsolePage {
     Home,
+    Today,
     Search,
     Inbox,
     Entity,
     Operations,
+    Activity,
+    Status,
+    Config,
 }
 
 // ── Review workflow (§9.1 Inbox/Review) ──────────────────────────────────────

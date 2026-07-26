@@ -7,16 +7,23 @@
     navigate,
     onRouteChange,
     parseHash,
-    PAGES,
+    PRIMARY_PAGES,
+    SYSTEM_PAGES,
     PAGE_LABELS,
     type ConsolePage,
+    type SystemPage,
   } from './lib/router'
   import Home from './pages/Home.svelte'
+  import Today from './pages/Today.svelte'
   import Search from './pages/Search.svelte'
   import Inbox from './pages/Inbox.svelte'
   import Entity from './pages/Entity.svelte'
   import Operations from './pages/Operations.svelte'
+  import Status from './pages/Status.svelte'
+  import Config from './pages/Config.svelte'
+  import Activity from './pages/Activity.svelte'
   import SpaceBackdrop from './components/SpaceBackdrop.svelte'
+  import NavSystemMenu from './components/NavSystemMenu.svelte'
   import HudFrame from './components/HudFrame.svelte'
   import Toaster from './components/Toaster.svelte'
   import ErrorBoundary from './components/ErrorBoundary.svelte'
@@ -164,7 +171,7 @@
 
     {#if session.isLoggedIn}
       <nav class="primary-nav" aria-label="Primary">
-        {#each PAGES as page (page)}
+        {#each PRIMARY_PAGES as page (page)}
           <a
             href={`#/${page}`}
             class="nav-item"
@@ -180,6 +187,10 @@
           </a>
         {/each}
       </nav>
+
+      <NavSystemMenu
+        activePage={SYSTEM_PAGES.includes(currentPage as SystemPage) ? (currentPage as SystemPage) : null}
+      />
 
       <button type="button" class="logout" onclick={handleLogout}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -233,6 +244,8 @@
     </section>
   {:else if currentPage === 'home'}
     <Home {session} {toasts} />
+  {:else if currentPage === 'today'}
+    <Today {session} {toasts} />
   {:else if currentPage === 'search'}
     <Search {session} {toasts} />
   {:else if currentPage === 'inbox'}
@@ -241,6 +254,12 @@
     <Entity {session} {toasts} />
   {:else if currentPage === 'operations'}
     <Operations {session} {toasts} />
+  {:else if currentPage === 'status'}
+    <Status {session} {toasts} />
+  {:else if currentPage === 'config'}
+    <Config {session} {toasts} />
+  {:else if currentPage === 'activity'}
+    <Activity {session} {toasts} />
   {/if}
 </main>
 

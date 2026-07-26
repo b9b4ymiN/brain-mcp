@@ -1,4 +1,8 @@
+/// Recent activity feed — git page events projected to `ActivityEvent[]`.
+pub mod activity;
 mod config;
+/// Read-only projection of `GlobalConfig` for the `/config` endpoint.
+pub mod config_view;
 mod content;
 /// Wiki export operations — llms.txt, llms-full, and JSON export formats.
 pub mod export;
@@ -16,6 +20,7 @@ mod spaces;
 mod stats;
 mod suggest;
 
+pub use activity::*;
 pub use config::*;
 pub use content::*;
 pub use export::*;
