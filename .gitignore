@@ -115,3 +115,6 @@ config/config.toml
 .claude/settings.local.json
 .github/skills/impeccable/
 .github/hooks/impeccable.json
+
+# Workflow files — excluded from b9b4ymiN/brain-mcp push (no workflow scope on this token)
+.github/workflows/
