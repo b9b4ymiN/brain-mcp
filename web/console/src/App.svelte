@@ -192,7 +192,7 @@
         activePage={SYSTEM_PAGES.includes(currentPage as SystemPage) ? (currentPage as SystemPage) : null}
       />
 
-      <button type="button" class="logout" onclick={handleLogout}>
+      <button type="button" class="logout" onclick={handleLogout} aria-label="Sign out">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
           <polyline points="16 17 21 12 16 7" />
@@ -490,13 +490,18 @@
     border-color: var(--color-danger);
   }
 
-  /* ── Main + flash ─────────────────────────────────────────────────── */
+  /* ── Main + flash ───────────────────────────────────────────────────
+   * padding-top is var(--space-lg) (24px) so the page content sits a clear
+   * gap below the sticky shell header. Previously this was 0, which let
+   * the dashboard pages (Today/Status/Activity/Config) render flush
+   * against the header's bottom hairline + glow. Home's .home-current
+   * variant below overrides this to 0 for its full-bleed hero. */
   .shell-main {
     position: relative;
     z-index: var(--z-base);
     max-width: var(--shell-max-width);
     margin: 0 auto;
-    padding: 0 var(--space-lg) var(--space-xxl);
+    padding: var(--space-lg) var(--space-lg) var(--space-xxl);
     outline: none;
   }
 
@@ -691,18 +696,23 @@
     .logout {
       order: 2;
       flex-shrink: 0;
+      /* justify-content: center so the icon reads as the button's content,
+       * not its left padding. Desktop relies on the visible label + gap;
+       * mobile is icon-only, so center is mandatory. */
+      justify-content: center;
       padding: var(--space-xs);
       min-width: 44px;
       min-height: 44px;
     }
 
-    /* Signout: icon-only on mobile (label hidden). */
+    /* Signout: icon-only on mobile. The visible label is removed from the
+     * layout entirely (`display: none`), leaving the SVG as the sole flex
+     * item — the icon can't drift off-center because there's nothing else
+     * in flow to push it. The accessible name comes from the button's
+     * `aria-label="Sign out"` (added in markup), so removing the span from
+     * the a11y tree is safe — no reliance on the clip pattern. */
     .logout span {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      overflow: hidden;
-      clip: rect(0 0 0 0);
+      display: none;
     }
 
     /* Row 2: nav as horizontal-scroll strip with cyan divider. The right

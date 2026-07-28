@@ -56,6 +56,7 @@
   import HoloPanel from '../components/HoloPanel.svelte'
   import DataTable from '../components/DataTable.svelte'
   import DestructiveDialog from '../components/DestructiveDialog.svelte'
+  import PageHead from '../components/PageHead.svelte'
   import { formatDate } from '../lib/format'
 
   /** Navigate to Entity with a claim ID staged as the subject. Used by
@@ -391,28 +392,28 @@
 </script>
 
 <section class="ops-page">
-  <header class="ops-page-head">
-    <div>
-      <p class="ops-kicker">Sector overview</p>
-      <h1>Operations</h1>
-      <p class="ops-tagline">
-        Trust, clients, jobs, evals, and backup health. Each panel refreshes independently.
-      </p>
-    </div>
-    <button
-      type="button"
-      class="ops-refresh-all"
-      onclick={() => void refreshAll()}
-      disabled={trustLoading || clientsLoading || jobsLoading || backupLoading}
-      aria-busy={trustLoading || clientsLoading || jobsLoading || backupLoading}
-    >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
-        <path d="M21 3v5h-5" />
-      </svg>
-      <span>{trustLoading || clientsLoading || jobsLoading || backupLoading ? 'Refreshing…' : 'Refresh all'}</span>
-    </button>
-  </header>
+  <PageHead
+    kicker="Sector overview"
+    title="Operations"
+    titleSize="headline"
+    tagline="Trust, clients, jobs, evals, and backup health. Each panel refreshes independently."
+  >
+    {#snippet actions()}
+      <button
+        type="button"
+        class="action-btn"
+        onclick={() => void refreshAll()}
+        disabled={trustLoading || clientsLoading || jobsLoading || backupLoading}
+        aria-busy={trustLoading || clientsLoading || jobsLoading || backupLoading}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
+          <path d="M21 3v5h-5" />
+        </svg>
+        <span>{trustLoading || clientsLoading || jobsLoading || backupLoading ? 'Refreshing…' : 'Refresh all'}</span>
+      </button>
+    {/snippet}
+  </PageHead>
 
   <div class="ops-grid">
     <!-- ── Trust (primary surface — engineer acts on this) ────────────── -->
@@ -775,48 +776,14 @@
 {/if}
 
 <style>
-  /* ── Page shell ─────────────────────────────────────────────────────── */
+  /* ── Page shell ───────────────────────────────────────────────────────
+   * Page chrome (kicker/h1/tagline/refresh button) lives in PageHead now.
+   * Top padding lives on .shell-main (var(--space-lg)); .ops-page no longer
+   * adds its own to avoid doubling the gap. */
   .ops-page {
-    padding: var(--space-lg) 0;
     display: flex;
     flex-direction: column;
     gap: var(--space-lg);
-  }
-
-  .ops-page-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-md);
-    flex-wrap: wrap;
-  }
-
-  .ops-page-head h1 {
-    margin: 0;
-    font-family: var(--font-display);
-    font-size: var(--text-headline);
-    font-weight: var(--weight-semibold);
-    letter-spacing: var(--text-headline-tracking);
-    line-height: var(--text-headline-leading);
-  }
-
-  /* Sector kicker — the page-level mono label. Sits above the H1, reads
-   * like a flight-instrument page label. */
-  .ops-kicker {
-    margin: 0 0 var(--space-xs);
-    font-family: var(--font-mono);
-    font-size: var(--text-mono);
-    font-weight: var(--weight-medium);
-    color: var(--holo-cyan);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .ops-tagline {
-    margin: var(--space-xs) 0 0;
-    color: var(--text-secondary);
-    font-size: var(--text-body);
-    max-width: var(--content-measure);
   }
 
   /* ── Shared button vocabulary (token-driven, ≥44px touch targets) ───── */
@@ -867,36 +834,6 @@
      * (lighter red drops white-text contrast below 4.5:1). */
     background: var(--color-danger-strong);
     box-shadow: var(--glow-danger);
-  }
-
-  .ops-refresh-all {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-sm);
-    min-height: 44px;
-    padding: var(--space-sm) var(--space-md);
-    border: var(--border-hairline);
-    border-radius: var(--radius-md);
-    /* Opaque surface — the old --overlay-ink-06 wash measured 1.0:1 contrast
-     * (text-primary over a 6% white tint over void). */
-    background: var(--surface-active-nav);
-    color: var(--text-primary);
-    font-family: var(--font-body);
-    font-size: var(--text-label);
-    font-weight: var(--weight-medium);
-    letter-spacing: var(--text-label-tracking);
-    cursor: pointer;
-    transition: background var(--duration-fast) var(--ease-out-quart),
-      border-color var(--duration-fast) var(--ease-out-quart);
-  }
-
-  .ops-refresh-all:hover {
-    background: var(--color-surface-raised);
-    border-color: var(--color-accent);
-  }
-
-  .ops-refresh-all svg {
-    flex-shrink: 0;
   }
 
   /* Icon button — square ≥44×44, visually compact via icon */

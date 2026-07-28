@@ -45,6 +45,7 @@
   import { consumePendingSubject, setPendingSubject } from '../lib/quickSearch'
   import StateBox from '../components/StateBox.svelte'
   import HoloPanel from '../components/HoloPanel.svelte'
+  import PageHead from '../components/PageHead.svelte'
 
   // ── Table controls state (filter + sort + compact + page) ────────────
   let filterText = $state('')
@@ -359,8 +360,7 @@
 </script>
 
 <section class="page page-entity">
-  <p class="page-kicker">Subject scan</p>
-  <h1>Entity</h1>
+  <PageHead kicker="Subject scan" title="Entity" titleSize="headline" />
 
   <form class="subject-form" onsubmit={onSubmit}>
     <label for="subject">Subject</label>
@@ -635,28 +635,10 @@
    *    view-toggle buttons keep the toolbar compact but hit 44px via
    *    min-height. */
 
+  /* Page chrome (kicker/h1) lives in PageHead now. Top padding is on
+   * .shell-main; .page adds only bottom padding. */
   .page {
-    padding: var(--space-lg) 0;
-  }
-
-  h1 {
-    margin: 0 0 var(--space-md);
-    font-family: var(--font-display);
-    font-size: var(--text-headline);
-    font-weight: var(--weight-semibold);
-    letter-spacing: var(--text-headline-tracking);
-    line-height: var(--text-headline-leading);
-  }
-
-  /* Page kicker — mono sector label. */
-  .page-kicker {
-    margin: 0 0 var(--space-xs);
-    font-family: var(--font-mono);
-    font-size: var(--text-mono);
-    font-weight: var(--weight-medium);
-    color: var(--holo-cyan);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    padding-bottom: var(--space-lg);
   }
 
   /* ── Table chrome (filter + compact toggle) ───────────────────────── */

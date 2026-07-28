@@ -694,7 +694,8 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    min-height: 32px;
+    /* Touch target — WCAG 2.5.5 (was 32px). */
+    min-height: 44px;
     padding: var(--space-xs) var(--space-sm);
     border: 1px solid oklch(0.78 0.13 195 / 0.25);
     border-radius: var(--radius-pill);

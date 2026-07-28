@@ -77,6 +77,11 @@
 
   .system-toggle {
     display: inline-flex; align-items: center; gap: var(--space-xs);
+    /* Touch target — WCAG 2.5.5. The desktop rule alone left the toggle
+     * at ~28px tall (content-driven), below the 44px bar the rest of the
+     * nav hits. min-height applies at all widths since the toggle is
+     * interactive everywhere. */
+    min-height: 44px;
     padding: var(--space-xs) var(--space-sm);
     background: transparent;
     border: var(--border-hairline);
@@ -112,6 +117,8 @@
   }
 
   .system-item {
+    /* Touch target — WCAG 2.5.5. Same fix as .system-toggle. */
+    min-height: 44px;
     padding: var(--space-xs) var(--space-sm);
     background: transparent; border: none;
     border-radius: var(--radius-sm);
@@ -128,5 +135,32 @@
   }
   .system-item.active {
     color: var(--color-accent);
+  }
+
+  /* ── Mobile ─────────────────────────────────────────────────────────
+   * The App.svelte mobile shell-bar uses order to place brand (1), logout
+   * (2), and primary-nav (3). NavSystemMenu previously had no order set,
+   * so it defaulted to 0 and rendered LEFT of the brand — orphaned on the
+   * wrong end of the bar. Pin it next to the logout (order: 2) so the
+   * system menu + sign-out form the right-hand action cluster, mirroring
+   * the desktop layout.
+   *
+   * The dropdown panel is anchored `right: 0` relative to `.nav-system`.
+   * On mobile the trigger sits near the right edge of the bar, so
+   * `right: 0` keeps the panel on-screen. As a safety net we also cap the
+   * panel's max-width to the viewport minus gutters so it can never grow
+   * wider than the screen if labels get long. */
+  @media (max-width: 48rem) {
+    .nav-system {
+      order: 2;
+      flex-shrink: 0;
+    }
+
+    .system-menu {
+      /* Allow the panel to grow leftward from the right anchor but never
+       * past the viewport's left gutter. max-width keeps long labels
+       * from pushing the panel off-screen on narrow viewports. */
+      max-width: calc(100vw - var(--space-md) * 2);
+    }
   }
 </style>

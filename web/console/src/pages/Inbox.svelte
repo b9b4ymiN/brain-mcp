@@ -71,6 +71,7 @@
   } from '../lib/review'
   import StateBox from '../components/StateBox.svelte'
   import DiffPreviewCmp from '../components/DiffPreview.svelte'
+  import PageHead from '../components/PageHead.svelte'
   import { formatValue, formatDate } from '../lib/format'
 
   interface Props {
@@ -697,9 +698,12 @@
 </script>
 
 <section class="page page-inbox" inert={dialog !== null}>
-  <p class="page-kicker">Review queue {#if pendingProposals.length > 0}· {pendingProposals.length} pending{/if}</p>
-  <h1>Inbox</h1>
-  <p class="tagline">Review pending proposals. Each decision is permanent.</p>
+  <PageHead
+    kicker={`Review queue${pendingProposals.length > 0 ? ` · ${pendingProposals.length} pending` : ''}`}
+    title="Inbox"
+    titleSize="headline"
+    tagline="Review pending proposals. Each decision is permanent."
+  />
 
   {#if pendingProposals.length > 0}
     <div class="inbox-chrome">
@@ -1043,32 +1047,10 @@
    *  - .action buttons: min-height 44px (WCAG 2.5.5 touch targets)
    *  - .proposal-head outline:none → focus-visible ring via box-shadow
    */
+  /* Page chrome (kicker/h1/tagline) lives in PageHead now. Top padding is
+   * on .shell-main; .page adds only bottom padding. */
   .page {
-    padding: var(--space-lg) 0;
-  }
-
-  h1 {
-    margin: 0;
-    font-family: var(--font-display);
-    font-size: var(--text-headline);
-    font-weight: var(--weight-semibold);
-    letter-spacing: var(--text-headline-tracking);
-    line-height: var(--text-headline-leading);
-  }
-
-  /* Page kicker — mono sector label, sits above the H1. */
-  .page-kicker {
-    margin: 0 0 var(--space-xs);
-    font-family: var(--font-mono);
-    font-size: var(--text-mono);
-    font-weight: var(--weight-medium);
-    color: var(--holo-cyan);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .tagline {
-    margin: var(--space-xs) 0 var(--space-md);
+    padding-bottom: var(--space-lg);
   }
 
   /* ── Inbox filter/sort chrome ────────────────────────────────────── */
@@ -1390,18 +1372,24 @@
 
   /* ── Phase 1.6 — conflict peers panel (in the expanded detail) ────────
    * Mirrors the design of the existing .evidence panel: opaque tinted
-   * surface, accent-tinted left border, small heading. Hard-value conflicts
-   * border amber; duplicates border cyan — same dual voice as the badge so
-   * the row and detail read as the same signal. */
+   * surface + full hairline border + colored heading. Hard-value conflicts
+   * use the accent-tinted surface; duplicates use the info-tinted surface —
+   * same dual voice as the badge so the row and detail read as the same
+   * signal.
+   *
+   * Side-stripe killed (DESIGN.md ban): previously `border-left: 3px solid`
+   * carried the conflict kind. Now the kind is carried by the tinted
+   * surface + the heading color, matching the .excerpt panel's pattern
+   * (hairline + surface tint, no side-stripe). */
   .conflicts {
     margin: var(--space-sm) 0;
     padding: var(--space-sm) var(--space-md);
-    background: var(--surface-flat);
-    border-left: 3px solid var(--color-accent);
-    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    background: var(--surface-accent-soft);
+    border: var(--border-hairline);
+    border-radius: var(--radius-sm);
   }
   .conflicts--duplicate {
-    border-left-color: var(--color-info);
+    background: var(--surface-info-soft);
   }
   .conflicts-title {
     margin: 0 0 var(--space-xs);

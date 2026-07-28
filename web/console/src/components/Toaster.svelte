@@ -210,12 +210,13 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 32px;
-    height: 32px;
-    min-width: 32px;
-    min-height: 32px;
-    /* Touch target stretched via the surrounding toast padding; the visual
-     * size stays compact so the dismiss control doesn't dominate. */
+    /* Touch target — bumped from 32×32 toward 44px (WCAG 2.5.5). Kept at
+     * 40px rather than 44 so the dismiss control doesn't dominate short
+     * toast lines; toasts also auto-expire, so this is a secondary action. */
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    min-height: 40px;
     padding: 0;
     border: none;
     border-radius: var(--radius-sm);

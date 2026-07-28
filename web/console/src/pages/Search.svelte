@@ -38,6 +38,7 @@
     setPendingSubject,
   } from '../lib/quickSearch'
   import StateBox from '../components/StateBox.svelte'
+  import PageHead from '../components/PageHead.svelte'
   import { formatValue } from '../lib/format'
 
   interface Props {
@@ -210,8 +211,7 @@
 </script>
 
 <section class="page page-search">
-  <p class="page-kicker">Sector scan</p>
-  <h1>Search</h1>
+  <PageHead kicker="Sector scan" title="Search" titleSize="headline" />
 
   <form class="search-form" onsubmit={onSubmit}>
     <label for="query" class="field-required">Query <span aria-hidden="true">*</span></label>
@@ -336,28 +336,10 @@
    *  - .predicate italic + opacity → mono + token (predicate is machine
    *    output; the Mono-Marks-Machine Rule). */
 
+  /* Page chrome (kicker/h1) lives in PageHead now. Top padding is on
+   * .shell-main; .page adds only bottom padding for the page rhythm. */
   .page {
-    padding: var(--space-lg) 0;
-  }
-
-  h1 {
-    margin: 0 0 var(--space-md);
-    font-family: var(--font-display);
-    font-size: var(--text-headline);
-    font-weight: var(--weight-semibold);
-    letter-spacing: var(--text-headline-tracking);
-    line-height: var(--text-headline-leading);
-  }
-
-  /* Page kicker — mono sector label. */
-  .page-kicker {
-    margin: 0 0 var(--space-xs);
-    font-family: var(--font-mono);
-    font-size: var(--text-mono);
-    font-weight: var(--weight-medium);
-    color: var(--holo-cyan);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    padding-bottom: var(--space-lg);
   }
 
   /* ── Post-result filter bar ──────────────────────────────────────── */
@@ -726,7 +708,8 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    min-height: 36px;
+    /* Touch target — WCAG 2.5.5 (was 36px). */
+    min-height: 44px;
     padding: var(--space-xs) var(--space-sm);
     border-radius: var(--radius-md);
     border: var(--border-hairline);

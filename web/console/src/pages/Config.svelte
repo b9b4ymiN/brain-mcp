@@ -34,6 +34,7 @@
   import { formatRelative } from '../lib/format'
   import StateBox from '../components/StateBox.svelte'
   import HoloPanel from '../components/HoloPanel.svelte'
+  import PageHead from '../components/PageHead.svelte'
 
   interface Props {
     session: SessionStore
@@ -204,29 +205,27 @@
 </script>
 
 <section class="config-page">
-  <header class="page-head">
-    <div>
-      <p class="page-kicker">System configuration</p>
-      <h1>Config</h1>
-      <p class="page-tagline">
-        Read-only view of registered spaces, transport, extraction, logging, and index
-        policy. Index actions run live — full rebuilds queue as background jobs.
-      </p>
-    </div>
-    <button
-      type="button"
-      class="refresh-all"
-      onclick={() => void refreshAll()}
-      disabled={cfgLoading || idxLoading}
-      aria-busy={cfgLoading || idxLoading}
-    >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
-        <path d="M21 3v5h-5" />
-      </svg>
-      <span>{cfgLoading || idxLoading ? 'Refreshing…' : 'Refresh all'}</span>
-    </button>
-  </header>
+  <PageHead
+    kicker="System configuration"
+    title="Config"
+    tagline="Read-only view of registered spaces, transport, extraction, logging, and index policy. Index actions run live — full rebuilds queue as background jobs."
+  >
+    {#snippet actions()}
+      <button
+        type="button"
+        class="action-btn"
+        onclick={() => void refreshAll()}
+        disabled={cfgLoading || idxLoading}
+        aria-busy={cfgLoading || idxLoading}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
+          <path d="M21 3v5h-5" />
+        </svg>
+        <span>{cfgLoading || idxLoading ? 'Refreshing…' : 'Refresh all'}</span>
+      </button>
+    {/snippet}
+  </PageHead>
 
   <!-- Panel 1: read-only config display -->
   <HoloPanel
@@ -431,33 +430,8 @@
 </section>
 
 <style>
-  /* Mirror Status/Operations page chrome: kicker + h1 + tagline + refresh-all */
+  /* Page chrome (kicker/h1/tagline/refresh button) lives in PageHead now. */
   .config-page { display: flex; flex-direction: column; gap: var(--space-md); }
-  .page-head {
-    display: flex; justify-content: space-between; align-items: flex-start;
-    gap: var(--space-md); flex-wrap: wrap;
-  }
-  .page-kicker {
-    margin: 0;
-    font-family: var(--font-mono); font-size: var(--text-mono);
-    color: var(--holo-cyan); letter-spacing: 0.05em; text-transform: uppercase;
-  }
-  .config-page h1 {
-    margin: var(--space-xs) 0 0; font-family: var(--font-display);
-    font-size: var(--text-title); font-weight: var(--weight-semibold);
-    color: var(--text-primary);
-  }
-  .page-tagline { margin: var(--space-xs) 0 0; color: var(--text-secondary); max-width: 65ch; }
-  .refresh-all {
-    display: inline-flex; align-items: center; gap: var(--space-xs);
-    padding: var(--space-xs) var(--space-sm);
-    background: var(--surface-active-nav); border: var(--border-hairline);
-    border-radius: var(--radius-md); color: var(--text-primary);
-    font-family: var(--font-body); font-size: var(--text-body);
-    cursor: pointer;
-  }
-  .refresh-all:hover:not(:disabled) { background: var(--surface-raised); }
-  .refresh-all:disabled { opacity: 0.6; cursor: not-allowed; }
 
   /* ── Config sections ───────────────────────────────────────────────── */
   .cfg-section {
