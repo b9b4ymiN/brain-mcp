@@ -112,6 +112,11 @@ metrics-exporter-prometheus = "0.18.3"
 
 [dev-dependencies]
 tempfile   = "3"
+# `ServiceExt::oneshot` for driving a `Router` directly in integration tests
+# without spinning up a real TCP server (axum 0.8's re-exported `ServiceExt`
+# is a different trait without `oneshot`). Pinned to the version already in
+# the lockfile as a transitive dep of axum — no version drift introduced.
+tower     = "0.5"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
