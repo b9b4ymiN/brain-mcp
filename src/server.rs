@@ -228,6 +228,15 @@ async fn serve_http(
         store: server.semantic_store.clone(),
     };
 
+    // Resolve MCP Bearer tokens. Empty + loopback = backward compat (no auth).
+    // Empty + public bind = fail-closed (resolve_mcp_tokens already errored).
+    let mcp_tokens = Arc::new(serve_cfg.resolve_mcp_tokens()?);
+    // `Some(layer)` only when tokens are configured; `None` keeps `/mcp` open
+    // (default loopback dev setup). `FromFnLayer` holds an `Arc`, so the
+    // later `.clone()` per branch is cheap.
+    let mcp_auth_layer = (!mcp_tokens.is_empty())
+        .then(|| crate::mcp::bearer_auth::layer(mcp_tokens.clone()));
+
     let router = if serve_cfg.mcp_stateful_mode {
         let service: StreamableHttpService<McpServer, LocalSessionManager> =
             StreamableHttpService::new(
@@ -235,8 +244,14 @@ async fn serve_http(
                 Arc::new(session_manager),
                 config,
             );
-        axum::Router::new()
-            .nest_service("/mcp", service)
+        // Layer the auth on `/mcp` BEFORE the unauthenticated `/health`,
+        // `/ready`, `/metrics` routes are added — axum's `.layer()` wraps
+        // only the routes registered above it on this builder.
+        let mut mcp_router = axum::Router::new().nest_service("/mcp", service);
+        if let Some(layer) = mcp_auth_layer.clone() {
+            mcp_router = mcp_router.layer(layer);
+        }
+        mcp_router
             .route("/health", axum::routing::get(health_handler))
             .route("/ready", axum::routing::get(ready_handler))
             .route("/metrics", axum::routing::get(metrics_handler))
@@ -248,8 +263,11 @@ async fn serve_http(
                 Arc::new(NeverSessionManager::default()),
                 config,
             );
-        axum::Router::new()
-            .nest_service("/mcp", service)
+        let mut mcp_router = axum::Router::new().nest_service("/mcp", service);
+        if let Some(layer) = mcp_auth_layer.clone() {
+            mcp_router = mcp_router.layer(layer);
+        }
+        mcp_router
             .route("/health", axum::routing::get(health_handler))
             .route("/ready", axum::routing::get(ready_handler))
             .route("/metrics", axum::routing::get(metrics_handler))

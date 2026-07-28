@@ -26,19 +26,24 @@ use crate::api::constant_time_eq;
 /// (Arc) so the layer is cheap to clone per-request.
 ///
 /// The natural return type of `axum::middleware::from_fn_with_state` is
-/// `FromFnLayer<H, Arc<Vec<String>>, Response>` where `H` is the handler
-/// type. `require_bearer` is an `async fn`, whose unique future-returning
-/// type cannot be named as a plain `fn(...) -> impl Future` pointer (RPITIT
-/// is not allowed in `fn` pointer types). Rather than add the `futures`
-/// crate just for `BoxFuture`, we name the handler type as a non-async
+/// `FromFnLayer<F, S, T>` where `F` is the handler fn-pointer, `S` is the
+/// state, and `T` is the extractor tuple (NOT the response type — the third
+/// type param of `FromFnLayer` is the extractor tuple, see axum's `pub struct
+/// FromFnLayer<F, S, T>` + `Layer` impl). Our handler takes `State<...>`
+/// (FromRequestParts) and `Request` (FromRequest) before `Next`, so
+/// `T = (State<Arc<Vec<String>>>, Request)`.
+///
+/// `require_bearer` is `async`, whose unique future-returning type cannot be
+/// named as a plain `fn(...) -> impl Future` pointer (RPITIT is not allowed
+/// in `fn` pointer types). Rather than add the `futures` crate just for
+/// `BoxFuture`, we name the handler type as a non-async
 /// `fn(...) -> Pin<Box<dyn Future + Send>>` and bridge to the async body via
-/// a tiny `Box::pin` shim. The caller in Task 5 pins the concrete layer
-/// type when they call `.layer(bearer_auth::layer(tokens))`. This is a
-/// known Rust ergonomic issue with `from_fn_with_state`, not a bug.
+/// a tiny `Box::pin` shim. This is a known Rust ergonomic issue with
+/// `from_fn_with_state`, not a bug.
 pub fn layer(tokens: Arc<Vec<String>>) -> axum::middleware::FromFnLayer<
     fn(State<Arc<Vec<String>>>, Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, StatusCode>> + Send>>,
     Arc<Vec<String>>,
-    Response,
+    (State<Arc<Vec<String>>>, Request),
 > {
     // `require_bearer` is `async`, but the function-pointer return type
     // above needs a `fn(...) -> Future` (non-async) signature. Adapter shim
