@@ -28,7 +28,7 @@ use axum::routing::{get, post};
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
@@ -749,19 +749,19 @@ async fn search(
     _session: AuthSession,
     Query(params): Query<SearchParams>,
 ) -> Result<Response, ApiError> {
-    // FTS5-ranked search (shares the read path with the brain_search MCP tool).
-    // `search_claims` returns the ranked claim_ids + scores; we then hydrate
-    // the full Console display fields (origin/provenance/entity_id) from
-    // `all_claims_current`, ordered by the FTS5 ranking. This keeps the REST
-    // and MCP surfaces on one search engine instead of the old divergent
-    // linear scans, and adds `score` to the payload.
+    // Unified search: claims (FTS5) + pages (BM25 over tantivy), merged into
+    // a single result list sorted by normalized score. The Console UI tags
+    // each row with `kind: "claim" | "page"` so the user can distinguish
+    // them at a glance. Original implementation searched only claims; this
+    // is the Bug 2 fix (Console Search couldn't find pages).
     let query = &params.query;
     let top_k = params.top_k.unwrap_or(10);
+
+    // ── Claims (FTS5) ────────────────────────────────────────────────────
     let hits = state
         .store
         .search_claims(query, params.domain.as_deref(), top_k)
         .map_err(|e| map_semantic_error(&e))?;
-    // Build a claim_id → score map for reordering after hydration.
     let score_by_id: std::collections::HashMap<Uuid, f64> = hits
         .iter()
         .map(|h| (h.claim_id, h.score))
@@ -776,30 +776,112 @@ async fn search(
         .all_claims_current(head, Utc::now())
         .map_err(|e| map_semantic_error(&e))?;
 
-    // Keep only the FTS-hit claim_ids, hydrate full fields, preserve BM25 order.
-    let mut results: Vec<_> = claims
+    // Hydrate the FTS-hit claim_ids. We capture the raw score first for
+    // normalization; the kind tag lets the UI render each row correctly.
+    let mut claim_results: Vec<(f64, Value)> = claims
         .active
         .iter()
-        .filter(|claim| score_by_id.contains_key(&claim.claim_id))
-        .map(|claim| {
-            json!({
-                "claim_id": claim.claim_id,
-                "subject": claim.subject,
-                "predicate": claim.predicate,
-                "value": claim.value,
-                "domain": claim.domain,
-                "origin": claim.origin,
-                "provenance": claim.provenance_kind,
-                "entity_id": claim.entity_id,
-                "score": score_by_id.get(&claim.claim_id),
-            })
+        .filter_map(|claim| {
+            let raw_score = score_by_id.get(&claim.claim_id)?;
+            Some((
+                *raw_score,
+                json!({
+                    "kind": "claim",
+                    "claim_kind": claim.claim_kind,
+                    "claim_id": claim.claim_id,
+                    "subject": claim.subject,
+                    "predicate": claim.predicate,
+                    "value": claim.value,
+                    "domain": claim.domain,
+                    "origin": claim.origin,
+                    "provenance": claim.provenance_kind,
+                    "entity_id": claim.entity_id,
+                }),
+            ))
         })
         .collect();
-    results.sort_by(|a, b| {
-        let sa = a["score"].as_f64().unwrap_or(f64::INFINITY);
-        let sb = b["score"].as_f64().unwrap_or(f64::INFINITY);
-        sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+
+    // ── Pages (BM25 over tantivy) ────────────────────────────────────────
+    // Page search requires the WikiEngine (state.engine). When the engine
+    // isn't wired (legacy test fixtures), we skip pages and return claims
+    // only — this keeps the handler usable from ConsoleApiState::new tests
+    // that build a bare SemanticStore.
+    let mut page_results: Vec<(f64, Value)> = Vec::new();
+    if let Some(engine) = state.engine.as_ref() {
+        let guard = engine.state.read();
+        let wiki_name = guard.default_wiki_name().to_owned();
+        // Query tantivy BM25 via ops::search. We pass no_excerpt=false so the
+        // UI can show highlighted snippets. Errors here are non-fatal — a
+        // stale/unbuilt index shouldn't 500 the claim path; we just log and
+        // return claims only.
+        let page_params = crate::ops::SearchParams {
+            query,
+            type_filter: None,
+            no_excerpt: false,
+            top_k: Some(top_k),
+            include_sections: false,
+            cross_wiki: false,
+        };
+        if let Ok(page_search) = crate::ops::search(&guard, &wiki_name, &page_params) {
+            for page in page_search.results {
+                page_results.push((
+                    page.score as f64,
+                    json!({
+                        "kind": "page",
+                        "page_type": null, // PageRef doesn't carry frontmatter type today; we
+                                           // could enrich later by reading the page, but BM25
+                                           // snippet is enough for the result row.
+                        "slug": page.slug,
+                        "title": page.title,
+                        "uri": page.uri,
+                        "excerpt": page.excerpt,
+                        "summary": page.summary,
+                    }),
+                ));
+            }
+        }
+    }
+
+    // ── Normalize + merge ────────────────────────────────────────────────
+    // Both BM25 (pages) and FTS5 (claims) scores are non-negative but on
+    // different scales. We min-max normalize each side to [0, 1] against its
+    // own max, then merge + sort descending. Ties (equal normalized scores)
+    // break to pages first (heuristic: a page hit usually carries more
+    // context than a single claim).
+    let max_claim = claim_results.iter().map(|(s, _)| *s).fold(0.0_f64, f64::max);
+    let max_page = page_results.iter().map(|(s, _)| *s).fold(0.0_f64, f64::max);
+
+    let mut merged: Vec<(f64, bool, Value)> = Vec::with_capacity(claim_results.len() + page_results.len());
+    for (raw, v) in claim_results {
+        let normalized = if max_claim > 0.0 { raw / max_claim } else { 0.0 };
+        merged.push((normalized, false, v));
+    }
+    for (raw, v) in page_results {
+        let normalized = if max_page > 0.0 { raw / max_page } else { 0.0 };
+        merged.push((normalized, true, v));
+    }
+    // Sort by normalized score desc; ties → pages first (the bool is `is_page`,
+    // true > false so descending sort puts pages first on ties).
+    merged.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.1.cmp(&a.1))
     });
+
+    let results: Vec<Value> = merged
+        .into_iter()
+        .map(|(score, _, v)| {
+            // Attach the normalized score to the row for client-side resort.
+            if let Value::Object(map) = &v {
+                let mut new_map = map.clone();
+                new_map.insert("score".to_string(), json!(score));
+                Value::Object(new_map)
+            } else {
+                v
+            }
+        })
+        .take(top_k)
+        .collect();
 
     Ok(Json(json!({
         "query": params.query,
