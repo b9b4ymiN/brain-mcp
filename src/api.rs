@@ -470,7 +470,7 @@ fn map_semantic_error(error: &SemanticError) -> ApiError {
 /// universally-accepted leak); equal-length inputs are compared with a
 /// branch-free XOR accumulate so no timing signal reveals how many bytes
 /// matched. Hand-rolled on purpose — no `subtle` dependency for ~10 lines.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
