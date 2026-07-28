@@ -87,6 +87,10 @@ services:
       # disabled) if you don't want the key in the container's inspectable
       # environment.
       - ZAI_API_KEY=${ZAI_API_KEY:-}
+      # MCP Bearer tokens (comma-separated, multi-client). Required when
+      # exposing /mcp publicly (http_bind_all_interfaces=true). Loopback
+      # deployments can leave this unset for backward-compatible no-auth.
+      - BRAIN_MCP_TOKENS=${BRAIN_MCP_TOKENS:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
