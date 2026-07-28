@@ -1,3 +1,7 @@
+/// Bearer token auth middleware for `/mcp` (Task 4). Multi-token,
+/// constant-time compare; never logs token values. Wired in `src/server.rs`
+/// only when `resolve_mcp_tokens()` returns a non-empty list.
+pub mod bearer_auth;
 /// Production auth boundary — capabilities, auth policy, token redaction
 /// (Task 3.3). Contract-level: real TLS/OAuth termination is Phase 6
 /// deployment; this module defines the policy framework and capability
