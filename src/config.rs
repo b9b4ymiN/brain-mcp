@@ -218,6 +218,14 @@ fn default_mcp_init_timeout_secs() -> u64 {
     60
 }
 
+/// Default env-var name holding comma-separated MCP Bearer tokens.
+/// Mirrors the `BRAIN_USERNAME`/`BRAIN_PASSWORD` pattern: config stores
+/// the env-var NAME, not the value. The value is read at startup via
+/// `std::env::var`. Empty/unset + public bind → fail-closed (refuse start).
+fn default_mcp_bearer_tokens_env() -> String {
+    "BRAIN_MCP_TOKENS".into()
+}
+
 fn default_mcp_completed_cache_ttl_secs() -> u64 {
     60
 }
@@ -305,6 +313,13 @@ pub struct ServeConfig {
     /// Set to 0 to disable the initialize timeout.
     #[serde(default = "default_mcp_init_timeout_secs")]
     pub mcp_init_timeout_secs: u64,
+    /// Env-var NAME (not value) holding comma-separated Bearer tokens
+    /// accepted on `/mcp`. Empty/unset + `http_bind_all_interfaces=true`
+    /// is a fail-closed configuration error (server refuses to start).
+    /// Default: `"BRAIN_MCP_TOKENS"`. Loopback deployments with this unset
+    /// keep the legacy unauthenticated `/mcp` (backward compatible).
+    #[serde(default = "default_mcp_bearer_tokens_env")]
+    pub mcp_bearer_tokens_env: String,
     /// Seconds to keep completed MCP request stream caches for late resume requests (default: 60).
     #[serde(default = "default_mcp_completed_cache_ttl_secs")]
     pub mcp_completed_cache_ttl_secs: u64,
@@ -393,6 +408,7 @@ impl Default for ServeConfig {
             acp_session_ttl_secs: default_acp_session_ttl_secs(),
             mcp_session_keep_alive_secs: default_mcp_session_keep_alive_secs(),
             mcp_init_timeout_secs: default_mcp_init_timeout_secs(),
+            mcp_bearer_tokens_env: default_mcp_bearer_tokens_env(),
             mcp_completed_cache_ttl_secs: default_mcp_completed_cache_ttl_secs(),
             mcp_tool_call_timeout_secs: default_mcp_tool_call_timeout_secs(),
             mcp_stateful_mode: default_mcp_stateful_mode(),
