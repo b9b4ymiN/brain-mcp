@@ -655,8 +655,9 @@ docker logs --tail 100 brain
 ## What's next (Phase F2)
 
 - OAuth-gated Console auth (replaces the bootstrap secret for multi-user).
-- **arm64 build** (DEFERRED in F1.3, 2026-07-18). The amd64 buildx pipeline is
-  in `scripts/docker_buildx_multiarch.sh`; the arm64 block is commented out
-  pending QEMU binfmt setup or a native ARM runner. Re-enable when an Oracle
-  ARM host or CI runner is available.
+- **arm64 (Oracle Cloud Ampere A1, Apple Silicon, Raspberry Pi 4):** supported
+  via native build on the ARM host (`docker compose up --build`). The Dockerfile
+  has no arch-specific commands and all deps are statically linked (bundled
+  SQLite, vendored libgit2, rustls). Validated on Oracle Cloud Free Tier with
+  the runbook in `docs/plans/2026-07-28-oracle-vm-migration-bearer-auth-design.md`.
 - Helm chart for kubernetes deployment.
