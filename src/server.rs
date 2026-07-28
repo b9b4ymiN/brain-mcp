@@ -234,8 +234,8 @@ async fn serve_http(
     // `Some(layer)` only when tokens are configured; `None` keeps `/mcp` open
     // (default loopback dev setup). `FromFnLayer` holds an `Arc`, so the
     // later `.clone()` per branch is cheap.
-    let mcp_auth_layer = (!mcp_tokens.is_empty())
-        .then(|| crate::mcp::bearer_auth::layer(mcp_tokens.clone()));
+    let mcp_auth_layer =
+        (!mcp_tokens.is_empty()).then(|| crate::mcp::bearer_auth::layer(mcp_tokens.clone()));
 
     let router = if serve_cfg.mcp_stateful_mode {
         let service: StreamableHttpService<McpServer, LocalSessionManager> =

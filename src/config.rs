@@ -1632,6 +1632,7 @@ pub fn set_wiki_config_value(wiki_cfg: &mut WikiConfig, key: &str, value: &str) 
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)] // test setup: build cfg from Default then tweak per-case
 mod tests {
     use super::*;
 
@@ -1651,7 +1652,11 @@ mod tests {
         let tokens = cfg.resolve_mcp_tokens().unwrap();
         assert_eq!(
             tokens,
-            vec!["tok-a".to_string(), "tok-b".to_string(), "tok-c".to_string()]
+            vec![
+                "tok-a".to_string(),
+                "tok-b".to_string(),
+                "tok-c".to_string()
+            ]
         );
         // SAFETY: see above.
         unsafe { std::env::remove_var("TEST_MCP_TOKENS") };

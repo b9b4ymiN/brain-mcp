@@ -12,7 +12,7 @@
 
 use axum::{
     extract::{Request, State},
-    http::{header::AUTHORIZATION, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header::AUTHORIZATION},
     middleware::Next,
     response::Response,
 };
@@ -40,8 +40,16 @@ use crate::api::constant_time_eq;
 /// `fn(...) -> Pin<Box<dyn Future + Send>>` and bridge to the async body via
 /// a tiny `Box::pin` shim. This is a known Rust ergonomic issue with
 /// `from_fn_with_state`, not a bug.
-pub fn layer(tokens: Arc<Vec<String>>) -> axum::middleware::FromFnLayer<
-    fn(State<Arc<Vec<String>>>, Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, StatusCode>> + Send>>,
+#[allow(clippy::type_complexity)] // FromFnLayer's 3 type params are mandated by axum's API.
+pub fn layer(
+    tokens: Arc<Vec<String>>,
+) -> axum::middleware::FromFnLayer<
+    fn(
+        State<Arc<Vec<String>>>,
+        Request,
+        Next,
+    )
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, StatusCode>> + Send>>,
     Arc<Vec<String>>,
     (State<Arc<Vec<String>>>, Request),
 > {
@@ -53,7 +61,8 @@ pub fn layer(tokens: Arc<Vec<String>>) -> axum::middleware::FromFnLayer<
         state: State<Arc<Vec<String>>>,
         req: Request,
         next: Next,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, StatusCode>> + Send>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, StatusCode>> + Send>>
+    {
         Box::pin(require_bearer(state, req, next))
     }
     axum::middleware::from_fn_with_state(tokens, shim)

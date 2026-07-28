@@ -16,13 +16,7 @@
 
 use std::sync::Arc;
 
-use axum::{
-    body::Body,
-    extract::Request,
-    http::StatusCode,
-    routing::any,
-    Router,
-};
+use axum::{Router, body::Body, extract::Request, http::StatusCode, routing::any};
 use llm_wiki::mcp::bearer_auth;
 // axum 0.8 re-exports a *different* `ServiceExt` (without `oneshot`); we need
 // tower's. `tower` is a direct `[dev-dependencies]` entry for this reason.
