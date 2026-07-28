@@ -203,16 +203,37 @@ async function request<T>(opts: RequestOptions): Promise<T> {
 
 // ── response shapes (mirror src/api.rs JSON exactly) ────────────────────────
 
-/** `/search` result row. Uses `provenance` (not `provenance_kind`). */
+/**
+ * `/search` result row — unified (2026-07-26 Bug 2 fix). Each row is either a
+ * page hit (BM25 over tantivy) or a claim hit (FTS5 over the semantic store).
+ * The `kind` tag drives the UI rendering. Page-only and claim-only fields are
+ * optional so the same type covers both shapes.
+ */
 export interface SearchHit {
-  claim_id: Uuid
-  subject: string
-  predicate: string
-  value: JsonValue
-  domain: string
-  origin: string
-  provenance: string
-  entity_id: Uuid | null
+  /** Source discriminator: 'page' (Markdown) or 'claim' (semantic). */
+  kind: 'page' | 'claim'
+  /** Normalized score in [0, 1] for client-side resort. */
+  score: number
+
+  // ── Page-only fields (present when kind === 'page') ──
+  /** Page slug (wiki-relative path without extension). */
+  slug?: string
+  title?: string
+  uri?: string
+  /** HTML-highlighted body excerpt from BM25. */
+  excerpt?: string | null
+  summary?: string | null
+
+  // ── Claim-only fields (present when kind === 'claim') ──
+  claim_id?: Uuid
+  claim_kind?: string
+  subject?: string
+  predicate?: string
+  value?: JsonValue
+  domain?: string
+  origin?: string
+  provenance?: string
+  entity_id?: Uuid | null
 }
 
 /** `GET /search` body. */

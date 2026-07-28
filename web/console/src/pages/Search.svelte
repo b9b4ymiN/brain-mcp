@@ -38,7 +38,6 @@
     setPendingSubject,
   } from '../lib/quickSearch'
   import StateBox from '../components/StateBox.svelte'
-  import DataTable from '../components/DataTable.svelte'
   import { formatValue } from '../lib/format'
 
   interface Props {
@@ -66,11 +65,25 @@
   let filteredResults = $derived.by<SearchHit[]>(() => {
     const q = resultFilter.trim().toLowerCase()
     if (q.length === 0) return results
-    return results.filter((hit) =>
-      [hit.subject, hit.predicate, String(hit.value), hit.domain,
-       hit.origin, hit.provenance, hit.entity_id ?? '']
-        .some((v) => v.toLowerCase().includes(q)),
-    )
+    return results.filter((hit) => {
+      // Unified filter: cover both page fields (slug/title/excerpt) and claim
+      // fields (subject/predicate/value/domain). Fields are optional on the
+      // hit type so missing fields contribute '' rather than throwing.
+      const haystack = [
+        hit.slug ?? '',
+        hit.title ?? '',
+        hit.summary ?? '',
+        hit.subject ?? '',
+        hit.predicate ?? '',
+        String(hit.value ?? ''),
+        hit.domain ?? '',
+        hit.origin ?? '',
+        hit.provenance ?? '',
+      ]
+        .join(' ')
+        .toLowerCase()
+      return haystack.includes(q)
+    })
   })
 
   // Monotonic request-id guard: each `runSearch` invocation bumps this and
@@ -182,6 +195,18 @@
     setPendingSubject(subject)
     navigate('entity')
   }
+
+  /** Page rows don't fit the Entity page (which is claim-centric). For now
+   *  we just stage the slug for the next page view — there's no dedicated
+   *  page-viewer route yet, so we fall back to opening the wiki URI in a
+   *  new tab. A future Page Viewer page would slot in here cleanly. */
+  function openPage(slug: string): void {
+    if (!slug) return
+    // The wiki URI form is wiki://<wiki>/<slug>; the Console's own router
+    // doesn't render pages today, so we open the rendered Hugo mirror in a
+    // new tab. The URL pattern matches the Hugo CMS scaffold.
+    window.open(`/page/${slug}.html`, '_blank', 'noopener')
+  }
 </script>
 
 <section class="page page-search">
@@ -224,8 +249,10 @@
 
   {#if hasSearched && !loading && !error && results.length > 0}
     <p class="results-echo">
-      {results.length} {results.length === 1 ? 'claim' : 'claims'} for
+      {results.length} {results.length === 1 ? 'result' : 'results'} for
       <strong>“{lastQuery}”</strong>
+      ({results.filter((r) => r.kind === 'page').length} pages ·
+      {results.filter((r) => r.kind === 'claim').length} claims)
     </p>
   {/if}
 
@@ -236,8 +263,8 @@
       </p>
     {:else if !hasSearched}
       <div class="state state-empty">
-        <p class="state-empty-headline">Run a search to see matching claims.</p>
-        <p class="state-empty-hint">Try a subject, predicate, or value fragment.</p>
+        <p class="state-empty-headline">Run a search to see matching pages and claims.</p>
+        <p class="state-empty-hint">Try a page title, a subject, or a value fragment.</p>
         {#if topSubjects.length > 0}
           <div class="example-chips" role="group" aria-label="Suggested subjects from the graph">
             {#each topSubjects as s (s.id)}
@@ -253,29 +280,46 @@
         loading={loading}
         error={error}
         empty={results.length === 0}
-        emptyText="No claims matched this query."
+        emptyText="No pages or claims matched this query."
       >
-        <DataTable
-          tableId="search-results"
-          rows={filteredResults}
-          rowKey={(r) => r.claim_id}
-          columns={[
-            { key: 'subject', label: 'Subject' },
-            { key: 'predicate', label: 'Predicate', render: (r) => r.predicate },
-            { key: 'value', label: 'Value', render: (r) => formatValue(r.value) },
-            { key: 'domain', label: 'Domain', hideInCompact: true },
-            { key: 'origin', label: 'Origin', hideInCompact: true },
-            { key: 'provenance', label: 'Provenance', hideInCompact: true },
-            { key: 'entity_id', label: 'Entity ID', render: (r) => r.entity_id ?? '—', hideInCompact: true },
-          ]}
-          searchableKeys={['subject', 'predicate', 'value', 'domain', 'origin', 'provenance']}
-          filterable={true}
-          compactable={true}
-          pageable={true}
-          onRowClick={(r) => openEntity(r.subject)}
-          emptyText={resultFilter ? `No results match "${resultFilter}".` : 'No claims matched this query.'}
-          ariaLabel="Search results"
-        />
+        {#if resultFilter && filteredResults.length === 0}
+          <p class="state state-empty" role="status">No results match "{resultFilter}".</p>
+        {:else if filteredResults.length === 0}
+          <p class="state state-empty" role="status">No pages or claims matched this query.</p>
+        {:else}
+          <ol class="hit-list" role="list">
+            {#each filteredResults as hit (hit.kind === 'page' ? hit.slug : hit.claim_id)}
+              {@const isPage = hit.kind === 'page'}
+              {@const tagLabel = isPage ? 'page' : 'claim'}
+              {@const tagKind = isPage ? (hit.claim_kind ?? 'page') : (hit.claim_kind ?? 'claim')}
+              <li class="hit-card hit-card--{hit.kind}">
+                <span class="hit-kind hit-kind--{hit.kind}" title={tagKind}>{tagLabel}</span>
+                {#if isPage}
+                  <button type="button" class="hit-body hit-body--page" onclick={() => openPage(hit.slug ?? '')}>
+                    <span class="hit-title">{hit.title ?? hit.slug ?? '(untitled)'}</span>
+                    <span class="hit-meta">
+                      <code class="hit-slug">{hit.slug}</code>
+                      {#if hit.summary}<span class="hit-summary">· {hit.summary}</span>{/if}
+                    </span>
+                    {#if hit.excerpt}
+                      <p class="hit-excerpt">{@html hit.excerpt}</p>
+                    {/if}
+                  </button>
+                {:else}
+                  <button type="button" class="hit-body hit-body--claim" onclick={() => openEntity(hit.subject ?? '')}>
+                    <span class="hit-title">{hit.subject} <span class="hit-pred">· {hit.predicate}</span></span>
+                    <span class="hit-value">{formatValue(hit.value)}</span>
+                    <span class="hit-meta">
+                      {#if hit.domain}<span class="hit-domain">{hit.domain}</span>{/if}
+                      {#if hit.provenance}<span class="hit-prov">{hit.provenance}</span>{/if}
+                    </span>
+                  </button>
+                {/if}
+                <span class="hit-score" title="Normalized relevance score">{((hit.score ?? 0) * 100).toFixed(0)}%</span>
+              </li>
+            {/each}
+          </ol>
+        {/if}
       </StateBox>
     {/if}
   </section>
@@ -496,7 +540,10 @@
     }
   }
 
-  /* ── Hit list ─────────────────────────────────────────────────────── */
+  /* ── Unified hit list (pages + claims, single ranked list) ───────────
+   * Each row carries a kind tag (page/claim) on the left, the body button
+   * (flexes), and the normalized score on the right. Page rows and claim
+   * rows share the card shell; the kind tag's color distinguishes them. */
   .hit-list {
     list-style: none;
     margin: 0;
@@ -505,84 +552,131 @@
     gap: var(--space-sm);
   }
 
-  /* Hit card — holo "target acquired" voice: cyan-tinted surface + glow. */
   .hit-card {
-    display: block;
-    padding: var(--space-md);
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: start;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
     border: var(--border-holo);
     background: var(--surface-holo);
     color: var(--text-primary);
-    text-decoration: none;
-    cursor: pointer;
-    box-shadow: var(--glow-cyan);
     transition: background var(--duration-fast) var(--ease-out-quart),
-      border-color var(--duration-fast) var(--ease-out-quart),
-      box-shadow var(--duration-fast) var(--ease-out-quart);
+      border-color var(--duration-fast) var(--ease-out-quart);
   }
-
   .hit-card:hover {
     background: var(--surface-holo-raised);
-    border-color: color-mix(in oklch, var(--holo-cyan) 55%,
-      var(--color-hairline));
-    box-shadow: 0 0 24px oklch(0.78 0.13 195 / 0.3),
-      inset 0 0 0 1px oklch(0.78 0.13 195 / 0.1);
+    border-color: color-mix(in oklch, var(--holo-cyan) 55%, var(--color-hairline));
   }
 
-  .hit-card:focus-visible {
-    outline: none;
-    box-shadow: inset 0 0 0 2px var(--color-accent),
-      var(--glow-accent);
-    border-color: var(--color-accent);
+  /* Kind tag — pill, color-coded by source. */
+  .hit-kind {
+    flex-shrink: 0;
+    padding: 2px var(--space-xs);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    font-weight: var(--weight-medium);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    align-self: flex-start;
+    margin-top: 2px;
+  }
+  .hit-kind--page {
+    background: var(--surface-accent-soft);
+    color: var(--color-accent);
+    border: 1px solid var(--color-accent);
+  }
+  .hit-kind--claim {
+    background: var(--surface-info-soft);
+    color: var(--color-info);
+    border: 1px solid var(--color-info);
   }
 
-  .hit-head {
+  /* Body button — full row click target. */
+  .hit-body {
     display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-sm);
-    margin-bottom: var(--space-xs);
-    align-items: baseline;
+    flex-direction: column;
+    gap: 2px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    min-width: 0;
+  }
+  .hit-body:hover { color: var(--text-primary); }
+  .hit-body:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--color-accent);
+    border-radius: var(--radius-sm);
   }
 
-  .subject {
-    font-family: var(--font-body);
+  .hit-title {
+    font-family: var(--font-display);
+    font-size: var(--text-body);
     font-weight: var(--weight-semibold);
     color: var(--text-primary);
-    font-size: var(--text-body);
   }
-
-  .predicate {
+  .hit-pred {
     font-family: var(--font-mono);
     font-size: var(--text-mono);
     color: var(--text-secondary);
+    font-weight: var(--weight-regular);
   }
-
-  .hit-fields {
-    margin: 0;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
-    gap: var(--space-xs) var(--space-md);
-  }
-
-  .hit-fields div {
-    display: flex;
-    gap: var(--space-sm);
-    align-items: baseline;
-  }
-
-  .hit-fields dt {
-    color: var(--text-secondary);
-    font-family: var(--font-body);
-    font-size: var(--text-label);
-    min-width: 5.5rem;
-  }
-
-  .hit-fields dd {
-    margin: 0;
+  .hit-value {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
     color: var(--text-primary);
-    font-family: var(--font-body);
-    font-size: var(--text-body);
     word-break: break-word;
+  }
+  .hit-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    color: var(--text-secondary);
+    font-size: var(--text-mono);
+    font-family: var(--font-mono);
+  }
+  .hit-slug {
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--holo-cyan);
+    word-break: break-all;
+  }
+  .hit-summary {
+    color: var(--text-secondary);
+    font-size: var(--text-mono);
+  }
+  .hit-excerpt {
+    margin: var(--space-xs) 0 0;
+    color: var(--text-secondary);
+    font-size: var(--text-body);
+    line-height: 1.4;
+    max-height: 4.2em;
+    overflow: hidden;
+  }
+  .hit-excerpt :global(mark) {
+    background: var(--surface-accent-soft);
+    color: var(--text-primary);
+    padding: 0 2px;
+    border-radius: 2px;
+  }
+
+  /* Score on the right — mono, faint. */
+  .hit-score {
+    flex-shrink: 0;
+    align-self: flex-start;
+    margin-top: 2px;
+    padding: 2px var(--space-xs);
+    font-family: var(--font-mono);
+    font-size: var(--text-mono);
+    color: var(--text-secondary);
+    background: var(--color-ink-deep);
+    border-radius: var(--radius-sm);
   }
 
   /* ── State banners ────────────────────────────────────────────────── */
