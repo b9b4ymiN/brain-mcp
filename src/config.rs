@@ -503,6 +503,32 @@ impl ServeConfig {
             _ => Ok(None),
         }
     }
+
+    /// Resolve the comma-separated MCP Bearer tokens from the env var named
+    /// by `mcp_bearer_tokens_env`. Trims whitespace and drops empty entries
+    /// (so `"a, b ,, c"` → `["a", "b", "c"]`).
+    ///
+    /// **Fail-closed:** if `http_bind_all_interfaces` is true (public bind)
+    /// and no tokens resolve, this returns an error — the server refuses to
+    /// start. Loopback deployments with no tokens return an empty Vec
+    /// (backward compatible with the legacy unauthenticated `/mcp`).
+    pub fn resolve_mcp_tokens(&self) -> anyhow::Result<Vec<String>> {
+        let raw = std::env::var(&self.mcp_bearer_tokens_env).unwrap_or_default();
+        let tokens: Vec<String> = raw
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if self.http_bind_all_interfaces && tokens.is_empty() {
+            anyhow::bail!(
+                "public HTTP bind (http_bind_all_interfaces=true) requires at least one \
+                 MCP Bearer token in env var '{}' — refusing to start with an \
+                 unauthenticated public /mcp endpoint",
+                self.mcp_bearer_tokens_env
+            );
+        }
+        Ok(tokens)
+    }
 }
 
 /// `[provider]` section — optional AI provider wiring for `brain_extract` /
@@ -1603,4 +1629,56 @@ pub fn set_wiki_config_value(wiki_cfg: &mut WikiConfig, key: &str, value: &str) 
         _ => anyhow::bail!("unknown key: {key}"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Note: the `unsafe` blocks around env mutation are required by Rust 2024
+    // edition — `set_var`/`remove_var` are unsafe because concurrent reads of
+    // the env from another thread can race. These tests use unique-per-test
+    // env var names so no other thread reads them; see the same pattern in
+    // tests/secret_file_v1.rs.
+
+    #[test]
+    fn resolve_mcp_tokens_parses_comma_separated() {
+        // SAFETY: TEST_MCP_TOKENS is unique to this test; no other thread reads it.
+        unsafe { std::env::set_var("TEST_MCP_TOKENS", "tok-a, tok-b ,, tok-c") };
+        let mut cfg = ServeConfig::default();
+        cfg.mcp_bearer_tokens_env = "TEST_MCP_TOKENS".into();
+        cfg.http_bind_all_interfaces = false;
+        let tokens = cfg.resolve_mcp_tokens().unwrap();
+        assert_eq!(
+            tokens,
+            vec!["tok-a".to_string(), "tok-b".to_string(), "tok-c".to_string()]
+        );
+        // SAFETY: see above.
+        unsafe { std::env::remove_var("TEST_MCP_TOKENS") };
+    }
+
+    #[test]
+    fn resolve_mcp_tokens_fail_closed_when_public_and_empty() {
+        // SAFETY: TEST_MCP_TOKENS_EMPTY is unique to this test.
+        unsafe { std::env::remove_var("TEST_MCP_TOKENS_EMPTY") };
+        let mut cfg = ServeConfig::default();
+        cfg.mcp_bearer_tokens_env = "TEST_MCP_TOKENS_EMPTY".into();
+        cfg.http_bind_all_interfaces = true; // public bind + no tokens = refuse
+        let err = cfg.resolve_mcp_tokens();
+        assert!(err.is_err(), "public bind with no tokens must fail-closed");
+    }
+
+    #[test]
+    fn resolve_mcp_tokens_loopback_allows_empty() {
+        // SAFETY: TEST_MCP_TOKENS_EMPTY2 is unique to this test.
+        unsafe { std::env::remove_var("TEST_MCP_TOKENS_EMPTY2") };
+        let mut cfg = ServeConfig::default();
+        cfg.mcp_bearer_tokens_env = "TEST_MCP_TOKENS_EMPTY2".into();
+        cfg.http_bind_all_interfaces = false; // loopback + no tokens = backward compat
+        let tokens = cfg.resolve_mcp_tokens().unwrap();
+        assert!(
+            tokens.is_empty(),
+            "loopback with no tokens must return empty (no auth)"
+        );
+    }
 }
