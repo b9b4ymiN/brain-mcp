@@ -260,6 +260,32 @@ impl SpaceIndexManager {
         }
     }
 
+    /// Stable cross-process cache key for the snapshot-backed graph cache.
+    ///
+    /// Keys on the index's recorded commit + schema hash instead of the
+    /// in-memory `generation()` counter. The generation counter resets to 0 on
+    /// every process startup, so a snapshot saved at gen 0 would be re-read
+    /// forever after a restart even if the wiki changed — which is exactly the
+    /// stale-empty-graph bug this fixes. Commit + schema hash both persist in
+    /// `state.toml` across restarts and change whenever indexed content or
+    /// schema changes, so a snapshot matches only when the underlying data
+    /// truly hasn't moved (warm-start still works). Falls back to the volatile
+    /// generation counter when no commit is recorded yet (first build).
+    pub fn cache_key(&self) -> String {
+        let state_path = self.index_path.join("state.toml");
+        let (commit, schema_hash) = match std::fs::read_to_string(&state_path)
+            .ok()
+            .and_then(|c| toml::from_str::<IndexState>(&c).ok())
+        {
+            Some(s) => (s.commit, s.schema_hash),
+            None => (String::new(), String::new()),
+        };
+        if commit.is_empty() {
+            return self.generation().to_string();
+        }
+        format!("{commit}:{schema_hash}")
+    }
+
     /// Rebuild the full index by walking all Markdown files under `wiki_root`.
     pub fn rebuild(
         &self,
@@ -382,6 +408,16 @@ impl SpaceIndexManager {
     ) -> Result<UpdateReport> {
         let changes = git::collect_changed_files(repo_root, wiki_root, last_indexed_commit)?;
         if changes.is_empty() {
+            // No wiki-content delta since the last indexed commit, but HEAD may
+            // have advanced via derived commits that live outside `wiki_root`
+            // (e.g. the Hugo mirror sync under `site/`). Advance the recorded
+            // commit pointer so `status()` / `staleness_kind()` report the index
+            // as current instead of stale-by-bookkeeping. Only when we had a
+            // prior indexed commit — a first-time update with no changes has
+            // nothing to advance.
+            if last_indexed_commit.is_some() {
+                self.advance_commit_to_head(repo_root)?;
+            }
             return Ok(UpdateReport::default());
         }
 
@@ -457,6 +493,46 @@ impl SpaceIndexManager {
         )?;
 
         Ok(UpdateReport { updated, deleted })
+    }
+
+    /// Advance `state.toml.commit` to the current git HEAD without reindexing.
+    ///
+    /// Called after commits that change no wiki content but still move HEAD
+    /// (e.g. the Hugo mirror sync written under `site/`). The index is already
+    /// current with HEAD's wiki tree — only the recorded commit pointer lags,
+    /// which would otherwise make `status()` report the index as stale. No-op
+    /// when `state.toml` is absent, HEAD cannot be resolved, or the pointer is
+    /// already at HEAD. Does not touch the held reader or generation counter —
+    /// no wiki content changed, so cached graphs stay valid.
+    fn advance_commit_to_head(&self, repo_root: &Path) -> Result<()> {
+        let head = match git::current_head(repo_root) {
+            Some(h) if !h.is_empty() => h,
+            _ => return Ok(()),
+        };
+        let state_path = self.index_path.join("state.toml");
+        let existing = match std::fs::read_to_string(&state_path)
+            .ok()
+            .and_then(|c| toml::from_str::<IndexState>(&c).ok())
+        {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+        if existing.commit == head {
+            return Ok(());
+        }
+        let state = IndexState {
+            schema_hash: existing.schema_hash,
+            built: Utc::now().to_rfc3339(),
+            pages: existing.pages,
+            sections: existing.sections,
+            commit: head,
+            types: existing.types,
+            last_pages_indexed: existing.last_pages_indexed,
+            last_skipped: existing.last_skipped,
+            last_duration_ms: existing.last_duration_ms,
+        };
+        std::fs::write(&state_path, toml::to_string_pretty(&state)?)?;
+        Ok(())
     }
 
     /// Return the current index health status (staleness, page count, openability).

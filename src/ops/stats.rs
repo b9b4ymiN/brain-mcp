@@ -179,6 +179,11 @@ fn compute_staleness(
             });
         }
     };
+    // Fallback date fields when a page omits `last_updated` (e.g. source pages
+    // ingested without the scaffolded frontmatter). `last_updated` wins; `created`
+    // is the universal fallback; `last_verified` covers source/procedure pages.
+    let f_created = is.try_field("created");
+    let f_last_verified = is.try_field("last_verified");
 
     let today = chrono::Utc::now().date_naive();
     let seven_days_ago = today - chrono::Duration::days(7);
@@ -195,9 +200,24 @@ fn compute_staleness(
 
     for doc_addr in &all_docs {
         let doc: tantivy::TantivyDocument = searcher.doc(*doc_addr)?;
+        // Resolve the most authoritative date available on the page. An empty
+        // string falls through `parse_from_str` to the stale bucket.
         let date_str = doc
             .get_first(f_last_updated)
             .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                f_created
+                    .and_then(|f| doc.get_first(f))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+            })
+            .or_else(|| {
+                f_last_verified
+                    .and_then(|f| doc.get_first(f))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+            })
             .unwrap_or("");
 
         if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
@@ -209,7 +229,7 @@ fn compute_staleness(
                 stale_30d += 1;
             }
         } else {
-            // No valid date — count as stale
+            // No valid date on any fallback field — count as stale
             stale_30d += 1;
         }
     }

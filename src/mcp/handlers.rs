@@ -347,6 +347,19 @@ pub fn handle_content_write(server: &McpServer, args: &Map<String, Value>) -> To
         result.commit_sha.clone()
     };
 
+    // content_write emits two commits per write: the page ingest (reindexed by
+    // ingest()'s internal refresh_index) and a separate "sync site mirror"
+    // commit. That second commit advances HEAD without touching any wiki
+    // content, so the index's recorded commit pointer — still the ingest sha —
+    // now lags HEAD and `status()` would flag the index stale. Re-run the
+    // incremental update so state.toml.commit catches up to HEAD: update() sees
+    // no wiki delta (mirror files live under site/, outside wiki_root) and just
+    // advances the pointer. Errors are non-fatal here — the write already
+    // succeeded; staleness is a cosmetic/self-healing concern.
+    if commit && commit_sha != result.commit_sha {
+        let _ = server.manager.refresh_index(&wiki_name);
+    }
+
     let response = serde_json::json!({
         "bytes_written": result.bytes_written,
         "path": result.path,
