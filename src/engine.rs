@@ -364,11 +364,30 @@ fn mount_space(entry: &WikiEntry, state_dir: &Path, config: &GlobalConfig) -> Re
         let im_build = index_manager.clone();
         let is = index_schema.clone();
         let tr = Arc::clone(&type_registry);
+        // Memoize the snapshot cache key by index generation. `cache_key()`
+        // reads state.toml, and the snapshot layer calls `key_fn` on every
+        // graph request — without this memo the hot path does a disk read per
+        // request. The key only needs recomputing when the index generation
+        // advances (every rebuild/update bumps it), which is also the only
+        // moment the underlying commit:schema_hash can have changed.
+        let key_memo = Arc::new(parking_lot::RwLock::new((u64::MAX, String::new())));
+        let key_memo_fn = Arc::clone(&key_memo);
         build_wiki_graph_cache(
             &entry.name,
             state_dir,
             &resolved_cfg.graph,
-            move || Ok(im_key.generation().to_string()),
+            move || {
+                let idx_gen = im_key.generation();
+                {
+                    let m = key_memo_fn.read();
+                    if m.0 == idx_gen {
+                        return Ok(m.1.clone());
+                    }
+                }
+                let key = im_key.cache_key();
+                *key_memo_fn.write() = (idx_gen, key.clone());
+                Ok(key)
+            },
             move || {
                 let searcher = im_build.searcher().map_err(|e| {
                     petgraph_live::snapshot::SnapshotError::Io(std::io::Error::other(e.to_string()))
@@ -433,5 +452,8 @@ fn build_wiki_graph_cache(
         .init()
         .map_err(|e| anyhow::anyhow!("graph snapshot init failed: {e}"))?;
 
-    Ok(WikiGraphCache::WithSnapshot(state))
+    Ok(WikiGraphCache::WithSnapshot {
+        state,
+        last_gen: std::sync::atomic::AtomicU64::new(0),
+    })
 }

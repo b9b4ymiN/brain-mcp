@@ -1,6 +1,7 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use chrono::Utc;
@@ -157,7 +158,24 @@ pub struct CommunityData {
 /// `NoSnapshot` preserves Phase 1 behaviour; `WithSnapshot` adds warm-start.
 pub enum WikiGraphCache {
     NoSnapshot(GenerationCache<WikiGraph>),
-    WithSnapshot(GraphState<WikiGraph>),
+    WithSnapshot {
+        state: GraphState<WikiGraph>,
+        /// Last index generation the snapshot graph was built at.
+        ///
+        /// Drives *in-process* invalidation: the snapshot key
+        /// (`cache_key()` = `{commit}:{schema_hash}`) is stable across a process
+        /// restart so the snapshot can be warm-started, but it does NOT change on
+        /// an index rebuild that leaves git HEAD untouched (e.g. an uncommitted
+        /// edit followed by an explicit `index rebuild`). The in-memory generation
+        /// counter, by contrast, bumps on every index write — so when it has
+        /// advanced since the last graph build we force a snapshot rebuild even
+        /// though the key string is identical.
+        ///
+        /// Across a restart this never fires spuriously: `last_gen` is seeded to
+        /// `0`, and `0` is treated as "uninitialized, do not force-rebuild", so a
+        /// warm-start (no intervening index write) loads the existing snapshot.
+        last_gen: AtomicU64,
+    },
 }
 
 impl WikiGraphCache {
@@ -169,8 +187,17 @@ impl WikiGraphCache {
     ) -> anyhow::Result<Arc<WikiGraph>> {
         match self {
             WikiGraphCache::NoSnapshot(cache) => cache.get_or_build(current_gen, builder),
-            WikiGraphCache::WithSnapshot(state) => {
-                state.get_fresh().map_err(|e| anyhow::anyhow!("{e}"))
+            WikiGraphCache::WithSnapshot { state, last_gen } => {
+                let prev = last_gen.load(Ordering::Acquire);
+                // prev == 0 means "not yet built this session" → seed without forcing.
+                if prev != 0 && prev != current_gen {
+                    let g = state.rebuild().map_err(|e| anyhow::anyhow!("{e}"))?;
+                    last_gen.store(current_gen, Ordering::Release);
+                    return Ok(g);
+                }
+                let g = state.get_fresh().map_err(|e| anyhow::anyhow!("{e}"))?;
+                last_gen.store(current_gen, Ordering::Release);
+                Ok(g)
             }
         }
     }
@@ -186,8 +213,10 @@ impl WikiGraphCache {
                 cache.invalidate();
                 cache.get_or_build(current_gen, builder)
             }
-            WikiGraphCache::WithSnapshot(state) => {
-                state.rebuild().map_err(|e| anyhow::anyhow!("{e}"))
+            WikiGraphCache::WithSnapshot { state, last_gen } => {
+                let g = state.rebuild().map_err(|e| anyhow::anyhow!("{e}"))?;
+                last_gen.store(current_gen, Ordering::Release);
+                Ok(g)
             }
         }
     }
@@ -410,7 +439,6 @@ pub fn build_graph(
         let idx = graph.add_node(node);
         slug_to_idx.insert(doc_info.slug.clone(), idx);
     }
-
 
     // Second pass: add edges
     for doc_info in &all_docs {
