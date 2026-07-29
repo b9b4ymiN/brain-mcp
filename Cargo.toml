@@ -87,7 +87,7 @@ git2       = { version = "0.21", default-features = false, features = ["vendored
 rmcp       = { version = "1.7", features = ["server", "transport-io", "transport-streamable-http-server"] }
 axum       = "0.8"
 # Console static-file serving (ServeDir) + uniform CSP header (SetResponseHeaderLayer) — Task E0.3
-tower-http = { version = "0.6", features = ["fs", "set-header"] }
+tower-http = { version = "0.7", features = ["fs", "set-header"] }
 # broadcast::Receiver -> Stream adapter for the SSE /events endpoint (BroadcastStream) — Task E0.3
 tokio-stream = { version = "0.1", features = ["sync"] }
 
