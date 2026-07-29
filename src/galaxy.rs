@@ -40,7 +40,7 @@ pub struct GalaxyNode {
 }
 
 /// The kind of relationship an edge represents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeKind {
     Related,
@@ -234,12 +234,29 @@ impl GalaxyGraph {
     /// expected to have built the graph at the right cap via [`Self::new`] or
     /// [`Self::from_claims`]).
     pub fn to_payload(&self, lod: GraphLod) -> GalaxyPayload {
+        // §9.2 defense-in-depth: cap edges at GALAXY_MAX_EDGES_PER_NODE × nodes.
+        // Currently never bites (≈1.4 edges/node), but once the store grows past
+        // the 300-node LOD cap this bounds payload size regardless of how dense
+        // the linkers get. Truncation is deterministic (sorted by endpoint pair
+        // + kind) so the cap never makes output order-dependent.
+        let cap = GALAXY_MAX_EDGES_PER_NODE * self.nodes.len();
+        let edges = if self.edges.len() > cap {
+            let mut e = self.edges.clone();
+            e.sort_by(|a, b| {
+                (&a.source, &a.target, a.kind)
+                    .cmp(&(&b.source, &b.target, b.kind))
+            });
+            e.truncate(cap);
+            e
+        } else {
+            self.edges.clone()
+        };
         GalaxyPayload {
             lod,
             max_nodes: self.max_nodes,
             node_count: self.nodes.len(),
             nodes: self.nodes.clone(),
-            edges: self.edges.clone(),
+            edges,
         }
     }
 
@@ -319,13 +336,17 @@ impl GalaxyGraph {
         // Stage 1: filter + group claims by entity_id (first-seen order).
         let mut entity_order: Vec<Uuid> = Vec::new();
         let mut by_entity: HashMap<Uuid, Vec<&ClaimView>> = HashMap::new();
+        let norm_filter = domain_filter.map(normalize_domain);
         for claim in claims {
             // Only graph claims that resolve to an entity. Skip `future`/`past`
             // rows only when the caller passed `now`-bounded active claims;
             // we don't filter on status here so callers can pass `active`
-            // (the common case) or a wider slice. Domain filter is honored.
-            if let Some(filter) = domain_filter
-                && claim.domain != filter
+            // (the common case) or a wider slice. Domain filter is honored
+            // on the normalized domain (case/spacing-insensitive — see
+            // [`normalize_domain`]).
+            if norm_filter
+                .as_ref()
+                .is_some_and(|f| normalize_domain(claim.domain.as_str()) != f.as_str())
             {
                 continue;
             }
@@ -358,8 +379,9 @@ impl GalaxyGraph {
                 .unwrap_or_else(|| entity_id.to_string());
             let kind = most_frequent(entity_claims.iter().map(|c| c.claim_kind.as_str()))
                 .unwrap_or_else(|| "entity".to_string());
-            let domain =
-                most_frequent(entity_claims.iter().map(|c| c.domain.as_str())).unwrap_or_default();
+            let domain = normalize_domain(
+                &most_frequent(entity_claims.iter().map(|c| c.domain.as_str())).unwrap_or_default(),
+            );
             graph.add_node(GalaxyNode {
                 id: entity_id.to_string(),
                 label,
@@ -459,21 +481,24 @@ impl GalaxyGraph {
 
         // (3) shared-domain co-occurrence (Entity Identity Reform).
         //
-        // Two entities that carry claims in the SAME domain tag are likely
-        // related (e.g. CATL + BYD both have claims in "business" and
-        // "financial"). This heuristic replaces the lost same-subject edges
-        // post-reform: domain is now a categorization tag, so shared-domain
-        // is the natural "these entities belong to the same knowledge area"
-        // signal. We cap the edges per domain to avoid cliques (top-N most
-        // connected entities per domain get linked; the rest are implied
-        // transitively).
-        let mut domain_to_entities: HashMap<&str, Vec<Uuid>> = HashMap::new();
+        // Two entities that carry claims in the SAME (normalized) domain tag
+        // are likely related (e.g. CATL + BYD both tagged "financial"). Domain
+        // is a categorization tag, so shared-domain is the natural "these
+        // entities belong to the same knowledge area" signal. Links are emitted
+        // via [`link_domain_entities`]: pairwise for small domains
+        // (≤ [`GALAXY_DOMAIN_HUB_THRESHOLD`]), hub-spoke for oversized ones —
+        // the documented "top-N connected per domain, the rest implied
+        // transitively" intent, avoiding the unreadable clique full pairwise
+        // would create on a large domain. Domain keys are normalized so
+        // case/spacing variants (financial/Finance/finance) collapse into one
+        // group instead of splintering below the threshold.
+        let mut domain_to_entities: HashMap<String, Vec<Uuid>> = HashMap::new();
         for (entity_id, entity_claims) in &by_entity {
             if !allowed.contains_key(entity_id) {
                 continue;
             }
             for claim in entity_claims {
-                let d = claim.domain.as_str();
+                let d = normalize_domain(claim.domain.as_str());
                 if d.is_empty() {
                     continue;
                 }
@@ -483,32 +508,10 @@ impl GalaxyGraph {
                 }
             }
         }
-        for entities in domain_to_entities.values() {
-            // Only link entities within a domain if the group is small enough
-            // to be meaningful (≤8). Large domains (e.g. "financial" covering
-            // every stock) would create a dense clique that adds noise; the
-            // cap keeps the graph readable. Entities within the cap are
-            // pairwise-linked.
-            if entities.len() < 2 || entities.len() > 8 {
-                continue;
-            }
-            let mut unique: Vec<Uuid> = entities.to_vec();
-            unique.sort();
-            unique.dedup();
-            for i in 0..unique.len() {
-                for j in (i + 1)..unique.len() {
-                    if !allowed.contains_key(&unique[i]) || !allowed.contains_key(&unique[j]) {
-                        continue;
-                    }
-                    push_dedup_edge(
-                        &mut graph,
-                        &mut seen_edges,
-                        unique[i].to_string(),
-                        unique[j].to_string(),
-                        EdgeKind::Related,
-                    );
-                }
-            }
+        for entities in domain_to_entities.values_mut() {
+            entities.sort();
+            entities.dedup();
+            link_domain_entities(&mut graph, &mut seen_edges, entities, &by_entity, &allowed);
         }
 
         graph
@@ -589,6 +592,23 @@ impl GalaxyGraph {
 /// densely-connected dataset can't produce an unbounded graph (§9.2).
 pub const EGO_MAX_DEPTH: usize = 2;
 
+// ── Shared-domain edge linking tunables (§9.2 readability) ───────────────────
+//
+// Domains with more than [`GALAXY_DOMAIN_HUB_THRESHOLD`] entities are linked
+// hub-spoke instead of full pairwise — the documented "top-N connected per
+// domain, the rest implied transitively" intent. Full pairwise on a large
+// domain (e.g. 19 stocks tagged "financial") yields an unreadable clique.
+/// Domains at or below this count are linked pairwise (original behavior).
+pub const GALAXY_DOMAIN_HUB_THRESHOLD: usize = 8;
+/// Hub count floor for oversized domains.
+pub const GALAXY_HUB_MIN: usize = 3;
+/// Hub count ceiling (also the per-hub spoke cap) for oversized domains.
+pub const GALAXY_HUB_MAX: usize = 6;
+/// Hard edge cap in [`GalaxyGraph::to_payload`]: at most this many edges per
+/// node. Defense-in-depth for when the store grows past the 300-node LOD cap;
+/// currently never bites (≈1.4 edges/node).
+pub const GALAXY_MAX_EDGES_PER_NODE: usize = 3;
+
 /// Pick the most frequent string in the iterator (ties broken by first-seen).
 ///
 /// # Determinism
@@ -627,7 +647,18 @@ fn push_dedup_edge(
     if source == target {
         return;
     }
-    if !seen.insert((source.clone(), target.clone())) {
+    // Dedup is direction-agnostic: the galaxy renders as an undirected graph,
+    // so a→b and b→a are the same link and must collapse. Normalize the seen
+    // key to (min, max) — but still emit the directed edge as passed, so
+    // value-references keep their subject→referenced direction. Without this,
+    // a value-reference (gulf→ptt) and the shared-domain link (ptt,gulf) would
+    // both survive when the uuid ordering flips the direction (flaky tests).
+    let (lo, hi) = if source <= target {
+        (source.clone(), target.clone())
+    } else {
+        (target.clone(), source.clone())
+    };
+    if !seen.insert((lo, hi)) {
         return;
     }
     graph.add_edge(GalaxyEdge {
@@ -635,6 +666,162 @@ fn push_dedup_edge(
         target,
         kind,
     });
+}
+
+/// Normalize a domain tag for grouping: lowercase, trim, collapse internal
+/// whitespace. Production data has inconsistent casing/spacing
+/// (`Market`/`market`, `Finance`/`finance`, `Business`/`business`) that
+/// splinters one logical domain into several, starving the shared-domain edge
+/// heuristic (each splinter can fall under the pairwise threshold
+/// independently). This does not create edges — it only stops that splintering.
+///
+/// Deliberately NOT a hand-curated alias map: casing/spacing normalization is
+/// universal and correct for every domain, present and future. True synonyms
+/// (`finance` ↔ `financial`) are a data-quality concern best fixed at
+/// capture/ingest time (or a future `[galaxy] domain_aliases` config), not a
+/// hard-coded list that would need an edit per new domain and silently
+/// over-merge semantically-distinct tags.
+fn normalize_domain(raw: &str) -> String {
+    raw.trim()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Emit an undirected edge with a canonical (sorted) endpoint order so dedup
+/// is direction-agnostic. Used by the shared-domain linker.
+fn emit_sorted_edge(
+    graph: &mut GalaxyGraph,
+    seen: &mut std::collections::HashSet<(String, String)>,
+    a: Uuid,
+    b: Uuid,
+    kind: EdgeKind,
+) {
+    let (s, t) = if a <= b { (a, b) } else { (b, a) };
+    push_dedup_edge(graph, seen, s.to_string(), t.to_string(), kind);
+}
+
+/// Jaccard of two predicate sets as an `(intersection, union)` pair. Integer
+/// form (no f64) — compare via cross-multiplication in [`cmp_jac`]. A missing
+/// set yields `(0, 1)` (zero similarity, well-defined ratio).
+fn jac_pair(
+    a: Option<&std::collections::HashSet<&str>>,
+    b: Option<&std::collections::HashSet<&str>>,
+) -> (usize, usize) {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            let inter = a.intersection(b).count();
+            let union = a.len() + b.len() - inter;
+            (inter, union.max(1))
+        }
+        _ => (0, 1),
+    }
+}
+
+/// Compare two `(intersection, union)` Jaccard tuples: larger ratio wins, by
+/// cross-multiplication (`a/b` vs `c/d` ⟺ `a*d` vs `c*b`). Equal ratios → Equal.
+fn cmp_jac(a: &(usize, usize), b: &(usize, usize)) -> std::cmp::Ordering {
+    (a.0 * b.1).cmp(&(b.0 * a.1))
+}
+
+/// Link the entities that share a normalized domain. Domains with
+/// `≤ GALAXY_DOMAIN_HUB_THRESHOLD` entities are linked pairwise (the original
+/// behavior, byte-identical). Oversized domains use a hub-spoke topology: the
+/// top-H entities by claim-count become hubs (linked pairwise), every other
+/// entity links to its nearest hub by predicate-set Jaccard. This realizes the
+/// documented "top-N connected per domain, the rest implied transitively"
+/// intent without the unreadable clique full pairwise would create.
+///
+/// Determinism: `entities` must be sorted+deduped by the caller; hub selection
+/// sorts by claim-count desc then id asc; spokes run in sorted order; hub ties
+/// break on least load. All emits go through [`emit_sorted_edge`] →
+/// [`push_dedup_edge`], so output is stable regardless of input order.
+fn link_domain_entities(
+    graph: &mut GalaxyGraph,
+    seen: &mut std::collections::HashSet<(String, String)>,
+    entities: &[Uuid],
+    by_entity: &HashMap<Uuid, Vec<&ClaimView>>,
+    allowed: &HashMap<Uuid, ()>,
+) {
+    let n = entities.len();
+    if n < 2 {
+        return;
+    }
+
+    if n <= GALAXY_DOMAIN_HUB_THRESHOLD {
+        // Verbatim pairwise (original small-domain behavior).
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if !allowed.contains_key(&entities[i]) || !allowed.contains_key(&entities[j]) {
+                    continue;
+                }
+                emit_sorted_edge(graph, seen, entities[i], entities[j], EdgeKind::Related);
+            }
+        }
+        return;
+    }
+
+    // Oversized domain → hub-spoke.
+    // Predicate set per entity, for Jaccard hub affinity (built only here).
+    let pred_sets: HashMap<Uuid, std::collections::HashSet<&str>> = entities
+        .iter()
+        .map(|id| {
+            let set: std::collections::HashSet<&str> = by_entity
+                .get(id)
+                .map(|cs| cs.iter().map(|c| c.predicate.as_str()).collect())
+                .unwrap_or_default();
+            (*id, set)
+        })
+        .collect();
+
+    // Rank by claim-count desc, id asc — deterministic hub selection.
+    let mut ranked: Vec<Uuid> = entities.to_vec();
+    ranked.sort_by(|a, b| {
+        let ca = by_entity.get(a).map(|v| v.len()).unwrap_or(0);
+        let cb = by_entity.get(b).map(|v| v.len()).unwrap_or(0);
+        cb.cmp(&ca).then_with(|| a.cmp(b))
+    });
+    let h = (n / 4).clamp(GALAXY_HUB_MIN, GALAXY_HUB_MAX);
+    let hubs: Vec<Uuid> = ranked.iter().take(h).copied().collect();
+    let hub_set: std::collections::HashSet<Uuid> = hubs.iter().copied().collect();
+
+    // Hub-to-hub pairwise (a small clique of the most-claim-rich entities).
+    for i in 0..hubs.len() {
+        for j in (i + 1)..hubs.len() {
+            if !allowed.contains_key(&hubs[i]) || !allowed.contains_key(&hubs[j]) {
+                continue;
+            }
+            emit_sorted_edge(graph, seen, hubs[i], hubs[j], EdgeKind::Related);
+        }
+    }
+
+    // Spokes → nearest hub by predicate Jaccard, balanced by load.
+    let mut hub_load: HashMap<Uuid, usize> = hubs.iter().map(|h| (*h, 0usize)).collect();
+    for spoke in ranked.iter().filter(|id| !hub_set.contains(id)) {
+        if !allowed.contains_key(spoke) {
+            continue;
+        }
+        let spoke_preds = pred_sets.get(spoke);
+        let best = hubs
+            .iter()
+            .filter(|h| hub_load.get(*h).copied().unwrap_or(0) < GALAXY_HUB_MAX)
+            .max_by(|&ha, &hb| {
+                let ja = jac_pair(spoke_preds, pred_sets.get(ha));
+                let jb = jac_pair(spoke_preds, pred_sets.get(hb));
+                cmp_jac(&ja, &jb)
+                    .then_with(|| hub_load.get(hb).cmp(&hub_load.get(ha))) // lower load wins ties
+            });
+        let hub = best.copied().or_else(|| {
+            // All hubs saturated — connect to the globally least-loaded hub so
+            // the spoke is never orphaned. Bounded by the graph's sparsity.
+            hubs.iter().min_by_key(|h| hub_load.get(*h).copied().unwrap_or(0)).copied()
+        });
+        if let Some(hub) = hub {
+            *hub_load.entry(hub).or_insert(0) += 1;
+            emit_sorted_edge(graph, seen, *spoke, hub, EdgeKind::Related);
+        }
+    }
 }
 
 /// Resolve the immediate neighbors of `entity_id` under the E2.1 heuristic
@@ -1177,5 +1364,125 @@ mod tests {
         let g = GalaxyGraph::from_claims(&claims, 300, None);
         let node = &g.nodes()[0];
         assert_eq!(node.label, "A", "first-seen subject must win the tie");
+    }
+
+    // ── normalize_domain ─────────────────────────────────────────────────────
+
+    #[test]
+    fn normalize_domain_collapses_case_and_spacing_variants() {
+        // Casing + surrounding/internal whitespace collapse to one canonical
+        // form — universal for every domain, no alias list.
+        assert_eq!(normalize_domain("stocks"), "stocks");
+        assert_eq!(normalize_domain("Stocks"), "stocks");
+        assert_eq!(normalize_domain("  stocks "), "stocks");
+        assert_eq!(normalize_domain("STOCKS"), "stocks");
+        assert_eq!(normalize_domain("  Market "), "market");
+        assert_eq!(normalize_domain("Production"), "production");
+        assert_eq!(normalize_domain("Business  Strategy"), "business strategy");
+        // Distinct spellings are NOT merged (no hard-coded synonyms): `finance`
+        // and `financial` stay separate — that's a capture-side data-quality
+        // concern, not a read-side alias.
+        assert_eq!(normalize_domain("Finance"), "finance");
+        assert_eq!(normalize_domain("financial"), "financial");
+        assert_ne!(normalize_domain("Finance"), normalize_domain("financial"));
+        // Empty stays empty.
+        assert_eq!(normalize_domain(""), "");
+        assert_eq!(normalize_domain("   "), "");
+    }
+
+    #[test]
+    fn normalize_domain_is_idempotent() {
+        // normalize(normalize(x)) == normalize(x): applying twice never drifts
+        // an already-normalized value into a different alias.
+        for raw in [
+            "Finance", "Business Strategy", "projects", "stocks", "  Market ", "",
+        ] {
+            let once = normalize_domain(raw);
+            let twice = normalize_domain(&once);
+            assert_eq!(once, twice, "normalize must be idempotent on {raw:?}");
+        }
+    }
+
+    // ── hub-spoke linking for oversized domains ──────────────────────────────
+
+    /// Build `n` distinct entities, each with one claim in `domain`, distinct
+    /// subjects/predicates/numeric values so no value-reference or same-subject
+    /// edges fire — isolating the shared-domain linker under test.
+    fn domain_claims(n: usize, domain: &str) -> Vec<ClaimView> {
+        (0..n)
+            .map(|i| {
+                claim(
+                    Uuid::new_v4(),
+                    &format!("SUBJ{i}"),
+                    &format!("pred{i}"),
+                    json!(i),
+                    domain,
+                    "external_fact",
+                )
+            })
+            .collect()
+    }
+
+    /// Entity ids that appear in at least one edge (degree ≥ 1).
+    fn ids_with_edges(g: &GalaxyGraph) -> std::collections::HashSet<String> {
+        let mut s = std::collections::HashSet::new();
+        for e in g.edges() {
+            s.insert(e.source.clone());
+            s.insert(e.target.clone());
+        }
+        s
+    }
+
+    #[test]
+    fn oversized_domain_links_hub_spoke_not_clique() {
+        // 12 entities in one domain → hub-spoke (h = 12/4 = 3):
+        //   hub-hub C(3,2) = 3, plus 9 spokes ⇒ 12 edges.
+        // A full pairwise clique would be C(12,2) = 66 — unreadable. This is
+        // the core §9.2 readability win.
+        let claims = domain_claims(12, "financial");
+        let g = GalaxyGraph::from_claims(&claims, 300, None);
+        assert_eq!(g.node_count(), 12);
+        assert_eq!(
+            g.edge_count(),
+            12,
+            "n=12 hub-spoke ⇒ 12 edges (3 hub-hub + 9 spokes), not 66 clique"
+        );
+        // Hub-spoke reaches every node — no orphan spokes.
+        assert_eq!(ids_with_edges(&g).len(), 12, "all nodes must have ≥1 edge");
+    }
+
+    #[test]
+    fn domain_at_threshold_stays_pairwise() {
+        // Boundary: exactly GALAXY_DOMAIN_HUB_THRESHOLD entities use the verbatim
+        // pairwise path → C(n,2) edges (no hub-spoke).
+        let n = GALAXY_DOMAIN_HUB_THRESHOLD;
+        let claims = domain_claims(n, "financial");
+        let g = GalaxyGraph::from_claims(&claims, 300, None);
+        let expected = n * (n - 1) / 2;
+        assert_eq!(g.edge_count(), expected, "n=threshold stays pairwise");
+    }
+
+    #[test]
+    fn hub_spoke_output_is_deterministic_across_input_order() {
+        // Same claims, reversed order ⇒ identical edge set. The linker must
+        // not depend on which entity happened to be seen first (no flaky
+        // frontend flicker / flaky snapshots).
+        let mut claims = domain_claims(20, "financial");
+        let g_a = GalaxyGraph::from_claims(&claims, 300, None);
+        claims.reverse();
+        let g_b = GalaxyGraph::from_claims(&claims, 300, None);
+        let mut ea: Vec<_> = g_a
+            .edges()
+            .iter()
+            .map(|e| (e.source.clone(), e.target.clone()))
+            .collect();
+        let mut eb: Vec<_> = g_b
+            .edges()
+            .iter()
+            .map(|e| (e.source.clone(), e.target.clone()))
+            .collect();
+        ea.sort();
+        eb.sort();
+        assert_eq!(ea, eb, "edge set must be identical regardless of input order");
     }
 }
