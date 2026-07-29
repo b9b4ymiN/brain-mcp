@@ -110,14 +110,16 @@ fn validate_edge_targets(space: &crate::engine::SpaceContext) -> Result<Vec<Stri
     let f_slug = is.field("slug");
     let f_type = is.field("type");
 
-    // Build a slug→type map from the index
-    let top_docs = searcher.search(
+    // Build a slug→type map from the index. DocSetCollector, not
+    // TopDocs::order_by_score: AllQuery scores every doc equally, and
+    // TopDocs(order_by_score) returns zero docs under tantivy 0.26.
+    let all_addrs = searcher.search(
         &tantivy::query::AllQuery,
-        &tantivy::collector::TopDocs::with_limit(100_000).order_by_score(),
+        &tantivy::collector::DocSetCollector,
     )?;
     let mut slug_types: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    for (_score, doc_addr) in &top_docs {
+    for doc_addr in &all_addrs {
         let doc: tantivy::TantivyDocument = searcher.doc(*doc_addr)?;
         let slug = doc.get_first(f_slug).and_then(|v| v.as_str()).unwrap_or("");
         let page_type = doc.get_first(f_type).and_then(|v| v.as_str()).unwrap_or("");
@@ -129,7 +131,7 @@ fn validate_edge_targets(space: &crate::engine::SpaceContext) -> Result<Vec<Stri
     let mut warnings = Vec::new();
 
     // For each page, check edge targets
-    for (_score, doc_addr) in &top_docs {
+    for doc_addr in &all_addrs {
         let doc: tantivy::TantivyDocument = searcher.doc(*doc_addr)?;
         let slug = doc
             .get_first(f_slug)

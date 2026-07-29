@@ -8,7 +8,6 @@ use petgraph::Direction;
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
 use tantivy::Searcher;
-use tantivy::collector::TopDocs;
 use tantivy::query::AllQuery;
 use tantivy::schema::Value;
 
@@ -325,21 +324,26 @@ pub fn build_graph(
     let f_type = is.field("type");
     let f_body_links = is.field("body_links");
 
-    let top_docs = searcher.search(&AllQuery, &TopDocs::with_limit(100_000).order_by_score())?;
+    // DocSetCollector (not TopDocs::order_by_score): the graph needs every
+    // document, not a scored ranking. AllQuery yields a constant score, and
+    // TopDocs(order_by_score) against it returns zero docs in tantivy 0.26 —
+    // which silently emptied the entire graph on a fresh build.
+    let all_addrs = searcher.search(&AllQuery, &tantivy::collector::DocSetCollector)?;
 
     let mut graph = WikiGraph::new();
     let mut slug_to_idx: HashMap<String, NodeIndex> = HashMap::new();
 
     struct DocInfo {
         slug: String,
+        title: String,
         page_type: String,
         body_links: Vec<String>,
         edge_fields: Vec<(String, Vec<String>)>, // (field_name, target_slugs)
     }
     let mut all_docs: Vec<DocInfo> = Vec::new();
 
-    // First pass: create nodes and collect edge data
-    for (_score, doc_addr) in &top_docs {
+    // First pass: collect edge data per doc (no node creation yet).
+    for doc_addr in &all_addrs {
         let doc: tantivy::TantivyDocument = searcher.doc(*doc_addr)?;
 
         let slug = doc
@@ -361,15 +365,6 @@ pub fn build_graph(
         if !filter.types.is_empty() && !filter.types.contains(&page_type) {
             continue;
         }
-
-        let node = PageNode {
-            slug: slug.clone(),
-            title,
-            r#type: page_type.clone(),
-            external: false,
-        };
-        let idx = graph.add_node(node);
-        slug_to_idx.insert(slug.clone(), idx);
 
         // Read body wiki-links
         let body_links: Vec<String> = doc
@@ -393,11 +388,29 @@ pub fn build_graph(
 
         all_docs.push(DocInfo {
             slug,
+            title,
             page_type,
             body_links,
             edge_fields,
         });
     }
+
+    // DocSetCollector returns a HashSet (unspecified iteration order). Sort by
+    // slug so node creation — and therefore rendered output — is deterministic
+    // across runs (snapshot tests, stable mermaid diffs).
+    all_docs.sort_by(|a, b| a.slug.cmp(&b.slug));
+
+    for doc_info in &all_docs {
+        let node = PageNode {
+            slug: doc_info.slug.clone(),
+            title: doc_info.title.clone(),
+            r#type: doc_info.page_type.clone(),
+            external: false,
+        };
+        let idx = graph.add_node(node);
+        slug_to_idx.insert(doc_info.slug.clone(), idx);
+    }
+
 
     // Second pass: add edges
     for doc_info in &all_docs {

@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use tantivy::collector::TopDocs;
 use tantivy::query::AllQuery;
 use tantivy::schema::Value;
 
@@ -154,10 +153,12 @@ fn collect_pages(
     let f_confidence = is.try_field("confidence");
     let f_summary = is.try_field("summary");
 
-    let top_docs = searcher.search(&AllQuery, &TopDocs::with_limit(100_000).order_by_score())?;
+    // DocSetCollector, not TopDocs::order_by_score: AllQuery scores every doc
+    // equally, and TopDocs(order_by_score) returns zero docs under tantivy 0.26.
+    let all_addrs = searcher.search(&AllQuery, &tantivy::collector::DocSetCollector)?;
 
     let mut pages = Vec::new();
-    for (_score, doc_addr) in &top_docs {
+    for doc_addr in &all_addrs {
         let doc: tantivy::TantivyDocument = searcher.doc(*doc_addr)?;
 
         let slug = doc
