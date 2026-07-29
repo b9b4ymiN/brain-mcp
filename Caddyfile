@@ -1,0 +1,10 @@
+bbrainz.duckdns.org {
+    bind 0.0.0.0
+    tls internal
+    reverse_proxy localhost:2901
+}
+
+http://bbrainz.duckdns.org {
+    bind 0.0.0.0
+    redir https://{host}{uri} permanent
+}
