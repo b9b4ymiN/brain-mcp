@@ -98,7 +98,7 @@ parking_lot = "0.12"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
 # Isolated semantic authority spike (Task 0.3)
-rusqlite = { version = "=0.40.1", features = ["bundled"] }
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
 
 # Object-at-rest encryption for crypto-shred purge (Task 1.2b)
 aes-gcm = "0.10"
